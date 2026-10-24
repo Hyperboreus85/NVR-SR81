@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import math
+import re
 import shutil
 import struct
 import time
@@ -16,11 +17,14 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
 
+from .config import MAX_SEGMENT_SECONDS, MIN_SEGMENT_SECONDS
 from .motion import FRAME_BYTES, SAMPLE_SECONDS, MotionAnalyzer, motion_timeout
 
 
 INPUT_PROTOCOLS = "rtsp,rtsps,http,https,tcp,tls,udp,rtp"
 MAX_JPEG_BYTES = 8 * 1024 * 1024
+CACHE_ARTIFACT_NAME = re.compile(r"[0-9a-f]{64}\.(?:mp4|json)\Z")
+CACHE_PART_NAME = re.compile(r"[0-9a-f]{64}\.part\.(?:mp4|json)\Z")
 
 
 class MediaError(RuntimeError):
@@ -81,6 +85,7 @@ class _Worker:
     message: str = "Starting recording"
     last_segment_at: float | None = None
     stopping: bool = False
+    segment_seconds: int | None = None
 
 
 @dataclass
@@ -106,6 +111,8 @@ class MediaManager:
         self._decode_slots = asyncio.Semaphore(6)
         self._jobs: dict[str, asyncio.Task] = {}
         self._in_use: dict[Path, int] = {}
+        self._cache_leases: dict[Path, int] = {}
+        self._cache_reservations: dict[Path, int] = {}
         self._janitor: asyncio.Task | None = None
         self._stopping = False
 
@@ -138,29 +145,42 @@ class MediaManager:
 
     async def reconcile(self) -> None:
         async with self._reconcile_lock:
-            cameras = {str(c["id"]): c for c in self.store.list_cameras() if c.get("enabled", True)}
-            for camera_id, worker in list(self.workers.items()):
-                desired = cameras.get(camera_id)
-                # A preview URL change also restarts shared live previews below.
-                if desired != worker.camera or worker.task is None or worker.task.done():
-                    worker.stopping = True
-                    if worker.task:
-                        worker.task.cancel()
-                        await asyncio.gather(worker.task, return_exceptions=True)
-                    del self.workers[camera_id]
-            if self._stopping:
+            await self._reconcile_locked()
+
+    async def set_segment_seconds(self, seconds: int) -> None:
+        if type(seconds) is not int or not MIN_SEGMENT_SECONDS <= seconds <= MAX_SEGMENT_SECONDS:
+            raise MediaError("Recording duration must be an integer between 60 and 7200 seconds.")
+        async with self._reconcile_lock:
+            if self.settings.segment_seconds == seconds:
                 return
-            for camera_id, camera in cameras.items():
-                if camera_id not in self.workers:
-                    worker = _Worker(dict(camera))
-                    self.workers[camera_id] = worker
-                    worker.task = asyncio.create_task(self._record(worker), name=f"record-{camera_id}")
-            async with self._hub_lock:
-                for camera_id, hub in list(self._hubs.items()):
-                    if cameras.get(camera_id) != hub.camera:
-                        if hub.task:
-                            hub.task.cancel()
-                        self._hubs.pop(camera_id, None)
+            self.settings.segment_seconds = seconds
+            await self._reconcile_locked()
+
+    async def _reconcile_locked(self) -> None:
+        cameras = {str(c["id"]): c for c in self.store.list_cameras() if c.get("enabled", True)}
+        for camera_id, worker in list(self.workers.items()):
+            desired = cameras.get(camera_id)
+            # A preview URL change also restarts shared live previews below.
+            if (desired != worker.camera or worker.segment_seconds != self.settings.segment_seconds
+                    or worker.task is None or worker.task.done()):
+                worker.stopping = True
+                if worker.task:
+                    worker.task.cancel()
+                    await asyncio.gather(worker.task, return_exceptions=True)
+                del self.workers[camera_id]
+        if self._stopping:
+            return
+        for camera_id, camera in cameras.items():
+            if camera_id not in self.workers:
+                worker = _Worker(dict(camera), segment_seconds=self.settings.segment_seconds)
+                self.workers[camera_id] = worker
+                worker.task = asyncio.create_task(self._record(worker), name=f"record-{camera_id}")
+        async with self._hub_lock:
+            for camera_id, hub in list(self._hubs.items()):
+                if cameras.get(camera_id) != hub.camera:
+                    if hub.task:
+                        hub.task.cancel()
+                    self._hubs.pop(camera_id, None)
 
     def camera_status(self, camera_id: str) -> dict[str, Any]:
         worker = self.workers.get(str(camera_id))
@@ -242,6 +262,8 @@ class MediaManager:
         return path
 
     async def _record(self, worker: _Worker) -> None:
+        if worker.segment_seconds is None:
+            worker.segment_seconds = self.settings.segment_seconds
         backoff = 1.0
         while not self._stopping and not worker.stopping:
             process = None
@@ -268,13 +290,13 @@ class MediaManager:
                         "-map", "0:v:0"]
                 if camera.get("audio_mode", "copy") != "none":
                     args += ["-map", "0:a:0?"]
-                args += ["-c", "copy", "-f", "segment", "-segment_time", str(self.settings.segment_seconds),
+                args += ["-c", "copy", "-f", "segment", "-segment_time", str(worker.segment_seconds),
                          "-segment_format", "matroska", "-reset_timestamps", "1",
                          "-segment_list", str(manifest), "-segment_list_type", "csv", str(output)]
                 process = worker.process = await self._spawn(*args)
                 worker.state, worker.message = "connecting", "Connecting to camera"
                 while process.returncode is None:
-                    # Long segments remain open for up to 30 minutes. Report
+                    # Long segments remain open for up to two hours. Report
                     # recording once FFmpeg writes media, without waiting for
                     # the first completed segment to appear in the manifest.
                     if worker.state == "connecting":
@@ -449,19 +471,52 @@ class MediaManager:
     def _prune_cache(self) -> None:
         active_parts = {Path(key).with_suffix(".part" + Path(key).suffix) for key in self._jobs}
         for path in self.cache_dir.glob("*.part.*"):
-            if path not in active_parts and time.time() - path.stat().st_mtime > 3600:
+            if (self._owned_cache_file(path, partial=True) and path not in active_parts
+                    and time.time() - path.stat().st_mtime > 3600):
                 with contextlib.suppress(OSError):
                     path.unlink()
-        files = [p for p in self.cache_dir.iterdir() if p.is_file() and ".part." not in p.name]
-        total = sum(p.stat().st_size for p in files)
+        files = [path for path in self.cache_dir.iterdir() if self._owned_cache_file(path)]
+        stats = {path: path.stat() for path in files}
+        total = sum(stat.st_size for stat in stats.values())
         limit = int(getattr(self.settings, "cache_max_bytes", 2 * 1024**3))
-        for path in sorted(files, key=lambda p: p.stat().st_atime):
-            stat = path.stat()
+        # A full two-hour MP4 may exceed the soft budget by itself. Keep one
+        # recent oversized MP4 so subsequent HTTP Range requests can reuse it.
+        oversized = [path for path in files if path.suffix == ".mp4" and stats[path].st_size > limit
+                     and time.time() - stats[path].st_atime < 86400]
+        newest = max(oversized, key=lambda path: stats[path].st_atime, default=None)
+        if newest is not None:
+            total -= stats[newest].st_size
+        protected = set(self._cache_leases) | {Path(key) for key in self._jobs}
+        for path in sorted(files, key=lambda path: stats[path].st_atime):
+            stat = stats[path]
+            if path == newest or path in protected:
+                continue
             if total <= limit and time.time() - stat.st_atime < 86400:
                 continue
             with contextlib.suppress(OSError):
                 path.unlink()
                 total -= stat.st_size
+
+    def _owned_cache_file(self, path: Path, partial: bool = False) -> bool:
+        pattern = CACHE_PART_NAME if partial else CACHE_ARTIFACT_NAME
+        return (pattern.fullmatch(path.name) is not None and not path.is_symlink()
+                and path.resolve().parent == self.cache_dir and path.is_file())
+
+    def _ensure_cache_space(self, required: int = 0) -> None:
+        try:
+            reserve = 512 * 1024**2
+            if self.cache_dir.stat().st_dev == self.recordings_dir.stat().st_dev:
+                reserve = max(reserve, int(self.settings.min_free_bytes))
+            pending = 0
+            for temporary, estimate in self._cache_reservations.items():
+                written = 0
+                with contextlib.suppress(FileNotFoundError):
+                    written = temporary.stat().st_size
+                pending += max(0, estimate - written)
+            if shutil.disk_usage(self.cache_dir).free < reserve + required + pending:
+                raise MediaError("Insufficient cache storage for playback. Free space or configure NVR_CACHE_DIR on a larger disk.")
+        except OSError:
+            raise MediaError("Playback cache storage is unavailable.") from None
 
     async def snapshot(self, camera: dict[str, Any]) -> bytes:
         try:
@@ -579,9 +634,12 @@ class MediaManager:
         async def convert() -> Path:
             temporary = destination.with_suffix(".part.mp4")
             process = None
-            async with self._transcode_slots:
-                self._in_use[source] = self._in_use.get(source, 0) + 1
-                try:
+            self._in_use[source] = self._in_use.get(source, 0) + 1
+            try:
+                async with self._transcode_slots:
+                    estimate = math.ceil(source.stat().st_size * (2 if compatible else 1.05))
+                    self._ensure_cache_space(estimate)
+                    self._cache_reservations[temporary] = estimate
                     args = [self.settings.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
                             "-map", "0:v:0", "-map", "0:a:0?", "-sn"]
                     if compatible:
@@ -593,22 +651,57 @@ class MediaManager:
                             args += ["-tag:v", "hvc1"]
                     args += ["-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(temporary)]
                     process = await self._spawn(*args)
-                    timeout = max(120, min(float(recording["duration"]) * 10, 3600))
-                    await asyncio.wait_for(process.wait(), timeout)
+                    timeout = max(120, min(float(recording["duration"]) * 10, 21600))
+
+                    async def complete() -> None:
+                        while process.returncode is None:
+                            self._ensure_cache_space()
+                            try:
+                                await asyncio.wait_for(process.wait(), .25)
+                            except asyncio.TimeoutError:
+                                pass
+
+                    await asyncio.wait_for(complete(), timeout)
+                    self._ensure_cache_space()
                     if process.returncode or not temporary.is_file() or temporary.stat().st_size == 0:
                         raise MediaError("Recording conversion failed.")
                     temporary.replace(destination)
                     return destination
-                except asyncio.TimeoutError:
-                    raise MediaError("Recording conversion timed out.") from None
-                finally:
-                    await _stop_process(process)
-                    self._in_use[source] -= 1
-                    if self._in_use[source] == 0:
-                        del self._in_use[source]
-                    with contextlib.suppress(OSError):
-                        temporary.unlink(missing_ok=True)
+            except asyncio.TimeoutError:
+                raise MediaError("Recording conversion timed out.") from None
+            except OSError:
+                raise MediaError("Recording conversion failed.") from None
+            finally:
+                await _stop_process(process)
+                self._cache_reservations.pop(temporary, None)
+                self._in_use[source] -= 1
+                if self._in_use[source] == 0:
+                    del self._in_use[source]
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
         return await self._cached_job(destination, convert)
+
+    @contextlib.asynccontextmanager
+    async def playback_lease(self, recording: dict[str, Any], compatible: bool = False) -> AsyncIterator[Path]:
+        destination = self._cache_path(recording, "h264-v1" if compatible else "copy-v1", "mp4")
+        self._cache_leases[destination] = self._cache_leases.get(destination, 0) + 1
+        try:
+            yield await self.playback(recording, compatible)
+        finally:
+            self._cache_leases[destination] -= 1
+            if self._cache_leases[destination] == 0:
+                del self._cache_leases[destination]
+
+    @contextlib.asynccontextmanager
+    async def _source_slot(self, source: Path) -> AsyncIterator[None]:
+        self._in_use[source] = self._in_use.get(source, 0) + 1
+        try:
+            async with self._transcode_slots:
+                yield
+        finally:
+            self._in_use[source] -= 1
+            if self._in_use[source] == 0:
+                del self._in_use[source]
 
     async def waveform(self, recording: dict[str, Any]) -> dict[str, Any]:
         duration = max(0.0, float(recording["duration"]))
@@ -620,12 +713,11 @@ class MediaManager:
         async def extract() -> Path:
             process = None
             temporary = destination.with_suffix(".part.json")
-            async with self._transcode_slots:
-                self._in_use[source] = self._in_use.get(source, 0) + 1
+            async with self._source_slot(source):
                 try:
                     sample_rate = 16000  # preserve speech and alarms before aggregating energy bins
                     process = await self._spawn(self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
-                        "-i", str(source), "-vn", "-map", "0:a:0", "-ac", "1", "-ar", str(sample_rate),
+                        "-threads", "1", "-filter_threads", "1", "-i", str(source), "-vn", "-map", "0:a:0", "-ac", "1", "-ar", str(sample_rate),
                         "-f", "f32le", "pipe:1", pipe=True)
                     assert process.stdout
                     samples_per_bin = max(1, round(sample_seconds * sample_rate))
@@ -637,19 +729,25 @@ class MediaManager:
                         while chunk := await process.stdout.read(65536):
                             pending += chunk
                             usable = len(pending) // 4 * 4
-                            for (value,) in struct.iter_unpack("<f", pending[:usable]):
-                                total_samples += 1
-                                if total_samples > (duration + 10) * sample_rate:
-                                    raise MediaError("Audio duration does not match the recording.")
-                                if math.isfinite(value):
-                                    peak = max(peak, min(1.0, abs(value)))
-                                count += 1
+                            # Aggregate bounded chunks rather than updating
+                            # counters in Python for every sample of a 2h file.
+                            values = struct.unpack(f"<{usable // 4}f", pending[:usable])
+                            total_samples += len(values)
+                            if total_samples > (duration + 10) * sample_rate:
+                                raise MediaError("Audio duration does not match the recording.")
+                            offset = 0
+                            while offset < len(values):
+                                take = min(samples_per_bin - count, len(values) - offset)
+                                current = max(map(abs, filter(math.isfinite, values[offset:offset + take])), default=0)
+                                peak = max(peak, min(1.0, current))
+                                count += take
+                                offset += take
                                 if count == samples_per_bin:
                                     peaks.append(round(peak, 4))
                                     count, peak = 0, 0.0
                             pending = pending[usable:]
                         await process.wait()
-                    await asyncio.wait_for(consume(), max(60, min(duration * 2, 600)))
+                    await asyncio.wait_for(consume(), max(60, min(duration / 2, 3600)))
                     if process.returncode:
                         raise MediaError("Waveform extraction failed.")
                     if count:
@@ -662,9 +760,6 @@ class MediaManager:
                     raise MediaError("Waveform extraction timed out.") from None
                 finally:
                     await _stop_process(process)
-                    self._in_use[source] -= 1
-                    if self._in_use[source] == 0:
-                        del self._in_use[source]
                     with contextlib.suppress(OSError):
                         temporary.unlink(missing_ok=True)
         path = await self._cached_job(destination, extract)

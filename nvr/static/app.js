@@ -36,6 +36,7 @@ const state = {
   waveformRequest: 0, toastTimer: null, refreshPromise: null, authEpoch: 0,
   rangeFollowsNow: true,
   motionSeek: null,
+  recordingSettingsRevision: 0, recordingDuration: null,
 };
 const formatDate = dateFormat({day: "2-digit", month: "short"});
 const formatTime = dateFormat({hour: "2-digit", minute: "2-digit", second: "2-digit"});
@@ -127,7 +128,7 @@ function bytes(value) {
 
 function seconds(value) {
   const n = Math.max(0, Math.round(Number(value) || 0));
-  if (n >= 3600) return `${Math.floor(n / 3600)} h ${Math.floor(n % 3600 / 60)} min`;
+  if (n >= 3600) return `${Math.floor(n / 3600)}:${String(Math.floor(n % 3600 / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
   if (n >= 60) return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
   return `${n} s`;
 }
@@ -230,6 +231,7 @@ function refresh(showErrors = true, force = false) {
 
 async function refreshData(showErrors) {
   const authEpoch = state.authEpoch;
+  const durationRevision = state.recordingSettingsRevision;
   const results = await Promise.allSettled([api("/api/cameras"), api("/api/system")]);
   if (!state.authenticated || authEpoch !== state.authEpoch) return;
   const errors = [];
@@ -247,7 +249,11 @@ async function refreshData(showErrors) {
       if (state.selectedId) await loadRecordings();
     }
   } else errors.push(errorText(results[0].reason));
-  if (results[1].status === "fulfilled") { state.system = results[1].value; renderSystem(); }
+  if (results[1].status === "fulfilled") {
+    state.system = results[1].value;
+    if (durationRevision !== state.recordingSettingsRevision) state.system.segment_seconds = state.recordingDuration;
+    renderSystem();
+  }
   else errors.push(errorText(results[1].reason));
   renderStats();
   if (network.view === "monitor") { renderMonitor(); loadMonitorStatus(); }
@@ -1478,6 +1484,13 @@ $("search-start").value = localInput(today);
 $("search-end").value = localInput(new Date(now.getTime() + 60000));
 function updateClock() { $("wall-clock").textContent = `${formatDate.format(new Date())} · ${formatShortTime.format(new Date())}`; }
 updateClock(); setInterval(updateClock, 30000);
+
+window.addEventListener("nvr-recording-settingschange", (event) => {
+  const duration = event.detail?.segment_seconds;
+  if (!state.authenticated || !Number.isInteger(duration) || duration < 60 || duration > 7200) return;
+  state.recordingDuration = duration; state.recordingSettingsRevision += 1;
+  if (state.system) { state.system.segment_seconds = duration; renderSystem(); }
+});
 
 window.addEventListener("nvr-languagechange", () => {
   // Relabel existing state. Do not navigate, reset drafts, cancel discovery,

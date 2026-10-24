@@ -34,7 +34,7 @@ function environment() {
   const nodes = new Map(), calls = [], events = new Map(), emitted = [], blobs = new Map(), revoked = [], timers = [], downloads = [], storage = new Map();
   const byId = (id) => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   byId("app").hidden = true;
-  const tabs = ["general", "languages"].map((name) => Object.assign(new Element("button"), {dataset: {settingsTab: name}}));
+  const tabs = ["general", "languages", "recording"].map((name) => Object.assign(new Element("button"), {dataset: {settingsTab: name}}));
   const panels = tabs.map((item) => Object.assign(new Element(), {dataset: {settingsPanel: item.dataset.settingsTab}}));
   const keys = ["Hello", "Device {number}", "Empty"];
   const pack = (locale = "fr", translations = {Hello: "Bonjour"}, extra = {}) => ({format: "nvr-sr81.language-pack", version: 1, locale, name: "French", native_name: "Français", translations, ...extra});
@@ -60,9 +60,19 @@ function environment() {
     async setLanguage(value) { if (!stored.has(value)) throw Error("Unsupported language"); language = value; context.dispatchEvent({type: "nvr-languagechange"}); return value; },
     async refreshLanguages() { refreshCount++; if (refreshHandler) await refreshHandler(); if (!stored.has(language)) language = "en"; context.dispatchEvent({type: "nvr-languageschange"}); context.dispatchEvent({type: "nvr-languagechange"}); return languages(); },
   };
+  const allowedMinutes = [1, 2, 3, 4, 5, ...Array.from({length: 23}, (_, index) => (index + 2) * 5)];
+  let currentMinutes = 30;
+  const recordingSettings = (minutes = currentMinutes) => ({segment_seconds: minutes * 60, segment_minutes: minutes, allowed_minutes: allowedMinutes, recommended_minutes: 30, scope: "all_cameras"});
   const defaultApi = async (path, options = {}) => {
     if (path === "/api/system") return {version: "0.5.0", disk: {free: 1e9}, segment_seconds: 1800};
     if (path === "/api/live/status") return {active_streams: 1, max_streams: 16, active_transcodes: 0, max_transcodes: 2};
+    if (path === "/api/settings/recording") {
+      if (options.method !== "PUT") return recordingSettings();
+      const value = options.body?.segment_minutes;
+      if (!Number.isInteger(value) || !allowedMinutes.includes(value)) throw Error("Choose one of the supported recording durations.");
+      const changed = currentMinutes !== value; currentMinutes = value;
+      return {...recordingSettings(), changed};
+    }
     if (path === "/api/languages/template") return pack("xx", Object.fromEntries(keys.map((key) => [key, key])), {name: "Language name", native_name: "Native language name"});
     if (path === "/api/languages/install") {
       const incoming = JSON.parse(options.rawBody.replace(/^\uFEFF/, ""));
@@ -81,7 +91,7 @@ function environment() {
   const file = (raw, name = "fr.json") => ({name, size: Buffer.byteLength(raw, "utf8"), text: async () => raw});
   const choose = async (value) => { byId("settings-pack-file").files = value ? [value] : []; await byId("settings-pack-file").fire("change"); };
   const button = (locale, action, container = "settings-pack-list") => walk(byId(container)).find((item) => item.dataset.locale === locale && item.dataset.action === action);
-  return {context, byId, calls, blobs, revoked, timers, downloads, storage, emitted, pack, file, choose, auth, button, stored, defaultApi,
+  return {context, byId, calls, blobs, revoked, timers, downloads, storage, emitted, pack, file, choose, auth, button, stored, defaultApi, recordingSettings,
     handler(value) { handler = value; }, refreshHandler(value) { refreshHandler = value; }, refreshCount: () => refreshCount};
 }
 
@@ -209,7 +219,162 @@ test("General reports the real 30-minute duration, layout preferences persist, a
   env.refreshHandler(null); await env.context.NvrSettings.open(); assert.equal(env.byId("settings-error").hidden, true);
 });
 
-test("Settings has exactly General and Languages, with every language-file control inside Languages", () => {
+test("recording duration loads all server presets and only an explicit save applies a numeric duration", async () => {
+  const env = environment(); await env.auth(true); await env.context.NvrSettings.open();
+  const select = env.byId("settings-recording-minutes"), save = env.byId("settings-recording-form");
+  assert.equal(select.value, "30"); assert.equal(select.disabled, false);
+  assert.deepEqual(select.children.map((option) => Number(option.value)), env.recordingSettings().allowed_minutes);
+  assert.equal(select.children.find((option) => option.value === "30").textContent, "30 minutes · recommended");
+  assert.equal(select.children[0].textContent, "1 minute"); assert.equal(select.children.at(-1).value, "120");
+  select.value = "60"; await select.fire("change");
+  assert.equal(env.byId("settings-recording-status").textContent, "Unsaved changes");
+  assert.equal(env.calls.filter((call) => call.options.method === "PUT").length, 0);
+  await save.fire("submit");
+  const put = env.calls.find((call) => call.options.method === "PUT");
+  assert.equal(put.path, "/api/settings/recording"); assert.equal(put.options.body.segment_minutes, 60);
+  assert.equal(typeof put.options.body.segment_minutes, "number");
+  assert.equal(env.byId("settings-segment-duration").textContent, "60 minutes");
+  assert.match(env.byId("settings-notice").textContent, /All cameras now use 60 minutes/);
+  assert.equal(env.emitted.filter((event) => event.type === "nvr-recording-settingschange").at(-1).detail.segment_seconds, 3600);
+  assert.equal(env.byId("settings-recording-status").textContent, "Applies to all cameras");
+  await save.fire("submit");
+  assert.equal(env.byId("settings-notice").textContent, "Recording duration is already set to 60 minutes.");
+});
+
+test("non-preset environment durations are shown accurately and only supported integer choices can be saved", async () => {
+  for (const seconds of [61, 660]) {
+    const env = environment(); await env.auth(true);
+    env.handler((path, options) => path === "/api/settings/recording" && options.method !== "PUT" ? {...env.recordingSettings(seconds / 60), segment_seconds: seconds} : env.defaultApi(path, options));
+    await env.context.NvrSettings.open();
+    const select = env.byId("settings-recording-minutes");
+    assert.equal(select.children[0].textContent, `Current: ${seconds} seconds`); assert.equal(select.children[0].disabled, true);
+    assert.equal(env.byId("settings-recording-save").disabled, true);
+    for (const invalid of [String(seconds / 60), "0", "7", "121", "1.5", "1e1", "true", "", " 30"]) {
+      select.value = invalid; await select.fire("change"); await env.byId("settings-recording-form").fire("submit");
+      assert.equal(env.byId("settings-recording-save").disabled, true);
+    }
+    assert.equal(env.calls.some((call) => call.options.method === "PUT"), false);
+    select.value = "1"; await select.fire("change"); await env.byId("settings-recording-form").fire("submit");
+    assert.equal(env.byId("settings-segment-duration").textContent, "1 minute");
+  }
+});
+
+test("a dirty recording choice survives language changes and a later background settings refresh", async () => {
+  const env = environment(); await env.auth(true); await env.context.NvrSettings.open();
+  const select = env.byId("settings-recording-minutes");
+  select.value = "120"; await select.fire("change");
+  env.stored.get("it").pack.translations["{count} minutes · recommended"] = "{count} minuti · consigliato";
+  env.byId("settings-language").value = "it"; await env.byId("settings-language").fire("change");
+  assert.equal(select.value, "120");
+  assert.equal(select.children.find((option) => option.value === "30").textContent, "30 minuti · consigliato");
+  const incoming = deferred();
+  env.handler((path, options) => path === "/api/settings/recording" ? incoming.promise : env.defaultApi(path, options));
+  const refreshing = env.context.NvrSettings.open(); await flush();
+  env.context.dispatchEvent({type: "nvr-languagechange"}); assert.equal(select.value, "120");
+  incoming.resolve(env.recordingSettings(75)); await refreshing;
+  assert.equal(select.value, "120"); assert.equal(env.byId("settings-recording-status").textContent, "Unsaved changes");
+  assert.equal(env.byId("settings-segment-duration").textContent, "75 minutes");
+  assert.equal(env.calls.some((call) => call.options.method === "PUT"), false);
+});
+
+test("recording settings show a loading state, actionable initial errors and a retry without writing", async () => {
+  const env = environment(); await env.auth(true); const pending = deferred();
+  env.handler((path, options) => path === "/api/settings/recording" ? pending.promise : env.defaultApi(path, options));
+  const opening = env.context.NvrSettings.open();
+  assert.equal(env.byId("settings-recording-minutes").disabled, true);
+  assert.equal(env.byId("settings-recording-save").disabled, true);
+  assert.equal(env.byId("settings-recording-form").getAttribute("aria-busy"), "true");
+  assert.equal(env.byId("settings-recording-status").textContent, "Loading recording settings…");
+  await env.byId("settings-recording-form").fire("submit");
+  pending.reject(Error("Recording settings are unavailable. Try again.")); await opening;
+  assert.equal(env.byId("settings-recording-error").hidden, false); assert.equal(env.byId("settings-recording-retry").hidden, false);
+  env.handler(env.defaultApi); await env.byId("settings-recording-retry").fire("click");
+  assert.equal(env.byId("settings-recording-error").hidden, true); assert.equal(env.byId("settings-recording-retry").hidden, true);
+  assert.equal(env.byId("settings-recording-minutes").value, "30");
+  assert.equal(env.calls.some((call) => call.options.method === "PUT"), false);
+});
+
+test("recording saves and language operations share a lock, and failed saves keep the editable draft", async () => {
+  const env = environment(); await env.auth(true); await env.context.NvrSettings.open();
+  await env.choose(env.file(JSON.stringify(env.pack())));
+  const select = env.byId("settings-recording-minutes"); select.value = "90"; await select.fire("change");
+  const response = deferred(); env.handler((path, options) => path === "/api/settings/recording" && options.method === "PUT" ? response.promise : env.defaultApi(path, options));
+  const saving = env.byId("settings-recording-form").fire("submit");
+  assert.equal(env.byId("settings-pack-install").disabled, true); assert.equal(env.byId("settings-pack-template").disabled, true);
+  assert.equal(env.byId("settings-language").disabled, true); assert.equal(env.byId("login-language").disabled, true); assert.equal(select.disabled, true);
+  await env.byId("settings-recording-form").fire("submit"); await env.byId("settings-pack-install").fire("click"); await env.byId("settings-pack-template").fire("click");
+  env.byId("settings-language").value = "it"; await env.byId("settings-language").fire("change");
+  assert.equal(env.context.NvrI18n.getLanguage(), "en");
+  assert.equal(env.calls.filter((call) => call.options.method === "PUT").length, 1);
+  assert.equal(env.calls.some((call) => call.options.method === "POST"), false);
+  response.reject(Error("Recording settings could not be applied. Try again.")); await saving;
+  assert.equal(select.value, "90"); assert.equal(select.disabled, false); assert.equal(env.byId("settings-recording-save").disabled, false);
+  assert.match(env.byId("settings-recording-error").textContent, /could not be applied/); assert.equal(env.byId("settings-pack-install").disabled, false);
+  const install = deferred(); env.handler(() => install.promise);
+  const installing = env.byId("settings-pack-install").fire("click");
+  await env.byId("settings-recording-form").fire("submit");
+  assert.equal(env.calls.filter((call) => call.options.method === "PUT").length, 1);
+  install.reject(Error("Temporary failure")); await installing;
+  const language = deferred(), originalSetLanguage = env.context.NvrI18n.setLanguage;
+  env.context.NvrI18n.setLanguage = async (value) => { await language.promise; return originalSetLanguage(value); };
+  const switching = env.byId("settings-language").fire("change"); await env.byId("settings-recording-form").fire("submit");
+  assert.equal(env.byId("settings-recording-save").disabled, true); assert.equal(env.calls.filter((call) => call.options.method === "PUT").length, 1);
+  language.resolve(); await switching; assert.equal(select.value, "90");
+});
+
+test("logout discards delayed duration reads and old save completions cannot unlock a new session's save", async () => {
+  const env = environment(); await env.auth(true); const initial = deferred();
+  env.handler((path, options) => path === "/api/settings/recording" ? initial.promise : env.defaultApi(path, options));
+  const opening = env.context.NvrSettings.open(); await env.auth(false); initial.resolve(env.recordingSettings(120)); await opening;
+  assert.equal(env.byId("settings-recording-minutes").children.length, 0); assert.equal(env.byId("settings-segment-duration").textContent, "—");
+  await env.auth(true); env.handler(env.defaultApi); await env.context.NvrSettings.open();
+  const select = env.byId("settings-recording-minutes"); select.value = "60"; await select.fire("change");
+  const old = deferred(), next = deferred(); let writes = 0;
+  env.handler((path, options) => path === "/api/settings/recording" && options.method === "PUT" ? (++writes === 1 ? old.promise : next.promise) : env.defaultApi(path, options));
+  const first = env.byId("settings-recording-form").fire("submit"); await env.auth(false); await env.auth(true); await env.context.NvrSettings.open();
+  select.value = "90"; await select.fire("change"); const second = env.byId("settings-recording-form").fire("submit");
+  old.resolve({...env.recordingSettings(60), changed: true}); await first;
+  assert.equal(select.value, "90"); assert.equal(env.byId("settings-recording-save").disabled, true);
+  assert.equal(env.byId("settings-notice").hidden, true); assert.equal(env.emitted.some((event) => event.type === "nvr-recording-settingschange"), false);
+  next.resolve({...env.recordingSettings(90), changed: true}); await second;
+  assert.equal(env.byId("settings-segment-duration").textContent, "90 minutes"); assert.equal(env.byId("settings-recording-save").disabled, false);
+  assert.equal(env.emitted.filter((event) => event.type === "nvr-recording-settingschange").length, 1);
+});
+
+test("a pre-save General response cannot overwrite the newly applied duration", async () => {
+  const env = environment(); await env.auth(true); const previousSystem = deferred();
+  env.handler((path, options) => path === "/api/system" ? previousSystem.promise : env.defaultApi(path, options));
+  const opening = env.context.NvrSettings.open(); await flush();
+  const select = env.byId("settings-recording-minutes"); select.value = "60"; await select.fire("change");
+  await env.byId("settings-recording-form").fire("submit");
+  previousSystem.resolve({version: "Stale", segment_seconds: 1800, disk: {free: 1}}); await opening;
+  assert.equal(env.byId("settings-segment-duration").textContent, "60 minutes"); assert.equal(select.value, "60");
+});
+
+test("the recorder updates its duration immediately and ignores an older in-flight system response", async () => {
+  const appSource = readFileSync(join(__dirname, "../nvr/static/app.js"), "utf8");
+  const refreshSource = appSource.slice(appSource.indexOf("async function refreshData("), appSource.indexOf("\nfunction renderStats("));
+  const listenerSource = appSource.slice(appSource.indexOf('window.addEventListener("nvr-recording-settingschange"'), appSource.indexOf('window.addEventListener("nvr-languagechange"'));
+  const previousSystem = deferred(), listeners = new Map(), displayed = [];
+  const state = {authenticated: true, authEpoch: 1, system: {segment_seconds: 1800}, cameras: [], selectedId: null, recordingSettingsRevision: 0, recordingDuration: null};
+  const context = vm.createContext({state, network: {view: "settings"},
+    api: (path) => path === "/api/system" ? previousSystem.promise : Promise.resolve([]),
+    renderCameras() {}, renderSelected() {}, renderStats() {}, errorText: String,
+    renderSystem() { displayed.push(state.system.segment_seconds); },
+    window: {addEventListener(type, listener) { listeners.set(type, listener); }},
+  });
+  vm.runInContext(refreshSource + "\n" + listenerSource, context);
+  const refreshing = context.refreshData(false);
+  listeners.get("nvr-recording-settingschange")({detail: {segment_seconds: 3600}});
+  assert.equal(state.system.segment_seconds, 3600); assert.equal(displayed.at(-1), 3600);
+  previousSystem.resolve({segment_seconds: 1800, recordings_bytes: 999}); await refreshing;
+  assert.equal(state.system.segment_seconds, 3600); assert.equal(state.system.recordings_bytes, 999);
+  state.authenticated = false;
+  listeners.get("nvr-recording-settingschange")({detail: {segment_seconds: 7200}});
+  assert.equal(state.system.segment_seconds, 3600);
+});
+
+test("Settings has exactly General, Languages and Recording, with JSON controls confined to Languages", () => {
   const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8");
   const stack = [], elements = [], ids = new Map();
   const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
@@ -230,13 +395,16 @@ test("Settings has exactly General and Languages, with every language-file contr
     if (!voidTags.has(tag) && !/\/\s*$/.test(token[3])) stack.push(entry);
   }
   assert.equal(stack.length, 0);
-  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-tab"]).map((item) => item.attributes["data-settings-tab"]), ["general", "languages"]);
-  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-panel"]).map((item) => item.attributes["data-settings-panel"]), ["general", "languages"]);
+  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-tab"]).map((item) => item.attributes["data-settings-tab"]), ["general", "languages", "recording"]);
+  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-panel"]).map((item) => item.attributes["data-settings-panel"]), ["general", "languages", "recording"]);
   for (const id of ["settings-language", "settings-language-list", "settings-pack-file", "settings-pack-preview", "settings-pack-name", "settings-pack-locale", "settings-pack-coverage", "settings-pack-install", "settings-pack-selection", "settings-pack-template", "settings-pack-list"]) {
     assert.ok(ids.get(id)?.ancestors.includes("settings-languages-panel"), id + " must belong to the Languages page");
   }
   assert.equal(ids.get("settings-pack-file").attributes.type, "file");
   assert.match(ids.get("settings-pack-file").attributes.accept, /json/);
+  for (const id of ["settings-recording-form", "settings-recording-minutes", "settings-recording-save", "settings-recording-status", "settings-recording-error", "settings-recording-retry"]) assert.ok(ids.get(id)?.ancestors.includes("settings-recording-panel"), id + " must belong to Recording");
+  assert.equal(ids.get("settings-recording-save").attributes.type, "submit");
+  assert.equal(ids.get("settings-recording-minutes").tag, "select");
   for (const id of ["settings-translations-panel", "settings-translation-search", "settings-translations-list", "settings-translations-save", "settings-translations-reset", "settings-translations-import", "settings-translations-export"]) assert.equal(ids.has(id), false);
   assert.equal(elements.some((item) => item.tag === "textarea" && item.ancestors.includes("settings-languages-panel")), false, "Languages must install files rather than edit individual translations");
 });

@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.7.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.8.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -9,13 +9,13 @@ NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette 
 - **SQLite:** indice temporale locale; video su un disco/percorso separato.
 - **HTML/CSS/JavaScript senza dipendenze esterne:** interfaccia web disponibile anche senza Internet.
 
-Il flusso originale viene copiato in file **Matroska/MKV di circa 30 minuti** (`1800` secondi). MKV conserva anche audio delle telecamere come G.711. Il taglio avviene al primo keyframe utile, quindi la durata può superare leggermente il valore richiesto. Il segmento aperto diventa consultabile dopo la chiusura; lo stato segnala la registrazione appena FFmpeg inizia a scrivere, senza attendere il primo file completo. Impostare un intervallo dei keyframe di 1–2 secondi sulla telecamera, quando possibile.
+Il flusso originale viene copiato in file **Matroska/MKV con durata da 1 a 120 minuti**, configurabile in **Settings → Recording**. Il valore predefinito e consigliato dal progetto è **30 minuti** (`1800` secondi). MKV conserva anche audio delle telecamere come G.711. Il taglio avviene al primo keyframe utile, quindi la durata reale è approssimativa; interruzioni del flusso o cambi di durata possono produrre file più corti. Il segmento aperto diventa consultabile dopo la chiusura; lo stato segnala la registrazione appena FFmpeg inizia a scrivere. Con file da 120 minuti, l'attesa per consultare il segmento in corso può quindi arrivare a circa due ore. Impostare un intervallo dei keyframe di 1–2 secondi sulla telecamera, quando possibile.
 
 ## Funzioni presenti
 
 - Login amministratore locale; password salvata con scrypt e sessione HttpOnly.
 - Interfaccia inglese predefinita e italiano incluso, selezionabili anche prima del login. Barra laterale con icone sopra ai nomi, ispirata al layout M777.
-- **Settings / Impostazioni** con sezioni General e Languages: lingua e layout del monitor per browser, durata dei file e gestione di **pacchetti lingua JSON installabili**. Scelta della lingua, installazione, download dei modelli e rimozione dei file sono tutti nella pagina Languages. Inglese e italiano sono inclusi come file. [Guida pacchetti lingua](docs/settings.md).
+- **Settings / Impostazioni** con sezioni General, Recording e Languages: layout del monitor per browser, durata globale dei file e gestione di **pacchetti lingua JSON installabili**. Recording offre 1, 2, 3, 4, 5 minuti e poi intervalli di 5 minuti fino a 120. Salvando, i file correnti vengono chiusi e la nuova durata entra in uso senza riavviare il servizio; i file precedenti restano invariati. La scelta è conservata nel database e vale per tutte le telecamere e i browser. Scelta della lingua, installazione, download dei modelli e rimozione dei file sono tutti nella pagina Languages. [Guida impostazioni e pacchetti lingua](docs/settings.md).
 - Aggiunta/modifica/disattivazione di telecamere RTSP/RTSPS e URL HTTP(S) diretti compatibili con FFmpeg.
 - Sezione **Telecamere in rete** con discovery ONVIF multicast, selezione della scheda di rete e ricerca opzionale su sottoreti private fino a /24.
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.
@@ -99,7 +99,7 @@ Il file deve essere della nuova versione: una precedente installazione non lo co
 
 ## Dati, spazio e tempo
 
-`NVR_DATA_DIR` contiene database, hash password, `credentials.key` e cache. `NVR_RECORDINGS_DIR` contiene gli originali, separati per ID telecamera. Fare backup **del database insieme alla chiave**: senza chiave gli URL cifrati non sono recuperabili. La chiave è sullo stesso host: protegge il database copiato da solo, non un attaccante con accesso completo al server.
+`NVR_DATA_DIR` contiene database, durata globale salvata, hash password e `credentials.key`. `NVR_RECORDINGS_DIR` contiene gli originali, separati per ID telecamera. `NVR_CACHE_DIR` sceglie dove tenere MP4 e dati di consultazione: le nuove installazioni con l'installer nativo e Compose usano la sottodirectory `.cache` dell'archivio. Fare backup **del database insieme alla chiave**: senza chiave gli URL cifrati non sono recuperabili. La durata scelta nell'interfaccia sopravvive ai riavvii e prevale sul valore iniziale `NVR_SEGMENT_SECONDS`. La chiave è sullo stesso host: protegge il database copiato da solo, non un attaccante con accesso completo al server.
 
 I timestamp sono UTC nel database e orari locali nel browser. Sincronizzare host e telecamere usando NTP locale. La timeline è ricostruita dalla ricezione dei flussi sul server; non sostituisce una sincronizzazione forense del timestamp della camera. Dopo un crash un segmento incompleto può richiedere recupero manuale; i precedenti restano indipendenti.
 
@@ -109,9 +109,10 @@ Stima dello spazio: **1 Mbit/s ≈ 10,8 GB al giorno** (unità decimali), prima 
 |---|---|---|
 | `NVR_HOST` | `127.0.0.1` | Indirizzo di ascolto, `0.0.0.0` nel container |
 | `NVR_PORT` | `8080` | Porta web |
-| `NVR_DATA_DIR` | `./data` | Configurazione, indice e cache |
+| `NVR_DATA_DIR` | `./data` | Configurazione e indice |
 | `NVR_RECORDINGS_DIR` | `./recordings` | Archivio originale |
-| `NVR_SEGMENT_SECONDS` | `1800` | Durata obiettivo: 30 minuti; intervallo ammesso 5–3600 secondi |
+| `NVR_CACHE_DIR` | `NVR_DATA_DIR/cache` se omesso | Copie e dati di consultazione; installer e Compose nuovi scelgono la `.cache` dell'archivio |
+| `NVR_SEGMENT_SECONDS` | `1800` | Durata iniziale in secondi, da 60 a 7200; sostituita dalla scelta salvata in Settings → Recording |
 | `NVR_MIN_FREE_GB` | `5` | Riserva sul disco archivio, GB decimali |
 | `NVR_ADMIN_PASSWORD` | richiesta al primo avvio | Imposta/aggiorna la password all'avvio |
 | `NVR_SECURE_COOKIE` | `0` | Usare `1` con HTTPS locale |
@@ -119,7 +120,11 @@ Stima dello spazio: **1 Mbit/s ≈ 10,8 GB al giorno** (unità decimali), prima 
 | `NVR_LIVE_MAX_TRANSCODES` | `2` | Conversioni live H.264 contemporanee, da 0 a 4 |
 | `NVR_FFMPEG`, `NVR_FFPROBE` | nomi nel PATH | Percorsi eseguibili |
 
-Un solo processo/istanza per archivio. Limite iniziale dell'interfaccia: 32 configurazioni, **non una promessa di capacità hardware**. La cache multimediale è limitata a circa 2 GiB e un giorno; conversioni simultanee limitate. La ricerca API restituisce fino a 2.000 segmenti per intervallo: selezionare una telecamera o ridurre l'intervallo se si raggiunge il limite.
+Un solo processo/istanza per archivio. Limite iniziale dell'interfaccia: 32 configurazioni, **non una promessa di capacità hardware**. La cache usa un budget morbido di circa 2 GiB e una conservazione di un giorno: il più recente MP4 può superare il budget per consentire la consultazione dei file lunghi, mentre i file serviti a una richiesta attiva sono protetti dalla pulizia. Le conversioni sono limitate; se lo spazio libero non basta, la preparazione viene fermata e i file temporanei rimossi. La ricerca API restituisce fino a 2.000 segmenti per intervallo: selezionare una telecamera o ridurre l'intervallo se si raggiunge il limite.
+
+File più lunghi riducono il numero di segmenti, ma aumentano l'attesa per consultarli e il lavoro per preparare MP4, audio e movimento. A 4 Mbit/s, due ore valgono circa **3,6 GB** di solo video: serve spazio anche per la copia di consultazione. Cambiare durata non riduce il volume giornaliero del flusso originale. Per un punto di partenza equilibrato consigliamo 30 minuti; valutare tempi e spazio sul proprio hardware. [Scelta della durata](docs/settings.md#durata-dei-file-di-registrazione).
+
+Per file lunghi consigliamo una cache sul disco delle registrazioni, con spazio libero adeguato. Un aggiornamento conserva il percorso configurato; impostare `NVR_CACHE_DIR` nel file ambiente del servizio e riavviarlo per cambiare percorso. La vecchia cache resta al suo posto e non viene trasferita o cancellata automaticamente.
 
 ## Accesso locale
 

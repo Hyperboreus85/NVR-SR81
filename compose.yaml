@@ -9,6 +9,7 @@ services:
     environment:
       NVR_ADMIN_PASSWORD: "${NVR_ADMIN_PASSWORD:?Impostare una password di almeno 12 caratteri in .env}"
       NVR_SEGMENT_SECONDS: "${NVR_SEGMENT_SECONDS:-1800}"
+      NVR_CACHE_DIR: "${NVR_CACHE_DIR:-/recordings/.cache}"
       NVR_MIN_FREE_GB: "${NVR_MIN_FREE_GB:-5}"
       NVR_SECURE_COOKIE: "${NVR_SECURE_COOKIE:-0}"
       NVR_LIVE_MAX_STREAMS: "${NVR_LIVE_MAX_STREAMS:-16}"

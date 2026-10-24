@@ -9,6 +9,8 @@
   let authenticated = !byId("app").hidden, tab = "general";
   let authEpoch = 0, fileEpoch = 0, operationEpoch = 0, openEpoch = 0, languageEpoch = 0;
   let selection = null, reading = false, busy = false, system = null, live = null;
+  let recording = null, recordingDraft = "", recordingLoading = false, recordingSaving = false;
+  let recordingEpoch = 0, recordingLoadFailed = false;
   let languageActions = [], packActions = [];
 
   function node(tag, className, text) {
@@ -48,6 +50,82 @@
     byId("settings-language").disabled = busy;
     byId("login-language").disabled = busy;
     byId("settings-pack-preview").setAttribute("aria-busy", String(reading || busy));
+    byId("settings-recording-minutes").disabled = !authenticated || busy || recordingLoading || !recording;
+    byId("settings-recording-save").disabled = !authenticated || busy || recordingLoading || !validRecordingChoice();
+    byId("settings-recording-save").textContent = t(recordingSaving ? "Saving…" : "Save recording settings");
+    byId("settings-recording-retry").disabled = !authenticated || busy || recordingLoading;
+    byId("settings-recording-form").setAttribute("aria-busy", String(recordingLoading || recordingSaving));
+  }
+
+  function validRecordingChoice() {
+    return !!recording && /^\d+$/.test(recordingDraft) && Number.isInteger(Number(recordingDraft)) && recording.allowed_minutes.includes(Number(recordingDraft));
+  }
+
+  function recordingDirty() { return !!recording && recordingDraft !== String(recording.segment_minutes); }
+
+  function renderRecording() {
+    const select = byId("settings-recording-minutes");
+    select.replaceChildren();
+    if (recording) {
+      if (!recording.allowed_minutes.includes(recording.segment_minutes)) {
+        const current = node("option", "", t("Current: {count} seconds", {count: recording.segment_seconds}));
+        current.value = String(recording.segment_minutes); current.disabled = true; select.append(current);
+      }
+      for (const minutes of recording.allowed_minutes) {
+        const option = node("option", "", t(minutes === recording.recommended_minutes ? "{count} minutes · recommended" : minutes === 1 ? "{count} minute" : "{count} minutes", {count: minutes}));
+        option.value = String(minutes); select.append(option);
+      }
+      select.value = recordingDraft;
+    }
+    byId("settings-recording-status").textContent = t(recordingLoading ? "Loading recording settings…" : recordingSaving ? "Applying recording duration…" : !recording ? "Recording settings have not loaded." : recordingDirty() ? "Unsaved changes" : "Applies to all cameras");
+    byId("settings-recording-retry").hidden = !recordingLoadFailed;
+    updateActions();
+  }
+
+  function checkedRecording(value) {
+    if (!value || !Number.isFinite(value.segment_seconds) || value.segment_seconds < 60 || value.segment_seconds > 7200 || !Number.isFinite(value.segment_minutes) || Math.abs(value.segment_minutes * 60 - value.segment_seconds) > 0.001 || !Array.isArray(value.allowed_minutes) || !value.allowed_minutes.length || value.allowed_minutes.some((minutes) => !Number.isInteger(minutes) || minutes < 1 || minutes > 120) || value.scope !== "all_cameras") throw new Error("Recording settings are unavailable. Try again.");
+    return {...value, allowed_minutes: [...new Set(value.allowed_minutes)].sort((a, b) => a - b)};
+  }
+
+  async function loadRecording() {
+    if (!authenticated || busy) return;
+    const ticket = authEpoch, request = ++recordingEpoch;
+    recordingLoading = true; recordingLoadFailed = false; message("settings-recording-error"); renderRecording();
+    try {
+      const result = checkedRecording(await api("/api/settings/recording"));
+      if (!validAuth(ticket) || request !== recordingEpoch) return;
+      const keepDraft = recordingDirty();
+      recording = result;
+      if (!keepDraft) recordingDraft = String(result.segment_minutes);
+      if (system) system.segment_seconds = result.segment_seconds;
+    } catch (error) {
+      if (validAuth(ticket) && request === recordingEpoch) {
+        recordingLoadFailed = true;
+        message("settings-recording-error", error.message || "Recording settings are unavailable. Try again.", error.i18nParams);
+      }
+    } finally {
+      if (validAuth(ticket) && request === recordingEpoch) { recordingLoading = false; relabel(); }
+    }
+  }
+
+  async function saveRecording() {
+    if (!authenticated || busy || recordingLoading || !recording) return;
+    if (!validRecordingChoice()) { message("settings-recording-error", "Choose one of the available recording durations."); return; }
+    const ticket = authEpoch, operation = ++operationEpoch, minutes = Number(recordingDraft);
+    recordingEpoch += 1; openEpoch += 1; busy = recordingSaving = true;
+    message("settings-recording-error"); message("settings-error"); message("settings-notice"); renderRecording();
+    try {
+      const result = checkedRecording(await api("/api/settings/recording", {method: "PUT", body: {segment_minutes: minutes}}));
+      if (!validOperation(ticket, operation)) return;
+      recording = result; recordingDraft = String(result.segment_minutes); recordingLoadFailed = false;
+      if (system) system.segment_seconds = result.segment_seconds;
+      window.dispatchEvent(new CustomEvent("nvr-recording-settingschange", {detail: {segment_seconds: result.segment_seconds, segment_minutes: result.segment_minutes}}));
+      message("settings-notice", result.changed ? "Recording duration saved. All cameras now use {count} minutes per file." : "Recording duration is already set to {count} minutes.", {count: result.segment_minutes});
+    } catch (error) {
+      if (validOperation(ticket, operation)) message("settings-recording-error", error.message || "Unable to save recording settings.", error.i18nParams);
+    } finally {
+      if (validOperation(ticket, operation)) { busy = recordingSaving = false; relabel(); }
+    }
   }
 
   function coverage(translated, total) { return t("{translated} / {total} strings", {translated, total}); }
@@ -118,9 +196,10 @@
   function relabel() {
     byId("settings-version").textContent = system?.version || "—";
     byId("settings-disk-free").textContent = system ? formatBytes(system.disk?.free) : "—";
-    byId("settings-segment-duration").textContent = !system ? "—" : system.segment_seconds % 60 === 0 ? t("{count} minutes", {count: system.segment_seconds / 60}) : t("{count} seconds", {count: system.segment_seconds});
+    const duration = recording?.segment_seconds ?? system?.segment_seconds;
+    byId("settings-segment-duration").textContent = !Number.isFinite(duration) ? "—" : duration % 60 === 0 ? t(duration === 60 ? "{count} minute" : "{count} minutes", {count: duration / 60}) : t("{count} seconds", {count: duration});
     for (const [id, active, maximum] of [["settings-live-streams", live?.active_streams, live?.max_streams], ["settings-live-transcodes", live?.active_transcodes, live?.max_transcodes]]) byId(id).textContent = live ? t("{active} / {maximum}", {active, maximum}) : "—";
-    renderLanguages(); renderSelection();
+    renderLanguages(); renderSelection(); renderRecording();
     for (const [id, source] of banners) { byId(id).textContent = t(source.key, source.params); byId(id).hidden = false; }
   }
 
@@ -128,7 +207,7 @@
     selectTab(tab); relabel();
     if (!authenticated || busy) return;
     const ticket = authEpoch, request = ++openEpoch;
-    const results = await Promise.allSettled([i18n.refreshLanguages(), api("/api/system"), api("/api/live/status")]);
+    const results = await Promise.allSettled([i18n.refreshLanguages(), api("/api/system"), api("/api/live/status"), loadRecording()]);
     if (!validAuth(ticket) || request !== openEpoch) return;
     if (results[1].status === "fulfilled") system = results[1].value;
     if (results[2].status === "fulfilled") live = results[2].value;
@@ -202,11 +281,13 @@
 
   async function chooseLanguage(locale) {
     if (busy) return;
-    const request = ++languageEpoch, ticket = authEpoch;
+    const request = ++languageEpoch, ticket = authEpoch, operation = ++operationEpoch;
+    busy = true; updateActions();
     try {
       await i18n.setLanguage(locale);
       if (request === languageEpoch && ticket === authEpoch) message("settings-notice", "Language saved for this browser.");
     } catch (error) { if (request === languageEpoch && ticket === authEpoch) { errorMessage(error); renderLanguages(); } }
+    finally { if (request === languageEpoch && ticket === authEpoch && operation === operationEpoch) { busy = false; relabel(); } }
   }
 
   async function downloadPack(locale = null) {
@@ -258,6 +339,12 @@
   byId("settings-pack-file").addEventListener("change", chooseFile);
   byId("settings-pack-install").addEventListener("click", installPack);
   byId("settings-pack-template").addEventListener("click", () => downloadPack());
+  byId("settings-recording-form").addEventListener("submit", (event) => { event.preventDefault(); return saveRecording(); });
+  byId("settings-recording-minutes").addEventListener("change", (event) => {
+    if (!authenticated || busy || recordingLoading || !recording) return;
+    recordingDraft = event.target.value; message("settings-recording-error"); message("settings-notice"); renderRecording();
+  });
+  byId("settings-recording-retry").addEventListener("click", loadRecording);
   byId("settings-monitor-layout").addEventListener("change", (event) => {
     const layout = Number(event.target.value);
     if (![1, 4, 9, 16].includes(layout)) return;
@@ -271,9 +358,10 @@
   window.addEventListener("nvr-languageschange", renderLanguages);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated;
-    authEpoch += 1; fileEpoch += 1; operationEpoch += 1; openEpoch += 1; languageEpoch += 1;
+    authEpoch += 1; fileEpoch += 1; operationEpoch += 1; openEpoch += 1; languageEpoch += 1; recordingEpoch += 1;
     selection = null; reading = busy = false; system = live = null;
-    message("settings-error"); message("settings-notice"); relabel();
+    recording = null; recordingDraft = ""; recordingLoading = recordingSaving = recordingLoadFailed = false;
+    message("settings-error"); message("settings-notice"); message("settings-recording-error"); relabel();
   });
   window.NvrSettings = Object.freeze({open, relabel});
   selectTab(tab); relabel();

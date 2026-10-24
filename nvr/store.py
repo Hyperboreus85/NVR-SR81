@@ -129,3 +129,7 @@ class Store:
     def meta_set(self, key, value):
         with self.connect() as db:
             db.execute("INSERT INTO metadata VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    def meta_delete(self, key):
+        with self.connect() as db:
+            db.execute("DELETE FROM metadata WHERE key=?", (key,))

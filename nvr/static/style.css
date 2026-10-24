@@ -322,3 +322,22 @@ input[type=checkbox]{min-height:0}
 .motion-error{font-size:9px;line-height:1.7;color:#c8b99b;margin-top:8px;overflow-wrap:anywhere}
 .motion-help{font-size:9px;line-height:1.7;color:#627f88;margin-top:7px}
 @media(max-width:760px){.motion-heading{gap:9px}.motion-heading h4{font-size:8px}.motion-controls{gap:6px}.motion-controls label{font-size:9px}.motion-controls select{min-height:40px;width:85px;padding:8px;font-size:11px}.motion-controls .icon-button{min-height:40px;height:40px;width:36px}.motion-track{height:33px}#motion-status,.motion-help,.motion-error{font-size:8px}#motion-retry{font-size:9px;min-height:30px}.motion-event{top:5px;bottom:5px}}
+
+/* One compact, recorder-wide file duration; no service restart is needed. */
+.recording-settings .settings-section-heading{border-bottom:1px solid var(--line)}
+.recording-duration-choice{flex-direction:row;align-items:center;padding:15px 16px}
+.recording-duration-choice>div{min-width:0;flex:1}
+.recording-duration-choice>label{width:220px;max-width:100%;flex:none}
+.recording-duration-choice select{width:100%;min-height:32px;font-size:11px}
+.recording-settings-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:0 16px 15px}
+#settings-recording-status{font-size:10px;color:var(--muted);line-height:1.6;min-width:0}
+.recording-settings-actions>.button{min-height:32px;font-size:11px;flex:none}
+.recording-settings-feedback{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 16px}
+.recording-settings-feedback:has(>p[hidden]):has(>button[hidden]){display:none}
+#settings-recording-error{margin:0 0 13px;font-size:10px;line-height:1.7;overflow-wrap:anywhere}
+#settings-recording-retry{margin-bottom:13px;flex:none}
+.recording-settings-notes{display:grid;gap:10px;border-top:1px solid var(--line);padding:14px 16px;background:var(--panel-deep)}
+.recording-settings-notes p{display:flex;align-items:flex-start;gap:9px;font-size:10px;line-height:1.75;color:#849da6}
+.recording-settings-notes svg{width:14px;height:14px;margin-top:2px;flex:none;color:var(--accent)}
+@media(max-width:760px){.recording-duration-choice{padding:14px;flex-direction:column;align-items:stretch;gap:12px}.recording-duration-choice>label{width:100%;max-width:none}.recording-duration-choice select{min-height:40px;font-size:12px}.recording-settings-actions{padding:0 14px 14px;align-items:flex-start;flex-direction:column;gap:10px}.recording-settings-actions>.button{min-height:40px;width:100%;font-size:11px}.recording-settings-feedback{padding:0 14px;align-items:flex-start;flex-wrap:wrap;gap:0 12px}.recording-settings-notes{padding:13px 14px;gap:11px}.recording-settings-notes p,#settings-recording-status,#settings-recording-error{font-size:10px}#settings-recording-retry{min-height:40px}.settings-tabs>button{min-width:0;gap:5px;padding:9px 7px;font-size:10px}}
+@media(max-width:540px){.settings-tabs>button>svg{display:none}.settings-tabs>button{padding:9px 5px}}

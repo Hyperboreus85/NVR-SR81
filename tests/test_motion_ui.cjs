@@ -147,9 +147,9 @@ test("destroy releases the pending request and removes all controller listeners"
 test("the motion track follows audio in the player and the app wires selection, logout, language and playback without replacing audio", () => {
   const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8");
   const app = readFileSync(join(__dirname, "../nvr/static/app.js"), "utf8");
-  const motionScript = html.indexOf('/static/motion-track.js?v=0.7.0');
-  assert.ok(motionScript > 0 && motionScript < html.indexOf('/static/app.js?v=0.7.0'));
-  assert.equal((html.match(/\?v=0\.7\.0/g) || []).length, 6);
+  const motionScript = html.indexOf('/static/motion-track.js?v=0.8.0');
+  assert.ok(motionScript > 0 && motionScript < html.indexOf('/static/app.js?v=0.8.0'));
+  assert.equal((html.match(/\?v=0\.8\.0/g) || []).length, 6);
   assert.match(html, /class="waveform-box"[\s\S]*?<section class="motion-box"[\s\S]*?<div class="recordings-column">/);
   for (const id of ["waveform", "waveform-cursor", "motion-track", "motion-markers", "motion-cursor", "motion-status", "motion-error", "motion-sensitivity", "motion-previous", "motion-next", "motion-retry", "motion-event-position"]) assert.equal((html.match(new RegExp('id="' + id + '"', "g")) || []).length, 1);
   assert.match(app, /motionTrack\?\.clear\(\)/);

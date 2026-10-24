@@ -5,6 +5,7 @@ import io
 import os
 import shutil
 import socket
+import struct
 import tempfile
 import time
 import unittest
@@ -189,6 +190,211 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await second, output)
         self.assertEqual(calls, 1)
 
+    async def test_playback_preflight_rejects_insufficient_cache_space_before_spawning(self):
+        recording, source = self.add_file("source.mkv")
+        with patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(free=0)), \
+             patch.object(self.media, "_spawn", new=AsyncMock()) as spawn:
+            with self.assertRaisesRegex(MediaError, "Insufficient cache storage"):
+                await self.media.playback(recording)
+            spawn.assert_not_called()
+        self.assertNotIn(source.resolve(), self.media._in_use)
+        self.assertFalse(list(self.settings.cache_dir.iterdir()))
+
+    async def test_playback_stops_and_removes_partial_when_cache_reserve_is_reached(self):
+        recording, source = self.add_file("source.mkv")
+        process = SimpleNamespace(returncode=None, wait=AsyncMock(), stdin=None)
+
+        async def spawn(*args, **kwargs):
+            Path(args[-1]).write_bytes(b"partial conversion")
+            return process
+
+        stopped = AsyncMock()
+        with patch.object(self.media, "_spawn", spawn), \
+             patch.object(self.media, "_ensure_cache_space", side_effect=[None, MediaError("Insufficient cache storage")]), \
+             patch("nvr.media._stop_process", stopped):
+            with self.assertRaisesRegex(MediaError, "Insufficient cache storage"):
+                await self.media.playback(recording)
+        stopped.assert_awaited_once_with(process)
+        self.assertFalse(list(self.settings.cache_dir.iterdir()))
+        self.assertNotIn(source.resolve(), self.media._in_use)
+
+    async def test_concurrent_playback_preflights_reserve_remaining_output_bytes(self):
+        recording, _ = self.add_file("source.mkv")
+        self.media.recording_path(recording).write_bytes(b"x" * 1000)
+        started, finish = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def spawn(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            output = Path(args[-1])
+            process = SimpleNamespace(returncode=None, stdin=None)
+
+            async def wait():
+                await finish.wait()
+                output.write_bytes(b"x" * 1000)
+                process.returncode = 0
+                return 0
+
+            process.wait = wait
+            started.set()
+            return process
+
+        with patch.object(self.media, "_spawn", spawn), \
+             patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(free=512 * 1024**2 + 2500)):
+            first = asyncio.create_task(self.media.playback(recording))
+            try:
+                await started.wait()
+                with self.assertRaisesRegex(MediaError, "Insufficient cache storage"):
+                    await self.media.playback(recording, compatible=True)
+                self.assertEqual(calls, 1)
+                self.assertEqual(len(self.media._cache_reservations), 1)
+            finally:
+                finish.set()
+                await first
+        self.assertFalse(self.media._cache_reservations)
+
+    async def test_long_playback_has_a_scaled_bounded_deadline(self):
+        recording, _ = self.add_file("two-hours.mkv", duration=7200)
+        deadlines = []
+        wait_for = asyncio.wait_for
+
+        async def spawn(*args, **kwargs):
+            Path(args[-1]).write_bytes(b"converted")
+            return SimpleNamespace(returncode=0, stdin=None)
+
+        async def timed(awaitable, timeout):
+            deadlines.append(timeout)
+            return await wait_for(awaitable, timeout)
+
+        with patch.object(self.media, "_spawn", spawn), patch("nvr.media.asyncio.wait_for", timed):
+            result = await self.media.playback(recording)
+        self.assertTrue(result.exists())
+        self.assertEqual(deadlines, [21600])
+
+    async def test_pruning_keeps_newest_oversized_mp4_and_protects_active_leases(self):
+        self.settings.cache_max_bytes = 100
+        old, newest, metadata = [self.settings.cache_dir / name for name in ["a" * 64 + ".mp4", "b" * 64 + ".mp4", "c" * 64 + ".json"]]
+        old.write_bytes(b"x" * 120)
+        newest.write_bytes(b"x" * 140)
+        metadata.write_bytes(b"{}")
+        now = time.time()
+        os.utime(old, (now - 20, now - 20))
+        os.utime(newest, (now, now))
+        self.media._prune_cache()
+        self.assertFalse(old.exists())
+        self.assertTrue(newest.exists() and metadata.exists())
+        old.write_bytes(b"x" * 160)
+        os.utime(old, (now - 10, now - 10))
+        self.media._cache_leases[old] = 1
+        self.media._prune_cache()
+        self.assertTrue(old.exists() and newest.exists())
+        self.media._cache_leases.clear()
+        newest.unlink()
+        os.utime(old, (now - 90000, now - 90000))
+        self.media._prune_cache()
+        self.assertFalse(old.exists())
+
+    async def test_cache_cleanup_and_storage_pressure_never_delete_foreign_files(self):
+        self.settings.cache_max_bytes = 0
+        foreign = [self.settings.cache_dir / name for name in [
+            "original.mkv", "credentials.key", "foreign.json", "foreign.part.json", "f" * 64 + ".mkv"]]
+        old = time.time() - 90000
+        for path in foreign:
+            path.write_bytes(b"must survive cache cleanup")
+            os.utime(path, (old, old))
+        owned = self.settings.cache_dir / ("d" * 64 + ".json")
+        part = self.settings.cache_dir / ("e" * 64 + ".part.mp4")
+        for path in [owned, part]:
+            path.write_bytes(b"stale generated cache")
+            os.utime(path, (old, old))
+        self.media._prune_cache()
+        self.assertFalse(owned.exists() or part.exists())
+        with patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(free=0)):
+            with self.assertRaisesRegex(MediaError, "Insufficient cache storage"):
+                self.media._ensure_cache_space(100)
+        self.assertTrue(all(path.read_bytes() == b"must survive cache cleanup" for path in foreign))
+
+    async def test_cache_cleanup_ignores_generated_names_that_are_symlinks_outside_cache(self):
+        outside = Path(self.tmp.name) / "outside.json"
+        outside.write_bytes(b"outside file")
+        os.utime(outside, (time.time() - 90000, time.time() - 90000))
+        links = [self.settings.cache_dir / ("1" * 64 + ".json"),
+                 self.settings.cache_dir / ("2" * 64 + ".part.mp4")]
+        try:
+            for link in links:
+                link.symlink_to(outside)
+        except OSError:
+            self.skipTest("Creating symlinks is unavailable on this platform")
+        self.settings.cache_max_bytes = 0
+        self.media._prune_cache()
+        self.assertTrue(all(link.is_symlink() for link in links))
+        self.assertEqual(outside.read_bytes(), b"outside file")
+
+    async def test_playback_lease_is_pinned_before_waiting_and_released_after_response(self):
+        recording, _ = self.add_file("source.mkv")
+        destination = self.media._cache_path(recording, "copy-v1", "mp4")
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def playback(*args, **kwargs):
+            self.assertEqual(self.media._cache_leases[destination], 1)
+            destination.write_bytes(b"cached mp4")
+            os.utime(destination, (time.time() - 90000, time.time() - 90000))
+            entered.set()
+            await finish.wait()
+            return destination
+
+        lease = self.media.playback_lease(recording)
+        with patch.object(self.media, "playback", playback):
+            opening = asyncio.create_task(lease.__aenter__())
+            await entered.wait()
+            self.media._prune_cache()
+            self.assertTrue(destination.exists())
+            finish.set()
+            self.assertEqual(await opening, destination)
+            self.media._prune_cache()
+            self.assertTrue(destination.exists())
+            await lease.__aexit__(None, None, None)
+        self.assertFalse(self.media._cache_leases)
+        self.media._prune_cache()
+        self.assertFalse(destination.exists())
+
+    async def test_playback_lease_releases_pin_on_conversion_failure(self):
+        recording, _ = self.add_file("source.mkv")
+        with patch.object(self.media, "playback", AsyncMock(side_effect=MediaError("conversion failed"))):
+            with self.assertRaises(MediaError):
+                async with self.media.playback_lease(recording):
+                    self.fail("Failed playback must not yield")
+        self.assertFalse(self.media._cache_leases)
+
+    async def test_waveform_pins_source_while_queued_and_shutdown_releases_it(self):
+        recording, source = self.add_file("expired.mkv", time.time() - 9 * 86400)
+        await self.media._transcode_slots.acquire()
+        await self.media._transcode_slots.acquire()
+        with patch.object(self.media, "_spawn", AsyncMock()) as spawn:
+            request = asyncio.create_task(self.media.waveform(recording))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(self.media._in_use[source.resolve()], 1)
+            await self.media._retention()
+            self.assertTrue(source.exists())
+            await self.media.stop()
+            await asyncio.gather(request, return_exceptions=True)
+            spawn.assert_not_called()
+        self.assertFalse(self.media._in_use)
+
+    async def test_waveform_chunk_boundaries_preserve_peaks_and_ignore_nonfinite_audio(self):
+        recording, _ = self.add_file("audio.mkv", duration=.5)
+        values = [0.] * 3999 + [.5] + [float("nan"), float("inf"), -float("inf"), -.9] + [0.] * 3996
+        pcm = struct.pack(f"<{len(values)}f", *values)
+        chunks = [pcm[index:index + 17] for index in range(0, len(pcm), 17)] + [b""]
+        process = SimpleNamespace(stdout=SimpleNamespace(read=AsyncMock(side_effect=chunks)), returncode=0,
+                                  stdin=None, wait=AsyncMock(return_value=0))
+        with patch.object(self.media, "_spawn", AsyncMock(return_value=process)):
+            result = await self.media.waveform(recording)
+        self.assertEqual(result["peaks"], [.5, .9])
+        self.assertEqual(result["sample_seconds"], .25)
+
     async def test_live_preview_releases_process_after_last_viewer(self):
         entered, exited = asyncio.Event(), asyncio.Event()
         async def fake_worker(hub):
@@ -277,6 +483,24 @@ class RealMediaTests(MediaTests):
         self.assertEqual((await self.media._probe_file(native))["video_codec"], "hevc")
         compatible = await self.media.playback(record, compatible=True)
         self.assertEqual((await self.media._probe_file(compatible))["video_codec"], "h264")
+
+    async def test_real_two_hour_waveform_has_bounded_bins_and_detects_alarm_tone(self):
+        self.settings.ffmpeg, self.settings.ffprobe = FFMPEG, FFPROBE
+        recording, source = self.add_file("two-hours.mkv", duration=7200, audio_codec="pcm_alaw")
+        fixture = await asyncio.create_subprocess_exec(
+            FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "color=c=black:size=64x64:rate=1/10", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=8000",
+            "-t", "7200", "-c:v", "libx264", "-preset", "ultrafast", "-g", "1", "-threads", "1",
+            "-c:a", "pcm_alaw", str(source), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, error = await asyncio.wait_for(fixture.communicate(), 45)
+        self.assertEqual(fixture.returncode, 0, error.decode(errors="replace"))
+        result = await asyncio.wait_for(self.media.waveform(recording), 90)
+        self.assertEqual(result["duration"], 7200)
+        self.assertEqual(result["sample_seconds"], 6)
+        self.assertEqual(len(result["peaks"]), 1200)
+        self.assertTrue(all(.05 < peak <= 1 for peak in result["peaks"]))
+        self.assertFalse(self.media._in_use)
+        self.assertFalse(list(self.settings.cache_dir.glob("*.part.*")))
 
     async def test_real_http_recording_preview_shutdown_and_recovery(self):
         fixture = Path(self.tmp.name) / "camera.mkv"

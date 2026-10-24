@@ -1,6 +1,6 @@
-# Impostazioni e lingue
+# Impostazioni, registrazione e lingue
 
-La versione 0.7.0 gestisce le traduzioni come **file JSON installabili** nella sola pagina **Settings → Languages**. La scheda Translations e l'editor dei singoli vocaboli sono rimossi. Inglese e italiano sono inclusi; nuovi pacchetti si installano e si selezionano in Languages. Non sono richiesti servizi esterni o un riavvio. La barra sinistra mantiene icone e nomi in stile M777.
+La versione 0.8.0 aggiunge la durata globale dei file in **Settings → Recording** e gestisce le lingue come **file JSON installabili** nella pagina **Settings → Languages**. Inglese e italiano sono inclusi; nuovi pacchetti si installano e si selezionano in Languages. Non sono richiesti servizi esterni. La barra sinistra mantiene icone e nomi in stile M777.
 
 La pagina usa righe compatte per i pacchetti e raccoglie installazione e modello JSON in due riquadri affiancati sul desktop, disposti in colonna sul telefono. La grafica riprende le superfici piatte e i bordi sottili di M777, con una base grigio titanio e accenti verde acqua per comandi, selezioni, timeline e forma d'onda.
 
@@ -12,7 +12,29 @@ La preferenza viene salvata nel browser. Ogni dispositivo può usare una lingua 
 
 ## Impostazioni generali
 
-**Settings → General** mostra versione, spazio libero, limiti delle dirette e durata effettiva dei file di registrazione, predefinita a **30 minuti**. Il layout del monitor può essere scelto tra 1, 4, 9 e 16 riquadri e viene ricordato dal browser. I parametri del servizio rimangono nei rispettivi file di configurazione.
+**Settings → General** mostra versione, spazio libero, limiti delle dirette e durata effettiva dei file di registrazione. Il layout del monitor può essere scelto tra 1, 4, 9 e 16 riquadri e viene ricordato dal browser.
+
+## Durata dei file di registrazione
+
+Accedere come amministratore e, in **Settings → Recording**, scegliere **1, 2, 3, 4, 5 minuti**, oppure da **10 a 120 minuti a passi di 5**. Il valore predefinito e consigliato dal progetto è **30 minuti**. La durata vale per tutte le telecamere registrate da questo NVR.
+
+Premere **Save / Salva** per applicarla. Il recorder chiude regolarmente i file in corso e avvia i successivi con il nuovo valore; il servizio rimane avviato. I video già archiviati mantengono durata e contenuto originali. Il file chiuso durante il cambio può essere più corto del valore precedente.
+
+La scelta viene salvata nel database del recorder, rimane dopo riavvii e aggiornamenti e vale anche per gli altri browser. Prevale su `NVR_SEGMENT_SECONDS`, che fornisce il valore iniziale finché non è stata salvata una scelta nell'applicazione. Includere il database nel backup della configurazione.
+
+| Scelta | Effetto pratico |
+|---|---|
+| 1–5 minuti | I file completati diventano consultabili prima; il numero di file aumenta. |
+| 10–30 minuti | Un compromesso iniziale per la consultazione; 30 minuti è la raccomandazione di questo progetto. |
+| 35–120 minuti | Meno file, con maggiore attesa per la chiusura e più lavoro per preparare riproduzione, audio e movimento del singolo file. |
+
+Il lettore apre i segmenti completati. Con 120 minuti il file in corso può restare non consultabile per circa due ore, oltre all'attesa del fotogramma chiave utile al taglio. Il Monitor live rimane disponibile. I tagli seguono i keyframe della telecamera, quindi la durata è approssimativa; una disconnessione o un arresto regolare può creare un file più corto.
+
+La registrazione copia il flusso originale: scegliere file più lunghi non diminuisce lo spazio giornaliero richiesto dal video. A 4 Mbit/s, un file di due ore occupa circa 3,6 GB prima di audio e overhead; la consultazione può richiedere un'ulteriore copia MP4. Verificare lo spazio della cache e i tempi di preparazione, soprattutto con H.265 o hardware meno recente. [Dettagli di registrazione e consultazione](architecture.md#registrazione-originale-e-riproduzione-web).
+
+Per i file lunghi consigliamo di collocare la cache sul disco delle registrazioni. Le nuove installazioni con l'installer nativo e Compose usano la sottodirectory `.cache` dell'archivio; un servizio esistente conserva la propria configurazione. Il percorso si imposta con `NVR_CACHE_DIR` nel file ambiente del servizio e richiede il suo riavvio. Se la variabile è assente, rimane `NVR_DATA_DIR/cache`. Cambiare percorso conserva la vecchia cache al suo posto. Il budget di circa 2 GiB è morbido: il più recente MP4 può superarlo, e i file in uso da una richiesta sono protetti. Una preparazione che esaurirebbe lo spazio viene interrotta, rimuovendo i file temporanei.
+
+Usare una directory dedicata: all'interno dell'archivio sono accettate solo `.cache` e le sue sottodirectory, separate dalle cartelle delle telecamere. La pulizia riguarda soltanto i file generati dalla cache; non elimina file estranei o collegamenti simbolici.
 
 ## Sensibilità del movimento nel lettore
 

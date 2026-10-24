@@ -6,7 +6,8 @@ SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 NVR_ROOT="${NVR_ROOT:-$SOURCE_DIR}"
 NVR_DATA_DIR="${NVR_DATA_DIR:-/var/lib/nvr-sr81}"
 NVR_RECORDINGS_DIR="${NVR_RECORDINGS_DIR:-/srv/nvr-recordings}"
-for directory in "$NVR_ROOT" "$NVR_DATA_DIR" "$NVR_RECORDINGS_DIR"; do
+NVR_CACHE_DIR="${NVR_CACHE_DIR:-$NVR_RECORDINGS_DIR/.cache}"
+for directory in "$NVR_ROOT" "$NVR_DATA_DIR" "$NVR_RECORDINGS_DIR" "$NVR_CACHE_DIR"; do
   [[ "$directory" == /* && "$directory" != / && "$directory" != *$'\n'* && "$directory" != *'"'* && "$directory" != *'%'* && "$directory" != *' '* ]] || {
     echo 'Usare percorsi assoluti senza spazi, virgolette, newline o percentuali.' >&2; exit 1;
   }
@@ -36,12 +37,12 @@ if ! id nvr-sr81 >/dev/null 2>&1; then
 fi
 [[ "$(id -u nvr-sr81)" == 10001 && "$(id -g nvr-sr81)" == 10001 ]] || { echo 'nvr-sr81 deve avere UID/GID 10001.' >&2; exit 1; }
 # Cambia soltanto il proprietario delle directory designate, mai ricorsivamente.
-install -d -m 750 -o nvr-sr81 -g nvr-sr81 "$NVR_DATA_DIR" "$NVR_RECORDINGS_DIR"
+install -d -m 750 -o nvr-sr81 -g nvr-sr81 "$NVR_DATA_DIR" "$NVR_RECORDINGS_DIR" "$NVR_CACHE_DIR"
 install -d -m 700 /etc/nvr-sr81
 python3 -m venv "$NVR_ROOT/.venv"
 "$NVR_ROOT/.venv/bin/pip" install "$NVR_ROOT"
 if [[ ! -e /etc/nvr-sr81/environment ]]; then
-  export NVR_DATA_DIR NVR_RECORDINGS_DIR
+  export NVR_DATA_DIR NVR_RECORDINGS_DIR NVR_CACHE_DIR
   python3 - <<'PY'
 import os
 from pathlib import Path
@@ -55,6 +56,7 @@ def quote(value):
 config = {'NVR_HOST': '0.0.0.0', 'NVR_PORT': '8080',
           'NVR_DATA_DIR': os.environ['NVR_DATA_DIR'],
           'NVR_RECORDINGS_DIR': os.environ['NVR_RECORDINGS_DIR'],
+          'NVR_CACHE_DIR': os.environ['NVR_CACHE_DIR'],
           'NVR_SEGMENT_SECONDS': os.environ.get('NVR_SEGMENT_SECONDS', '1800'),
           'NVR_MIN_FREE_GB': os.environ.get('NVR_MIN_FREE_GB', '5'), 'NVR_ADMIN_PASSWORD': password}
 path = Path('/etc/nvr-sr81/environment')
@@ -74,14 +76,14 @@ if [[ "$(systemd-detect-virt --container 2>/dev/null || true)" != lxc ]]; then
   MOUNT_SANDBOX="PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$NVR_DATA_DIR $NVR_RECORDINGS_DIR"
+ReadWritePaths=$NVR_DATA_DIR $NVR_RECORDINGS_DIR $NVR_CACHE_DIR"
 fi
 cat > /etc/systemd/system/nvr-sr81.service <<EOF
 [Unit]
 Description=NVR-SR81 local network video recorder
 After=network-online.target
 Wants=network-online.target
-RequiresMountsFor=$NVR_RECORDINGS_DIR $NVR_DATA_DIR
+RequiresMountsFor=$NVR_RECORDINGS_DIR $NVR_DATA_DIR $NVR_CACHE_DIR
 
 [Service]
 Type=simple

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
 import re
+import sqlite3
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -19,12 +20,32 @@ from .config import Settings
 from .discovery import DiscoveryError, discover, list_interfaces, scan_network
 from .live import LiveError, LiveManager
 from .languages import LanguageError, LanguageManager, MAX_PACK_BYTES
-from .media import MediaManager
+from .media import MediaError, MediaManager
 from .onvif import get_profiles
+from .preferences import SEGMENT_PREFERENCE_KEY, recording_preferences, restore_recording_preferences
 from .security import Auth, redact_url, validate_stream_url
 from .store import Store
 
 LIVE_AUTH_CHECK_SECONDS = 15
+
+
+class LeasedFileResponse(FileResponse):
+    """Release a cached artifact even when a Range response disconnects."""
+
+    def __init__(self, path, *, lease, **kwargs):
+        super().__init__(path, **kwargs)
+        self.lease = lease
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self.lease.__aexit__(None, None, None)
+
+
+class RecordingPreferencesInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    segment_minutes: int = Field(strict=True, ge=1, le=120)
 
 
 class CameraInput(BaseModel):
@@ -62,6 +83,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     if settings.password and len(settings.password) < 12:
         raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
     store = Store(settings.data_dir)
+    restore_recording_preferences(store, settings)
     auth = Auth(store, settings.password)
     languages = LanguageManager(settings.data_dir / "languages", Path(__file__).parent / "locales")
     languages.migrate_legacy(store)
@@ -74,6 +96,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     active_scan_session: str | None = None
     login_jobs = asyncio.Semaphore(2)
     mutation_lock = asyncio.Lock()
+    recording_updates: set[asyncio.Task] = set()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -92,6 +115,8 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             await realtime.start()
             yield
         finally:
+            if recording_updates:
+                await asyncio.gather(*tuple(recording_updates), return_exceptions=True)
             if active_scan is not None:
                 active_scan.cancel()
                 await asyncio.gather(active_scan, return_exceptions=True)
@@ -173,6 +198,13 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         try:
             async with media_jobs:
                 return await operation()
+        except MediaError as error:
+            safe_errors = {
+                "Insufficient cache storage for playback. Free space or configure NVR_CACHE_DIR on a larger disk.",
+                "Playback cache storage is unavailable.",
+            }
+            detail = str(error) if str(error) in safe_errors else "Media operation failed. Check the stream and FFmpeg."
+            raise HTTPException(503, detail) from None
         except (ValueError, RuntimeError, OSError, asyncio.TimeoutError):
             raise HTTPException(503, "Media operation failed. Check the stream and FFmpeg.") from None
 
@@ -422,8 +454,13 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     @app.get("/api/recordings/{recording_id}/playback")
     async def playback(recording_id: str, compatible: bool = False):
         recording, _ = recording_or_404(recording_id)
-        path = await media_result(lambda: media.playback(recording, compatible))
-        return FileResponse(path, media_type="video/mp4")
+        lease = media.playback_lease(recording, compatible)
+        path = await media_result(lease.__aenter__)
+        try:
+            return LeasedFileResponse(path, lease=lease, media_type="video/mp4")
+        except BaseException:
+            await lease.__aexit__(None, None, None)
+            raise
 
     @app.get("/api/recordings/{recording_id}/waveform")
     async def waveform(recording_id: str):
@@ -505,6 +542,49 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             raise HTTPException(504, "The camera did not finish returning its profiles. Try again or check its ONVIF services.") from None
         except (ValueError, RuntimeError, OSError):
             raise HTTPException(422, "ONVIF unavailable. Check the endpoint, credentials and camera clock.") from None
+
+    @app.get("/api/settings/recording")
+    def get_recording_preferences():
+        return recording_preferences(settings)
+
+    @app.put("/api/settings/recording")
+    async def save_recording_preferences(data: RecordingPreferencesInput, request: Request):
+        if data.segment_minutes not in recording_preferences(settings)["allowed_minutes"]:
+            raise HTTPException(422, "Choose one of the supported recording durations.")
+
+        async def apply():
+            async with mutation_lock:
+                # A save queued behind another mutation must not outlive logout.
+                if not auth.valid(request.cookies.get("nvr_session")):
+                    raise HTTPException(401, "Authentication required")
+                previous = settings.segment_seconds
+                saved = store.meta_get(SEGMENT_PREFERENCE_KEY)
+                seconds = data.segment_minutes * 60
+                try:
+                    store.meta_set(SEGMENT_PREFERENCE_KEY, str(seconds))
+                    if seconds != previous:
+                        await media.set_segment_seconds(seconds)
+                except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                    with contextlib.suppress(OSError, RuntimeError, ValueError, sqlite3.Error):
+                        if saved is None:
+                            store.meta_delete(SEGMENT_PREFERENCE_KEY)
+                        else:
+                            store.meta_set(SEGMENT_PREFERENCE_KEY, saved)
+                    with contextlib.suppress(OSError, RuntimeError, ValueError, sqlite3.Error):
+                        await media.set_segment_seconds(previous)
+                    settings.segment_seconds = previous
+                    raise HTTPException(503, "Recording settings could not be applied. Try again.") from None
+                return recording_preferences(settings) | {"changed": seconds != previous}
+
+        # Finish one atomic save even if its browser disconnects during rollover.
+        operation = asyncio.create_task(apply())
+        recording_updates.add(operation)
+        def finished(task):
+            recording_updates.discard(task)
+            if not task.cancelled():
+                task.exception()
+        operation.add_done_callback(finished)
+        return await asyncio.shield(operation)
 
     @app.get("/api/system")
     def system():

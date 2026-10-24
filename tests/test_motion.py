@@ -58,9 +58,9 @@ def test_events_merge_short_quiet_gaps_and_clamp_to_recording_duration():
     assert analyzer.result()["events"][0]["end"] == 2  # callers cannot mutate internal state
 
 
-@pytest.mark.parametrize("duration", [0, -1, float("nan"), float("inf"), 3600.1])
+@pytest.mark.parametrize("duration", [0, -1, float("nan"), float("inf"), 7260.1])
 def test_invalid_or_overlong_recordings_are_rejected(duration):
-    with pytest.raises(ValueError, match="up to 60 minutes"):
+    with pytest.raises(ValueError, match="up to 2 hours"):
         MotionAnalyzer(duration)
 
 
@@ -74,7 +74,8 @@ def test_invalid_sensitivity_partial_frames_and_excessive_output_are_rejected():
         analyzer.push(BLACK)
     with pytest.raises(ValueError, match="duration"):
         analyzer.push(BLACK)
-    assert motion_timeout(1) == 60 and motion_timeout(1800) == 600 and motion_timeout(3600) == 600
+    assert motion_timeout(1) == 60 and motion_timeout(1800) == 900 and motion_timeout(7200.28) == 3600
+    assert MotionAnalyzer(7200.28).max_frames == 14403
 
 
 class MemoryStore:
@@ -256,7 +257,7 @@ async def test_motion_rejects_invalid_inputs_before_starting_ffmpeg(media_fixtur
     media, recording, _ = media_fixture
     with patch.object(media, "_spawn", AsyncMock()) as spawn:
         for values, sensitivity in [(recording, "invalid"), ({**recording, "duration": "secret-url"}, "medium"),
-                                    ({**recording, "duration": 3601}, "medium")]:
+                                    ({**recording, "duration": 7261}, "medium")]:
             with pytest.raises(MediaError) as caught:
                 await media.motion(values, sensitivity)
             assert "secret-url" not in str(caught.value)
@@ -308,20 +309,20 @@ async def test_real_static_and_moving_box_known_window(media_fixture, codec):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not FFMPEG, reason="FFmpeg required")
-async def test_real_virtual_hour_static_recording_is_supported(media_fixture):
+async def test_real_virtual_two_hour_recording_with_keyframe_overrun_is_supported(media_fixture):
     media, recording, source = media_fixture
     media.settings.ffmpeg = FFMPEG
-    recording["duration"] = 3600
+    recording["duration"] = 7200.28
     process = await asyncio.create_subprocess_exec(
         FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
-        "color=c=black:size=64x64:rate=1", "-t", "3600", "-c:v", "libx264", "-preset", "ultrafast",
+        "color=c=black:size=64x64:rate=1", "-t", "7200.28", "-c:v", "libx264", "-preset", "ultrafast",
         "-g", "60", "-threads", "1", str(source), stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE)
     _, error = await asyncio.wait_for(process.communicate(), 30)
     assert process.returncode == 0, error.decode(errors="replace")
     try:
         result = await asyncio.wait_for(media.motion(recording), 60)
-        assert result["duration"] == 3600 and result["events"] == []
+        assert result["duration"] == 7200.28 and result["events"] == []
         assert result["sample_seconds"] == .5
         assert sum(path.stat().st_size for path in media.cache_dir.iterdir()) < 256
     finally:
