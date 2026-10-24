@@ -20,6 +20,8 @@ bash deploy/proxmox-create.sh \
 
 Il controllo preliminare legge configurazione, ID, disponibilità storage, bridge e catalogo già presente; non scarica template né crea il container. Se il catalogo non è aggiornato, eseguire `pveam update` e ripetere il controllo. Quando il riepilogo è corretto, eseguire lo stesso comando togliendo `--dry-run`.
 
+Lo script usa `umask 022` per i comandi Proxmox: le directory create sul nodo devono essere attraversabili dall'UID mappato del container durante l'estrazione del template. Una maschera `077` creerebbe cartelle `0700` di root, causando `tar: .../rootfs: Cannot open: Permission denied`. I file contenenti la password sono invece creati esplicitamente con permessi `0600` dentro il guest. Vengono controllati anche l'accesso a `/var/lib/lxc` dal namespace non privilegiato e l'eventuale presenza di una directory residua per l'ID scelto.
+
 Il disco di sistema e il volume archivio sono separati anche se usano lo stesso storage fisico. Le dimensioni `--root-gb` e `--recordings-gb` sono in **GiB**, come richiesto da Proxmox. Per la capienza scegliere il bitrate e i giorni di conservazione descritti in [architettura](architecture.md). [Mount point e volumi gestiti Proxmox](https://github.com/proxmox/pve-docs/blob/master/pct.adoc#mount-points)
 
 Impostazioni iniziali: Debian 12, 2 core, 2048 MiB RAM, 512 MiB swap, sistema 8 GiB, archivio 100 GiB, bridge `vmbr0`, IPv4 da DHCP e avvio automatico del container. Sono valori di partenza: non indicano quanti flussi potrà gestire l'hardware. `--debian 13` seleziona Debian 13 se supportato dal nodo e disponibile nel catalogo.
@@ -54,6 +56,12 @@ bash deploy/proxmox-create.sh \
 
 Un bind mount segue lo spazio libero del filesystem host: non ha la quota `--recordings-gb`, che riguarda soltanto i volumi gestiti. La riserva NVR predefinita è **5 GB decimali**, modificabile con `--min-free-gb`; è il minimo libero prima di eliminare le registrazioni più vecchie, non una quota riservata in esclusiva. Un archivio dedicato evita che la rotazione debba competere con dati di altri programmi.
 
+### Spazio fisico di uno storage LVM thin
+
+Le dimensioni assegnate ai dischi sono virtuali: la loro somma può superare la capacità fisica del pool. Lo script mostra dimensione del pool, utilizzo dati/metadati e dimensioni virtuali previste per gli storage `lvmthin`, segnalando l'eventuale sovra-allocazione. Il controllo iniziale dello spazio disponibile non prenota i blocchi per il futuro. La riserva di 5 GB vista dall'NVR riguarda il filesystem del guest e **non protegge il pool condiviso** se altri dischi lo riempiono. [Documentazione ufficiale LVM thin Proxmox](https://github.com/proxmox/pve-docs/blob/master/pve-storage-lvmthin.adoc)
+
+Esempio: con un pool da 141,1 GiB e dischi esistenti da 20 e 64 GiB, aggiungere 8 GiB di sistema e 50 GiB di archivio porta il totale virtuale a 142 GiB. Un archivio da 40 GiB porta invece il totale a 132 GiB, lasciando circa 9 GiB di margine se tutti questi dischi si riempissero, prima di ulteriori volumi o snapshot. Lo spazio libero del gruppo LVM non aumenta automaticamente il pool: lo script non modifica il dimensionamento del nodo.
+
 ## Codice, password e primo accesso
 
 Il sorgente viene prelevato da questo repository al riferimento `codex/initial-nvr`. Con `--ref` si può scegliere un tag o, per una versione riproducibile, uno specifico commit. Lo script registra nel clone il commit effettivamente installato; non effettua aggiornamenti automatici.
@@ -66,7 +74,21 @@ Aprire `http://IP-DEL-CONTAINER:8080` dalla LAN, entrare con la password mostrat
 
 ## Errori, backup e manutenzione
 
-Un ID occupato viene rifiutato e non viene sostituito. In caso di errore il container e i volumi già creati vengono conservati per consentire l'analisi: ripetere la creazione con lo stesso ID fallirà intenzionalmente. Non esistono cancellazioni automatiche o tentativi di ripristino che possano rimuovere registrazioni.
+Un ID occupato viene rifiutato e non viene sostituito. Lo script non esegue rimozioni automatiche in caso di errore. Il comando Proxmox `pct create` può però annullare la propria creazione incompleta, rimuovendo i volumi appena allocati e la configurazione del nuovo guest. Possono rimanere cartelle vuote sul nodo. Se invece il container risulta creato, viene conservato per consentire l'analisi: ripetere la creazione con lo stesso ID fallirà intenzionalmente.
+
+Se l'estrazione si è fermata con `Permission denied`, verificare dalla Shell del nodo (unica riga):
+
+```bash
+bash -c 'pct status 181; namei -l /var/lib/lxc/181/rootfs'
+```
+
+Se la configurazione 181 non esiste, il log conferma la rimozione dei nuovi volumi e rimangono soltanto le directory vuote del tentativo, si possono rimuovere **solo queste due directory**:
+
+```bash
+rmdir -- /var/lib/lxc/181/rootfs /var/lib/lxc/181
+```
+
+`rmdir` si rifiuta di rimuovere directory non vuote, symlink e mount attivi. Se fallisce, fermarsi e controllare il contenuto anziché usare una rimozione ricorsiva o modificare i permessi dell'intero albero. Sostituire `181` solo con l'ID effettivamente usato nel tentativo fallito e verificato libero. Scaricare poi lo script aggiornato e ripetere prima il controllo `--dry-run`.
 
 Dal nodo, per controllare un'installazione interrotta:
 

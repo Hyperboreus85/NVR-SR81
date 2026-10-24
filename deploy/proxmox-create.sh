@@ -2,7 +2,10 @@
 # Run on a Proxmox VE node. Never replaces an existing guest or deletes on failure.
 set -Eeuo pipefail
 set +x
-umask 077
+# Proxmox creates host directories traversed by the container's mapped UID
+# 100000 during extraction. A restrictive inherited mask makes those paths 0700.
+# Guest credential files are separately created with an explicit 0600 mode.
+umask 022
 
 CTID=''
 ROOT_STORAGE=''
@@ -83,7 +86,7 @@ while (($#)); do
 done
 
 [[ $EUID -eq 0 ]] || die 'Eseguire come root sul nodo Proxmox VE.'
-for command in pct pveam pvesm pvesh python3 awk sort realpath stat flock; do
+for command in pct pveam pvesm pvesh python3 awk sort realpath stat flock lxc-usernsexec; do
     command -v "$command" >/dev/null || die "Comando richiesto non disponibile: $command"
 done
 [[ -d /etc/pve/nodes ]] || die 'Questo sistema non sembra un nodo Proxmox VE.'
@@ -125,6 +128,13 @@ PY
 exec 9>"/run/lock/nvr-sr81-create-${CTID}.lock"
 flock -n 9 || die 'Una creazione per questo ID è già in corso.'
 pvesh get /cluster/nextid --vmid "$CTID" >/dev/null || die "ID $CTID già occupato o cluster non disponibile. Nessun guest verrà sovrascritto."
+CT_DIRECTORY="/var/lib/lxc/${CTID}"
+if [[ -e $CT_DIRECTORY || -L $CT_DIRECTORY ]]; then
+    die "ID libero ma directory $CT_DIRECTORY già presente. Verificare eventuali residui del tentativo precedente prima di riprovare; lo script non ne modifica permessi o contenuto."
+fi
+if ! lxc-usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- /usr/bin/test -x /var/lib/lxc; then
+    die 'Il percorso /var/lib/lxc non è attraversabile dal container non privilegiato. Verificare i permessi con namei -l /var/lib/lxc prima di creare volumi.'
+fi
 
 storage_free_kib() {
     local available
@@ -155,6 +165,71 @@ else
     MOUNT="${canonical},mp=/recordings,backup=0"
 fi
 ((root_free >= required_root)) || die 'Spazio insufficiente sullo storage di sistema per i volumi richiesti.'
+
+# A guest filesystem reserve cannot protect a shared overprovisioned thin pool.
+# Report current backing capacity without extending or changing host storage.
+python3 - "$ROOT_STORAGE" "$ROOT_GB" "$RECORDINGS_STORAGE" "$RECORDINGS_GB" <<'THIN_POOL_PY'
+"""Read-only LVM-thin report; informational warnings never prevent creation."""
+import json
+import math
+import subprocess
+import sys
+
+GIB = 1024**3
+
+def read(*args):
+    return json.loads(subprocess.run(args, check=True, capture_output=True, text=True, timeout=15).stdout)
+
+def rows(document, kind):
+    return [row for report in document["report"] for row in report.get(kind, [])]
+
+def number(value):
+    value = float(str(value).strip().lstrip("<>"))
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("Invalid LVM value")
+    return value
+
+
+def main(argv):
+    try:
+        root, root_gb, recordings, recordings_gb = argv
+        requests = [(root, int(root_gb)), (recordings, int(recordings_gb))]
+    except (ValueError, TypeError):
+        print("Avviso: diagnostica thin pool non disponibile (argomenti non validi).")
+        return
+    pools = {}
+    for storage, size in requests:
+        if not storage:
+            continue
+        try:
+            config = read("pvesh", "get", "/storage/" + storage, "--output-format", "json")
+            if config.get("type") == "lvmthin":
+                key = (config["vgname"], config["thinpool"])
+                pools[key] = pools.get(key, 0) + size * GIB
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+            print(f"Avviso: diagnostica thin pool non disponibile per storage {storage}.")
+    for (vg, name), requested in pools.items():
+        try:
+            volumes = rows(read("lvs", "--reportformat", "json", "--units", "b", "--nosuffix", "-o", "vg_name,lv_name,lv_size,segtype,pool_lv,data_percent,metadata_percent", vg), "lv")
+            pool = next(row for row in volumes if row["lv_name"].strip() == name and row["vg_name"].strip() == vg and row["segtype"].strip() == "thin-pool")
+            physical = number(pool["lv_size"])
+            virtual = sum(number(row["lv_size"]) for row in volumes if row.get("pool_lv", "").strip() == name and row["vg_name"].strip() == vg)
+            group = next(row for row in rows(read("vgs", "--reportformat", "json", "--units", "b", "--nosuffix", "-o", "vg_name,vg_free", vg), "vg") if row["vg_name"].strip() == vg)
+            free = number(group["vg_free"])
+            projected = virtual + requested
+            print(f"Thin pool {vg}/{name}: fisico {physical/GIB:.2f} GiB; Data {str(pool.get('data_percent', '')).strip() or 'n/d'}%; Meta {str(pool.get('metadata_percent', '')).strip() or 'n/d'}%; VG libero {free/GIB:.2f} GiB.")
+            print(f"Volumi virtuali attuali {virtual/GIB:.2f} GiB + nuovi {requested/GIB:.2f} GiB = {projected/GIB:.2f} GiB; spazio non riservato.")
+            if projected > physical:
+                print("ATTENZIONE: volumi virtuali superiori alla dimensione fisica del pool; monitorare Data% e Meta%. La riserva NVR protegge il filesystem ospite, non il pool condiviso.")
+            if projected > physical + free:
+                print("ATTENZIONE: totale virtuale superiore anche a pool + spazio libero VG; il VG attuale non potrebbe coprirlo interamente.")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration, subprocess.SubprocessError):
+            print(f"Avviso: diagnostica thin pool non disponibile per {vg}/{name}; nessuna modifica eseguita.")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+THIN_POOL_PY
 
 if ((DRY_RUN == 0)); then
     pveam update
