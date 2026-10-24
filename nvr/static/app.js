@@ -18,6 +18,11 @@ const network = {
   scanEpoch: 0, profileEpoch: 0, modalEpoch: 0,
   scanController: null, profileController: null, modalController: null, scanTimer: null,
 };
+const monitor = {
+  playing: true, layout: 4, page: 0, tiles: new Map(), observer: null,
+  fullscreenId: null, audioCameraId: null, statusEpoch: 0,
+  statusTimer: null,
+};
 
 function icon(name) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -139,6 +144,10 @@ function showLogin() {
   state.recordings = [];
   state.range = null;
   state.archiveRequest += 1;
+  releaseMonitor();
+  monitor.playing = true;
+  monitor.page = 0;
+  monitor.statusEpoch += 1;
   resetNetwork();
   document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
   $("app").hidden = true;
@@ -191,6 +200,7 @@ async function refreshData(showErrors) {
   if (results[1].status === "fulfilled") { state.system = results[1].value; renderSystem(); }
   else errors.push(errorText(results[1].reason));
   renderStats();
+  if (network.view === "monitor") { renderMonitor(); loadMonitorStatus(); }
   if (showErrors) globalError(errors.join(" "));
 }
 
@@ -608,20 +618,205 @@ async function findOnvifProfiles(event) {
 function showView(view) {
   network.view = view;
   const isNetwork = view === "network";
-  $("recorder-view").hidden = isNetwork;
+  $("recorder-view").hidden = view !== "recorder";
   $("network-view").hidden = !isNetwork;
-  setText("current-view-label", isNetwork ? "Telecamere in rete" : "Registratore");
-  ["recorder", "network"].forEach((name) => {
+  $("monitor-view").hidden = view !== "monitor";
+  setText("current-view-label", isNetwork ? "Telecamere in rete" : view === "monitor" ? "Monitor live" : "Registratore");
+  ["recorder", "monitor", "network"].forEach((name) => {
     const button = $(`nav-${name}`);
     button.classList.toggle("active", name === view);
     if (name === view) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
-  if (isNetwork) { stopLive(); player.pause(); }
-  else {
+  if (view !== "recorder") { stopLive(); player.pause(); }
+  if (!isNetwork) {
     cancelNetworkScan(false);
     if (network.profileController) clearNetworkProfiles(false);
     drawTimeline(); drawWaveform();
+  }
+  if (view === "monitor") { renderMonitor(); loadMonitorStatus(); }
+  else releaseMonitor();
+}
+
+function releaseMonitor() {
+  clearTimeout(monitor.statusTimer); monitor.statusTimer = null;
+  monitor.observer?.disconnect(); monitor.observer = null;
+  monitor.tiles.forEach((tile) => tile.live?.destroy());
+  monitor.tiles.clear();
+  $("monitor-grid").replaceChildren();
+  monitor.audioCameraId = null;
+  monitor.fullscreenId = null;
+  monitor.statusEpoch += 1;
+}
+
+function monitorCanPlay(tile) {
+  return state.authenticated && network.view === "monitor" && monitor.playing && !document.hidden && tile.visible && (!monitor.fullscreenId || monitor.fullscreenId === tile.id);
+}
+
+function syncMonitorPlayers() {
+  monitor.tiles.forEach((tile) => {
+    if (monitorCanPlay(tile)) tile.live?.start();
+    else {
+      tile.live?.stop();
+      const message = !monitor.playing ? "Monitor sospeso" : document.hidden ? "Scheda in background" : "Riquadro fuori vista";
+      updateMonitorTile(tile, {state: "paused", message, audio: tile.hasAudio, mode: tile.mode});
+    }
+  });
+  $("monitor-toggle").replaceChildren(icon(monitor.playing ? "pause" : "play"), el("span", "", monitor.playing ? "Sospendi monitor" : "Avvia monitor"));
+  $("monitor-toggle").disabled = !state.cameras.length;
+}
+
+function updateMonitorAudio(tile) {
+  const active = tile.hasAudio && !tile.video.muted;
+  tile.audioButton.replaceChildren(icon(active ? "audio" : "muted"));
+  tile.audioButton.disabled = !tile.hasAudio;
+  tile.audioButton.setAttribute("aria-label", !tile.hasAudio ? "Audio non disponibile nel flusso" : active ? `Disattiva audio di ${tile.name}` : `Ascolta ${tile.name}`);
+  tile.audioButton.title = !tile.hasAudio ? "Audio non disponibile nel flusso" : active ? "Disattiva audio" : "Ascolta solo questa telecamera";
+  tile.audioButton.setAttribute("aria-pressed", String(active));
+  tile.audioButton.classList.toggle("audio-on", active);
+}
+
+function updateMonitorTile(tile, info) {
+  if (!monitor.tiles.has(tile.id)) return;
+  tile.hasAudio = !!info.audio;
+  tile.mode = info.mode || "copy";
+  const changed = tile.liveState !== info.state;
+  tile.liveState = info.state;
+  tile.element.dataset.liveState = info.state;
+  tile.connection.textContent = info.state === "playing" ? "LIVE" : info.state === "connecting" || info.state === "buffering" ? "COLLEGAMENTO" : info.state === "reconnecting" ? "RICONNESSIONE" : info.state === "unsupported" ? "NON SUPPORTATO" : "SOSPESO";
+  const failed = ["reconnecting", "unsupported"].includes(info.state);
+  tile.message.textContent = failed ? info.state === "unsupported" ? "Browser non compatibile" : "Collegamento non disponibile" : info.message || "";
+  tile.errorDetail.hidden = !failed;
+  tile.errorDetail.textContent = failed ? info.message || "" : "";
+  tile.overlay.hidden = info.state === "playing";
+  tile.modeLabel.textContent = tile.mode === "compatible" ? "H.264 compatibile · CPU" : "Flusso originale";
+  tile.modeLabel.classList.toggle("converted", tile.mode === "compatible");
+  updateMonitorAudio(tile);
+  if (changed && ["playing", "paused", "reconnecting", "unsupported"].includes(info.state) && network.view === "monitor" && state.authenticated && !document.hidden) {
+    clearTimeout(monitor.statusTimer);
+    monitor.statusTimer = setTimeout(() => { monitor.statusTimer = null; loadMonitorStatus(); }, 400);
+  }
+}
+
+function makeMonitorTile(camera) {
+  const tile = {id: camera.id, name: camera.name, source: `${camera.source}|${camera.preview_source}`, visible: false, hasAudio: false, mode: "copy"};
+  tile.element = el("article", "monitor-tile");
+  tile.element.dataset.cameraId = camera.id;
+  const heading = el("div", "monitor-tile-heading");
+  tile.title = el("h3", "", camera.name);
+  tile.recordingBadge = el("span", "monitor-recording");
+  heading.append(tile.title, tile.recordingBadge);
+  const frame = el("div", "monitor-video-frame");
+  tile.video = el("video", "monitor-video");
+  tile.video.muted = true; tile.video.playsInline = true; tile.video.autoplay = true;
+  tile.video.setAttribute("aria-label", `Video live di ${camera.name}`);
+  tile.overlay = el("div", "monitor-video-overlay");
+  tile.message = el("span", "", "Collegamento al flusso…");
+  tile.overlay.append(icon("camera"), tile.message);
+  const connection = el("div", "monitor-connection");
+  tile.connection = el("span", "", "IN ATTESA");
+  connection.append(el("i"), tile.connection);
+  tile.quality = el("span", "monitor-quality", camera.preview_source ? "SECONDARIO" : "PRINCIPALE");
+  frame.append(tile.video, tile.overlay, connection, tile.quality);
+  tile.errorDetail = el("p", "monitor-tile-error"); tile.errorDetail.hidden = true;
+  const footer = el("div", "monitor-tile-footer");
+  tile.modeLabel = el("span", "monitor-mode", "Flusso originale");
+  const controls = el("div", "monitor-tile-controls");
+  const archive = el("button", "icon-button"); archive.type = "button"; archive.title = "Apri registrazioni"; archive.setAttribute("aria-label", `Apri registrazioni di ${camera.name}`); archive.append(icon("archive"));
+  archive.addEventListener("click", () => selectCamera(camera.id));
+  tile.audioButton = el("button", "icon-button"); tile.audioButton.type = "button";
+  tile.audioButton.addEventListener("click", () => {
+    const enable = tile.video.muted;
+    monitor.tiles.forEach((other) => { other.video.muted = true; updateMonitorAudio(other); });
+    tile.video.muted = !enable;
+    monitor.audioCameraId = enable ? camera.id : null;
+    if (enable) tile.video.play().catch(() => {});
+    updateMonitorAudio(tile);
+  });
+  tile.video.addEventListener("volumechange", () => updateMonitorAudio(tile));
+  const fullscreen = el("button", "icon-button"); fullscreen.type = "button"; fullscreen.title = "Schermo intero"; fullscreen.setAttribute("aria-label", `Mostra ${camera.name} a schermo intero`); fullscreen.append(icon("fullscreen"));
+  fullscreen.addEventListener("click", async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (tile.element.requestFullscreen) { await tile.element.requestFullscreen(); monitor.fullscreenId = camera.id; syncMonitorPlayers(); }
+      else toast("Schermo intero non disponibile in questo browser.");
+    } catch (_) { toast("Il browser non ha consentito lo schermo intero."); }
+  });
+  controls.append(archive, tile.audioButton, fullscreen); footer.append(tile.modeLabel, controls);
+  tile.element.append(heading, frame, tile.errorDetail, footer);
+  updateMonitorAudio(tile);
+  if (window.NvrLivePlayer) {
+    tile.live = new window.NvrLivePlayer(tile.video, {cameraId: camera.id, onStatus: (info) => updateMonitorTile(tile, info), onUnauthorized: () => { if (state.authenticated) showLogin(); }});
+  } else {
+    tile.element.dataset.liveState = "unsupported"; tile.message.textContent = "Lettore video non disponibile. Ricarica la pagina.";
+  }
+  return tile;
+}
+
+function renderMonitor() {
+  if (network.view !== "monitor") return;
+  const pages = Math.max(1, Math.ceil(state.cameras.length / monitor.layout));
+  monitor.page = Math.min(pages - 1, Math.max(0, monitor.page));
+  const cameras = state.cameras.slice(monitor.page * monitor.layout, (monitor.page + 1) * monitor.layout);
+  const ids = new Set(cameras.map((camera) => camera.id));
+  monitor.tiles.forEach((tile, id) => {
+    if (!ids.has(id)) { monitor.observer?.unobserve(tile.element); tile.live?.destroy(); tile.element.remove(); monitor.tiles.delete(id); if (monitor.audioCameraId === id) monitor.audioCameraId = null; }
+  });
+  if (!monitor.observer && window.IntersectionObserver) {
+    monitor.observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        const tile = monitor.tiles.get(entry.target.dataset.cameraId);
+        if (tile) tile.visible = entry.isIntersecting && entry.intersectionRatio > .05;
+      });
+      syncMonitorPlayers();
+    }, {threshold: [0, .05, .2]});
+  }
+  cameras.forEach((camera) => {
+    let tile = monitor.tiles.get(camera.id);
+    const source = `${camera.source}|${camera.preview_source}`;
+    if (tile && tile.source !== source) { monitor.observer?.unobserve(tile.element); tile.live?.destroy(); tile.element.remove(); monitor.tiles.delete(camera.id); tile = null; }
+    if (!tile) {
+      tile = makeMonitorTile(camera); monitor.tiles.set(camera.id, tile); $("monitor-grid").append(tile.element);
+      if (monitor.observer) monitor.observer.observe(tile.element); else tile.visible = true;
+    }
+    tile.name = camera.name; tile.title.textContent = camera.name;
+    tile.quality.textContent = camera.preview_source ? "SECONDARIO" : "PRINCIPALE";
+    const status = cameraStatus(camera);
+    const recording = camera.enabled && ["recording", "running", "connected"].includes(camera.status?.state);
+    tile.recordingBadge.textContent = recording ? "● REC" : !camera.enabled ? "In pausa" : status.label;
+    tile.recordingBadge.classList.toggle("recording", recording);
+    tile.recordingBadge.title = !camera.enabled ? "Registrazione in pausa. La diretta resta disponibile." : status.message;
+  });
+  cameras.forEach((camera, index) => {
+    const tile = monitor.tiles.get(camera.id), grid = $("monitor-grid");
+    if (grid.children[index] !== tile.element) grid.insertBefore(tile.element, grid.children[index] || null);
+  });
+  $("monitor-grid").className = `monitor-grid layout-${monitor.layout}`;
+  $("monitor-empty").hidden = !!state.cameras.length;
+  $("monitor-grid").hidden = !state.cameras.length;
+  setText("monitor-page-label", state.cameras.length ? `${monitor.page * monitor.layout + 1}–${Math.min(state.cameras.length, (monitor.page + 1) * monitor.layout)} di ${state.cameras.length}` : "0 telecamere");
+  $("monitor-previous").disabled = monitor.page === 0;
+  $("monitor-next").disabled = monitor.page >= pages - 1;
+  document.querySelectorAll("[data-monitor-layout]").forEach((button) => {
+    const active = Number(button.dataset.monitorLayout) === monitor.layout;
+    button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active));
+  });
+  syncMonitorPlayers();
+}
+
+async function loadMonitorStatus() {
+  if (network.view !== "monitor" || !state.authenticated || document.hidden) return;
+  const epoch = ++monitor.statusEpoch, authEpoch = state.authEpoch;
+  try {
+    const data = await api("/api/live/status");
+    if (epoch !== monitor.statusEpoch || authEpoch !== state.authEpoch || network.view !== "monitor") return;
+    setText("monitor-live-status", `Sul server: ${data.active_streams} / ${data.max_streams} flussi · ${data.active_transcodes} / ${data.max_transcodes} conversioni`);
+    $("monitor-server-dot").className = "status-dot green";
+    $("monitor-error").hidden = true;
+  } catch (error) {
+    if (epoch !== monitor.statusEpoch || authEpoch !== state.authEpoch || network.view !== "monitor") return;
+    setText("monitor-live-status", "Stato delle connessioni non disponibile"); $("monitor-server-dot").className = "status-dot orange";
+    setText("monitor-error", errorText(error)); $("monitor-error").hidden = false;
   }
 }
 
@@ -1070,6 +1265,18 @@ $("open-onvif").addEventListener("click", () => {
 $("onvif-form").addEventListener("submit", findOnvifProfiles);
 $("onvif-dialog").addEventListener("close", resetModalProfiles);
 $("nav-recorder").addEventListener("click", () => showView("recorder"));
+$("nav-monitor").addEventListener("click", () => showView("monitor"));
+$("monitor-toggle").addEventListener("click", () => { monitor.playing = !monitor.playing; syncMonitorPlayers(); loadMonitorStatus(); });
+$("monitor-find-cameras").addEventListener("click", () => { showView("network"); loadNetworkInterfaces(); });
+document.querySelectorAll("[data-monitor-layout]").forEach((button) => button.addEventListener("click", () => {
+  monitor.layout = Number(button.dataset.monitorLayout); monitor.page = 0; renderMonitor();
+}));
+$("monitor-previous").addEventListener("click", () => { monitor.page -= 1; renderMonitor(); });
+$("monitor-next").addEventListener("click", () => { monitor.page += 1; renderMonitor(); });
+document.addEventListener("fullscreenchange", () => {
+  monitor.fullscreenId = document.fullscreenElement?.dataset.cameraId || null;
+  if (network.view === "monitor") syncMonitorPlayers();
+});
 $("nav-network").addEventListener("click", () => { showView("network"); loadNetworkInterfaces(); });
 $("network-back").addEventListener("click", () => showView("recorder"));
 $("network-interface").addEventListener("change", suggestNetworkCidr);
@@ -1151,8 +1358,12 @@ $("timeline").addEventListener("keydown", (event) => {
   selectRecording(state.recordings[index]);
 });
 window.addEventListener("resize", () => { drawWaveform(); drawTimeline(); });
-document.addEventListener("visibilitychange", () => { if (document.hidden) stopLive(); });
-window.addEventListener("pagehide", () => { stopLive(); player.pause(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopLive();
+  if (network.view === "monitor") { syncMonitorPlayers(); if (!document.hidden) loadMonitorStatus(); }
+});
+window.addEventListener("pagehide", () => { stopLive(); player.pause(); releaseMonitor(); });
+window.addEventListener("pageshow", (event) => { if (event.persisted && network.view === "monitor") renderMonitor(); });
 
 const now = new Date();
 const today = new Date(now); today.setHours(0, 0, 0, 0);

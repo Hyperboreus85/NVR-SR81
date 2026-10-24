@@ -11,6 +11,8 @@ services:
       NVR_SEGMENT_SECONDS: "${NVR_SEGMENT_SECONDS:-60}"
       NVR_MIN_FREE_GB: "${NVR_MIN_FREE_GB:-5}"
       NVR_SECURE_COOKIE: "${NVR_SECURE_COOKIE:-0}"
+      NVR_LIVE_MAX_STREAMS: "${NVR_LIVE_MAX_STREAMS:-16}"
+      NVR_LIVE_MAX_TRANSCODES: "${NVR_LIVE_MAX_TRANSCODES:-2}"
     volumes:
       - nvr-data:/data
       - "${NVR_RECORDINGS_PATH:-./recordings}:/recordings"

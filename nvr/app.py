@@ -1,23 +1,29 @@
 """Authenticated same-origin HTTP API and bundled offline interface."""
 import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
+import re
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from . import __version__
 from .config import Settings
 from .discovery import DiscoveryError, discover, list_interfaces, scan_network
+from .live import LiveError, LiveManager
 from .media import MediaManager
 from .onvif import get_profiles
 from .security import Auth, redact_url, validate_stream_url
 from .store import Store
+
+LIVE_AUTH_CHECK_SECONDS = 15
 
 
 class CameraInput(BaseModel):
@@ -50,13 +56,14 @@ class NetworkScanInput(BaseModel):
         default_factory=lambda: [80, 8000, 8080, 8899], min_length=1, max_length=8)
 
 
-def create_app(settings: Settings | None = None, media_factory=MediaManager):
+def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager):
     settings = settings or Settings()
     if settings.password and len(settings.password) < 12:
         raise ValueError("NVR_ADMIN_PASSWORD deve contenere almeno 12 caratteri")
     store = Store(settings.data_dir)
     auth = Auth(store, settings.password)
     media = media_factory(settings, store)
+    realtime = live_factory(settings)
     media_jobs = asyncio.Semaphore(2)
     onvif_jobs = asyncio.Semaphore(2)
     discovery_lock = asyncio.Lock()
@@ -79,11 +86,13 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
                 raise RuntimeError("Un'altra istanza usa già questa directory dati") from None
         try:
             await media.start()
+            await realtime.start()
             yield
         finally:
             if active_scan is not None:
                 active_scan.cancel()
                 await asyncio.gather(active_scan, return_exceptions=True)
+            await realtime.stop()
             await media.stop()
             lock.close()
 
@@ -91,6 +100,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.media = store, media
     app.state.settings, app.state.auth = settings, auth
+    app.state.realtime = realtime
 
     @app.middleware("http")
     async def access_control(request: Request, call_next):
@@ -108,10 +118,14 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
+        host = request.url.netloc
+        websocket_origin = ""
+        if re.fullmatch(r"[A-Za-z0-9_.:\[\]-]+", host):
+            websocket_origin = ("wss" if request.url.scheme == "https" else "ws") + "://" + host
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self' blob: data:; media-src 'self' blob:; "
-            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+            f"connect-src 'self' {websocket_origin}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -207,6 +221,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
                 raise HTTPException(422, "Questa prima versione gestisce al massimo 32 telecamere")
             camera = store.save_camera(validated_camera(data))
             await media.reconcile()
+            await realtime.reconcile(store.list_cameras())
         return public_camera(camera)
 
     @app.put("/api/cameras/{camera_id}")
@@ -215,6 +230,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
             previous = camera_or_404(camera_id)
             camera = store.save_camera(validated_camera(data, previous), camera_id)
             await media.reconcile()
+            await realtime.reconcile(store.list_cameras())
         return public_camera(camera)
 
     @app.delete("/api/cameras/{camera_id}")
@@ -223,6 +239,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
             camera_or_404(camera_id)
             store.delete_camera(camera_id)
             await media.reconcile()
+            await realtime.reconcile(store.list_cameras())
         return {"deleted": True, "recordings_preserved": True}
 
     @app.post("/api/cameras/{camera_id}/probe")
@@ -241,6 +258,107 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
     async def live(camera_id: str):
         camera = camera_or_404(camera_id)
         return StreamingResponse(media.live(camera), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    @app.get("/api/cameras/{camera_id}/live.mp4")
+    async def live_video(camera_id: str, compatible: bool = False):
+        camera = camera_or_404(camera_id)
+        try:
+            subscription = await realtime.open(camera, compatible=compatible)
+        except LiveError as error:
+            status = getattr(error, "status_code", 503)
+            raise HTTPException(status if status in {422, 429, 503, 504} else 503, str(error)) from None
+        except (OSError, asyncio.TimeoutError):
+            raise HTTPException(503, "Diretta non disponibile. Controllare il flusso della telecamera.") from None
+        return StreamingResponse(
+            subscription.stream(), media_type=subscription.mime,
+            headers={"X-NVR-Live-Mode": subscription.mode, "X-Accel-Buffering": "no"},
+            background=BackgroundTask(subscription.close),
+        )
+
+    @app.get("/api/live/status")
+    async def live_status():
+        current = realtime.status()
+        fields = ("active_streams", "max_streams", "active_transcodes", "max_transcodes")
+        return {field: current.get(field, 0) for field in fields} | {
+            "streams": [{key: value for key, value in stream.items()
+                         if key in {"camera_id", "mode", "viewers", "state", "codec"}}
+                        for stream in current.get("streams", [])],
+        }
+
+    @app.websocket("/api/cameras/{camera_id}/live.ws")
+    async def live_socket(websocket: WebSocket, camera_id: str, compatible: bool = False):
+        # WebSocket upgrades bypass HTTP middleware. Require both the existing
+        # administrator session and a matching browser Origin explicitly.
+        scheme = "https" if websocket.url.scheme == "wss" else "http"
+        expected_origin = f"{scheme}://{websocket.headers.get('host', '')}"
+        if websocket.headers.get("origin") != expected_origin:
+            await websocket.close(code=4403)
+            return
+        await websocket.accept()
+        session_token = websocket.cookies.get("nvr_session")
+        if not auth.valid(session_token):
+            await websocket.close(code=4401)
+            return
+        subscription = None
+        opening = watching = sending = None
+
+        async def watch_client():
+            while True:
+                try:
+                    message = await asyncio.wait_for(websocket.receive(), LIVE_AUTH_CHECK_SECONDS)
+                except asyncio.TimeoutError:
+                    if not auth.valid(session_token):
+                        await websocket.close(code=4401)
+                        return
+                    continue
+                if message["type"] == "websocket.disconnect":
+                    return
+                # Clients only consume media. Unexpected payloads are closed
+                # instead of accumulating arbitrary incoming message queues.
+                await websocket.close(code=1008)
+                return
+
+        async def send_media():
+            async for fragment in subscription.stream():
+                await websocket.send_bytes(fragment)
+
+        try:
+            camera = camera_or_404(camera_id)
+            watching = asyncio.create_task(watch_client())
+            opening = asyncio.create_task(realtime.open(camera, compatible=compatible))
+            finished, _ = await asyncio.wait((opening, watching), return_when=asyncio.FIRST_COMPLETED)
+            if watching in finished:
+                return
+            subscription = await opening
+            await websocket.send_json({"type": "init", "mime": subscription.mime, "mode": subscription.mode})
+            sending = asyncio.create_task(send_media())
+            finished, _ = await asyncio.wait((sending, watching), return_when=asyncio.FIRST_COMPLETED)
+            if sending in finished:
+                await sending
+                with contextlib.suppress(WebSocketDisconnect, RuntimeError):
+                    await websocket.close(code=1012)
+        except (HTTPException, LiveError) as error:
+            code = getattr(error, "status_code", 503)
+            message = error.detail if isinstance(error, HTTPException) else str(error)
+            with contextlib.suppress(WebSocketDisconnect, RuntimeError):
+                await websocket.send_json({"type": "error", "code": code, "message": message})
+                await websocket.close(code=1013 if code in {429, 503, 504} else 1008)
+        except (WebSocketDisconnect, OSError, RuntimeError):
+            # Disconnects and transport errors never include camera URLs in a
+            # response or trigger an unhandled ASGI traceback.
+            pass
+        finally:
+            for task in (opening, watching, sending):
+                if task and not task.done():
+                    task.cancel()
+            await asyncio.gather(*(task for task in (opening, watching, sending) if task), return_exceptions=True)
+            if subscription is None and opening and not opening.cancelled():
+                with contextlib.suppress(Exception):
+                    subscription = opening.result()
+            if subscription is not None:
+                await subscription.close()
+            with contextlib.suppress(WebSocketDisconnect, RuntimeError):
+                await websocket.close()
 
     @app.get("/api/recordings")
     def recordings(camera_id: str | None = None, start: float | None = Query(None, ge=0),

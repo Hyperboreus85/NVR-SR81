@@ -18,6 +18,10 @@ jobs:
           echo "NVR_TEST_RTSP_SERVER=$RUNNER_TEMP/mediamtx" >> "$GITHUB_ENV"
       - run: python -m pip install '.[test]'
       - run: python -m pytest -q
+      - name: Check browser scripts
+        run: |
+          node --check nvr/static/app.js
+          node --check nvr/static/live-player.js
       - run: |
           bash -n deploy/install.sh
           bash -n deploy/proxmox-create.sh

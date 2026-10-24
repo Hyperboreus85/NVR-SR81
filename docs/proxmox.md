@@ -24,7 +24,9 @@ Lo script usa `umask 022` per i comandi Proxmox: le directory create sul nodo de
 
 Il disco di sistema e il volume archivio sono separati anche se usano lo stesso storage fisico. Le dimensioni `--root-gb` e `--recordings-gb` sono in **GiB**, come richiesto da Proxmox. Per la capienza scegliere il bitrate e i giorni di conservazione descritti in [architettura](architecture.md). [Mount point e volumi gestiti Proxmox](https://github.com/proxmox/pve-docs/blob/master/pct.adoc#mount-points)
 
-Impostazioni iniziali: Debian 12, 2 core, 2048 MiB RAM, 512 MiB swap, sistema 8 GiB, archivio 100 GiB, bridge `vmbr0`, IPv4 da DHCP e avvio automatico del container. Sono valori di partenza: non indicano quanti flussi potrà gestire l'hardware. `--debian 13` seleziona Debian 13 se supportato dal nodo e disponibile nel catalogo.
+Impostazioni iniziali: Debian 12, 2 core, 4096 MiB RAM, 512 MiB swap, sistema 8 GiB, archivio 100 GiB, bridge `vmbr0`, IPv4 da DHCP e avvio automatico del container. Sono valori di partenza: non indicano quanti flussi potrà gestire l'hardware. `--debian 13` seleziona Debian 13 se supportato dal nodo e disponibile nel catalogo.
+
+Per portare a 4 GB un container 181 già esistente, dalla Shell del nodo eseguire `pct set 181 --memory 4096`, dopo avere verificato la RAM disponibile sul nodo. La memoria assegnata si legge con `pct config 181`. L'aggiornamento dell'applicazione non cambia automaticamente la RAM del container.
 
 Lo script non abilita il nesting. Dentro LXC l'installer omette le protezioni systemd che richiedono ulteriori mount namespace (`PrivateTmp`, `ProtectSystem`, `ProtectHome`, `ReadWritePaths`), perché possono essere rifiutate dal profilo del container. Rimangono attivi utente dedicato UID/GID 10001, `UMask=0077`, `NoNewPrivileges` e l'isolamento esterno di LXC; quindi la protezione del filesystem del servizio è inferiore rispetto all'installazione nativa, che conserva tutte quelle direttive. Se il sistema operativo del guest richiede nesting per altre unità systemd, il nodo può comunque richiedere una configurazione specifica: questo caso va collaudato, soprattutto con Debian 13. [Verifica ufficiale Proxmox per systemd e nesting](https://github.com/proxmox/pve-container/blob/master/src/PVE/LXC/Setup/Base.pm#L616)
 
@@ -72,17 +74,17 @@ La password amministratore viene generata **dentro il container**, salvata tempo
 
 Aprire `http://IP-DEL-CONTAINER:8080` dalla LAN, entrare con la password mostrata e aggiungere una telecamera RTSP oppure importare un endpoint ONVIF. Per il primo collaudo impostare un periodo breve di conservazione e verificare registrazione, audio, riavvio e riproduzione.
 
-## Aggiornare il container esistente alla versione 0.2.0
+## Aggiornare il container esistente alla versione 0.3.0
 
-La nuova sezione **Telecamere in rete** cerca i dispositivi ONVIF e permette di copiare gli URL di tutti i profili. Non occorre ricreare il container o i dischi. Dalla Shell del nodo, con ID 181, scaricare ed eseguire lo script di aggiornamento dentro il guest (unica riga):
+La sezione **Monitor live** mostra le telecamere in una griglia con video continuo e audio selezionabile. Rimane disponibile **Telecamere in rete** per ricerca ONVIF e URL dei profili. Non occorre ricreare il container o i dischi. Dalla Shell del nodo, con ID 181, scaricare ed eseguire lo script aggiornato dentro il guest (unica riga):
 
 ```bash
 wget -O /tmp/nvr-sr81-update.sh https://raw.githubusercontent.com/Hyperboreus85/NVR-SR81/codex/initial-nvr/deploy/update.sh && pct push 181 /tmp/nvr-sr81-update.sh /tmp/nvr-sr81-update.sh && pct exec 181 -- bash /tmp/nvr-sr81-update.sh
 ```
 
-Lo script verifica il checkout, prepara vecchio e nuovo pacchetto prima di fermare il servizio, installa il nuovo pacchetto e riavvia l'NVR. Durante il breve riavvio la registrazione si interrompe. Conserva ambiente, password, database, chiave e video; se installazione o verifica di avvio falliscono, tenta il ripristino del pacchetto precedente. Le dipendenze Python di questo aggiornamento sono invariate. Se ci sono modifiche locali ai file tracciati, lo script si ferma per consentire di conservarle.
+Lo script verifica il checkout e prepara vecchio pacchetto, nuovo pacchetto e dipendenze prima di fermare il servizio. Installa poi dai file già scaricati e riavvia l'NVR. Durante il breve riavvio la registrazione si interrompe. Conserva ambiente, password, database, chiave e video; se installazione o verifica di avvio falliscono, tenta il ripristino del pacchetto precedente. La versione 0.3.0 aggiunge il supporto WebSocket: usare questo script aggiornato per installare anche le nuove dipendenze. Se ci sono modifiche locali ai file tracciati, lo script si ferma per consentire di conservarle.
 
-Al termine ricaricare completamente la pagina web. Per ricerca, profili e rete del container, vedere [guida discovery](discovery.md). Per impostare una revisione precisa si può passarla come primo argomento allo script `update.sh`.
+Al termine ricaricare completamente la pagina web. Per griglia, browser e scelta del sottostream, vedere [guida Monitor live](live.md); per ricerca, profili e rete del container, vedere [guida discovery](discovery.md). Per impostare una revisione precisa si può passarla come primo argomento allo script `update.sh`.
 
 ## Errori, backup e manutenzione
 

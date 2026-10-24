@@ -18,7 +18,7 @@ BRIDGE='vmbr0'
 IP='dhcp'
 GATEWAY=''
 CORES=2
-MEMORY=2048
+MEMORY=4096
 SWAP=512
 ROOT_GB=8
 MIN_FREE_GB=5
@@ -45,7 +45,7 @@ Opzioni:
   --ip dhcp|IPv4/CIDR          Indirizzo (dhcp)
   --gateway IPv4               Gateway, solo con IP statico
   --cores N                    Core (2)
-  --memory MiB                 RAM (2048)
+  --memory MiB                 RAM (4096)
   --swap MiB                   Swap (512)
   --root-gb GiB                Disco di sistema (8)
   --min-free-gb GB             Riserva archivio decimale (5)

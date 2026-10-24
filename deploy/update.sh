@@ -17,13 +17,26 @@ update_cleanup() {
 }
 
 wheel_version() {
-    "$APP_ROOT/.venv/bin/python" - "$1" <<'NVR_WHEEL_PY'
+    "$APP_ROOT/.venv/bin/python" - "$1" "${2:-}" <<'NVR_WHEEL_PY'
 from email.parser import Parser
+from pathlib import Path
 import sys
 from zipfile import ZipFile
-with ZipFile(sys.argv[1]) as wheel:
-    metadata = next(name for name in wheel.namelist() if name.endswith('.dist-info/METADATA'))
-    print(Parser().parsestr(wheel.read(metadata).decode())['Version'])
+
+def wheel_metadata(wheel_path, requirements_path=''):
+    with ZipFile(wheel_path) as wheel:
+        filename = next(name for name in wheel.namelist() if name.endswith('.dist-info/METADATA'))
+        metadata = Parser().parsestr(wheel.read(filename).decode())
+    requirements = [' '.join(value.split()) for value in metadata.get_all('Requires-Dist', [])]
+    # Direct URLs would bypass --no-index during the offline installation.
+    if any('@' in requirement or '://' in requirement for requirement in requirements):
+        raise ValueError('Le dipendenze dell\'aggiornamento devono provenire dal wheelhouse locale')
+    if requirements_path:
+        Path(requirements_path).write_text('\n'.join(requirements) + '\n', encoding='utf-8')
+    return metadata['Version']
+
+if __name__ == '__main__':
+    print(wheel_metadata(sys.argv[1], sys.argv[2]))
 NVR_WHEEL_PY
 }
 
@@ -155,7 +168,7 @@ nvr_update_main() {
     trap 'update_error 143' TERM
     trap 'update_error 129' HUP
 
-    # Prepare rollback and new wheels while recording is still active.
+    # Prepare rollback, application and dependency wheels before any downtime.
     mkdir "$UPDATE_TMP/old" "$UPDATE_TMP/new"
     "$APP_ROOT/.venv/bin/python" -m pip wheel --no-deps --wheel-dir "$UPDATE_TMP/old" "$APP_ROOT"
     OLD_WHEEL=$(find "$UPDATE_TMP/old" -maxdepth 1 -type f -name 'nvr_sr81-*.whl' -print -quit)
@@ -163,13 +176,16 @@ nvr_update_main() {
     git -C "$APP_ROOT" fetch --depth 1 origin "$UPDATE_REF"
     NEW_REVISION=$(git -C "$APP_ROOT" rev-parse FETCH_HEAD)
     git -C "$APP_ROOT" checkout --detach --quiet "$NEW_REVISION"
-    "$APP_ROOT/.venv/bin/python" -m pip wheel --no-deps --wheel-dir "$UPDATE_TMP/new" "$APP_ROOT"
+    "$APP_ROOT/.venv/bin/python" -m pip wheel --wheel-dir "$UPDATE_TMP/new" "$APP_ROOT"
     NEW_WHEEL=$(find "$UPDATE_TMP/new" -maxdepth 1 -type f -name 'nvr_sr81-*.whl' -print -quit)
     [[ -n $NEW_WHEEL ]] || { echo 'Nuovo pacchetto non disponibile.' >&2; false; }
-    NEW_VERSION=$(wheel_version "$NEW_WHEEL")
+    NEW_VERSION=$(wheel_version "$NEW_WHEEL" "$UPDATE_TMP/runtime-requirements.txt")
     SERVICE_STOPPED=1
     systemctl stop nvr-sr81
     PACKAGE_CHANGED=1
+    # No --upgrade/--force-reinstall here: retain compatible installed runtime
+    # dependencies and install only what the new application's metadata needs.
+    "$APP_ROOT/.venv/bin/python" -m pip install --no-index --find-links "$UPDATE_TMP/new" -r "$UPDATE_TMP/runtime-requirements.txt"
     "$APP_ROOT/.venv/bin/python" -m pip install --no-index --no-deps --force-reinstall "$NEW_WHEEL"
     systemctl start nvr-sr81
     health_check "$NEW_VERSION"

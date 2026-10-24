@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nvr-sr81"
-version = "0.2.0"
+version = "0.3.0"
 description = "NVR locale con registrazione continua RTSP e interfaccia web"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
 dependencies = [
   "fastapi>=0.115,<1",
-  "uvicorn>=0.34,<1",
+  "uvicorn>=0.46,<1",
+  "wsproto>=1.2,<2",
   "httpx>=0.28,<1",
   "cryptography>=44,<50",
   "defusedxml>=0.7,<1",

@@ -7,6 +7,7 @@
   <meta name="theme-color" content="#101315">
   <title>NVR SR81 · Registratore locale</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/static/live-player.js"></script>
   <script defer src="/static/app.js"></script>
 </head>
 <body>
@@ -26,6 +27,11 @@
     <symbol id="i-exit" viewBox="0 0 24 24"><path d="M9 4H4v16h5M10 12h11m-4-4 4 4-4 4"/></symbol>
     <symbol id="i-network" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="6" rx="1"/><rect x="2" y="16" width="7" height="6" rx="1"/><rect x="15" y="16" width="7" height="6" rx="1"/><path d="M12 8v4M5.5 16v-4h13v4"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M12 3v14M2 10h20"/></symbol>
+    <symbol id="i-fullscreen" viewBox="0 0 24 24"><path d="M3 9V3h6m6 0h6v6M3 15v6h6m6 0h6v-6"/></symbol>
+    <symbol id="i-audio" viewBox="0 0 24 24"><path d="m11 4-6 5H2v6h3l6 5zM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+    <symbol id="i-muted" viewBox="0 0 24 24"><path d="m11 4-6 5H2v6h3l6 5zM16 9l6 6m0-6-6 6"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
   </defs></svg>
 
   <section id="login-screen" class="login-screen" hidden>
@@ -37,7 +43,7 @@
     <aside class="sidebar">
       <a class="brand" href="#" aria-label="NVR SR81"><span class="brand-mark">81<span></span></span><span>NVR <strong>SR81</strong><small>LOCAL VIDEO RECORDER</small></span></a>
       <div class="workspace-label"><span class="status-dot green"></span> Rete locale <span class="tiny-label">LAN</span></div>
-      <nav class="workspace-nav" aria-label="Workspace"><button id="nav-recorder" class="workspace-nav-item active" aria-current="page"><svg><use href="#i-archive"/></svg> Registratore</button><button id="nav-network" class="workspace-nav-item"><svg><use href="#i-network"/></svg> Telecamere in rete</button></nav>
+      <nav class="workspace-nav" aria-label="Workspace"><button id="nav-recorder" class="workspace-nav-item active" aria-current="page"><svg><use href="#i-archive"/></svg> Registratore</button><button id="nav-monitor" class="workspace-nav-item"><svg><use href="#i-monitor"/></svg> Monitor live</button><button id="nav-network" class="workspace-nav-item"><svg><use href="#i-network"/></svg> Telecamere in rete</button></nav>
       <div class="sidebar-section"><span>TELECAMERE</span><button id="add-camera-small" class="icon-button" title="Aggiungi telecamera" aria-label="Aggiungi telecamera"><svg><use href="#i-plus"/></svg></button></div>
       <div id="camera-list" class="camera-list" aria-label="Telecamere"></div>
       <button id="add-camera" class="add-camera"><svg><use href="#i-plus"/></svg> Aggiungi telecamera</button>
@@ -74,6 +80,15 @@
           </section>
         </div>
         </div>
+        <section id="monitor-view" hidden aria-label="Monitor video live delle telecamere configurate">
+          <div class="page-heading"><div><p class="eyebrow">UNO SGUARDO D’INSIEME</p><h1>Monitor live.</h1><p class="muted">Le tue telecamere, in un’unica parete video.</p></div><button id="monitor-toggle" class="button primary"><svg><use href="#i-pause"/></svg><span>Sospendi monitor</span></button></div>
+          <div class="monitor-toolbar"><div class="monitor-layout-picker" role="group" aria-label="Telecamere per pagina"><span>LAYOUT</span><button type="button" data-monitor-layout="1" aria-label="Mostra 1 telecamera" aria-pressed="false">1</button><button type="button" data-monitor-layout="4" aria-label="Mostra 4 telecamere" aria-pressed="true" class="active">4</button><button type="button" data-monitor-layout="9" aria-label="Mostra 9 telecamere" aria-pressed="false">9</button><button type="button" data-monitor-layout="16" aria-label="Mostra 16 telecamere" aria-pressed="false">16</button></div><div class="monitor-pagination"><span id="monitor-page-label">—</span><button id="monitor-previous" class="icon-button" aria-label="Pagina precedente">←</button><button id="monitor-next" class="icon-button" aria-label="Pagina successiva">→</button></div></div>
+          <p class="monitor-help">Il monitor usa il flusso secondario quando configurato. Audio disattivato all’avvio; il buffer video aggiunge alcuni secondi di ritardo. Si collegano solo i riquadri visibili.</p>
+          <div id="monitor-error" class="banner warning" role="status" hidden></div>
+          <div id="monitor-empty" class="empty-state" hidden><div class="empty-illustration"><svg><use href="#i-monitor"/></svg></div><span class="eyebrow">TUTTO PRONTO PER LA DIRETTA</span><h2>Una parete ancora da riempire.</h2><p>Aggiungi una telecamera al registratore per vederla qui.<br>Puoi cercare nella LAN o inserire direttamente un flusso RTSP.</p><button id="monitor-find-cameras" class="button primary"><svg><use href="#i-network"/></svg> Trova telecamere in rete</button></div>
+          <div id="monitor-grid" class="monitor-grid layout-4" aria-label="Telecamere in diretta"></div>
+          <div class="monitor-server-status"><span><span class="status-dot" id="monitor-server-dot"></span><span id="monitor-live-status">Stato delle connessioni al server in attesa</span></span><span>Per molte telecamere scegli sottoflussi H.264. Le conversioni compatibili usano CPU e sono limitate.</span></div>
+        </section>
         <section id="network-view" hidden aria-label="Esplora telecamere ONVIF nella rete locale">
           <div class="page-heading"><div><p class="eyebrow">ESPLORA LA TUA RETE</p><h1>Telecamere in rete.</h1><p class="muted">Trova dispositivi ONVIF e tutti i loro flussi, prima di aggiungerli al registratore.</p></div><button id="network-back" class="button secondary">← Registratore</button></div>
           <section class="panel discovery-panel"><div class="panel-header"><h3><svg><use href="#i-network"/></svg> Ricerca ONVIF</h3><span class="badge neutral">SOLO SU RICHIESTA</span></div><div class="discovery-body"><div class="discovery-controls"><label>Interfaccia di rete del server<select id="network-interface"><option value="">Automatica · tutte le interfacce disponibili</option></select></label><button id="network-discover" class="button primary"><svg><use href="#i-signal"/></svg> Cerca telecamere</button><button id="network-cancel" class="button quiet" hidden>Interrompi</button></div><p class="field-help">La ricerca multicast dura circa 6 secondi. I dispositivi devono avere ONVIF attivo ed essere raggiungibili dalla rete del server.</p><div id="network-progress" class="discovery-progress" role="status" aria-live="polite" hidden><span class="progress-track"><span></span></span><span id="network-progress-label">Ricerca in corso…</span></div><div id="network-error" class="form-error" role="alert"></div><div id="network-warnings" class="discovery-warnings" hidden></div><details class="network-advanced"><summary>Non trovi la telecamera? Cerca per intervallo IP</summary><form id="network-scan-form"><p class="field-help">Ricerca mirata su una sola rete locale, fino a 256 indirizzi e 8 porte. Può richiedere circa 30 secondi.</p><div class="scan-controls"><label>Rete IPv4 / CIDR<input id="network-cidr" placeholder="192.168.1.0/24" required spellcheck="false"></label><label>Porte HTTP ONVIF<input id="network-ports" value="80,8000,8080,8899" required spellcheck="false"></label><button id="network-scan" type="submit" class="button secondary">Cerca nell’intervallo</button></div></form></details><form id="network-manual-form" class="manual-endpoint"><label>Oppure apri un endpoint ONVIF conosciuto<input id="network-manual-endpoint" type="url" required placeholder="http://192.168.1.50:8000/onvif/device_service" autocomplete="off" spellcheck="false"></label><button class="button secondary" type="submit">Apri dispositivo →</button></form></div></section>

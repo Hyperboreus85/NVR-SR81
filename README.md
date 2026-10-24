@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.2.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.3.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -19,7 +19,8 @@ Il flusso originale viene copiato in segmenti **Matroska/MKV**, normalmente di c
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.
 - Scelta dei profili principale e secondario per configurare registrazione e anteprima; nomi originali conservati e suggerimenti basati sui metadati per ciascuna sorgente video.
 - Registrazione continua senza ricodifica, audio opzionale, riconnessione automatica e stato per telecamera.
-- Anteprima MJPEG a **2 fps, senza audio**, avviata solo quando richiesta. Massimo quattro telecamere visualizzate contemporaneamente. Consigliato il sottostream H.264 della camera.
+- **Monitor live** con video continuo, layout da 1/4/9/16 riquadri, paginazione di tutte le telecamere configurate, schermo intero, audio su una camera per volta e riconnessione indipendente. Usa il sottostream quando disponibile, condividendo il processo video fra gli spettatori. [Guida monitor live](docs/live.md).
+- Anteprima MJPEG a **2 fps, senza audio** nella scheda Registratore, avviata solo quando richiesta e distinta dal Monitor live. Massimo quattro anteprime MJPEG contemporanee. Consigliato il sottostream H.264 della camera.
 - Ricerca delle registrazioni per telecamera e intervallo, timeline con vuoti reali, riproduzione dei segmenti, download originale.
 - MP4 per il browser: copia video originale e conversione audio in AAC. Se H.265 non è supportato, modalità compatibile su richiesta con conversione H.264, più onerosa per la CPU.
 - Forma d'onda da campioni audio reali, calcolata su richiesta e conservata in cache; clic per spostarsi nel video. L'assenza di audio è indicata, senza inventare dati.
@@ -84,7 +85,7 @@ ONVIF è usato per trovare i dispositivi, leggere i profili e gli URL di streami
 
 ## Aggiornare un'installazione esistente
 
-Sul container già installato, il nuovo `deploy/update.sh` prepara il pacchetto mentre la registrazione continua, riavvia brevemente il servizio e conserva configurazione e archivio. Le dipendenze Python della versione 0.2.0 sono le stesse della 0.1.0. L'aggiornamento richiede un checkout Git senza modifiche locali ai file tracciati e conserva un pacchetto per il ripristino in caso di errore.
+Sul container già installato, il nuovo `deploy/update.sh` prepara pacchetto e dipendenze mentre la registrazione continua, riavvia brevemente il servizio e conserva configurazione e archivio. La versione 0.3.0 aggiunge il supporto WebSocket: usare lo script aggiornato, che scarica prima dell'arresto le dipendenze necessarie. L'aggiornamento richiede un checkout Git senza modifiche locali ai file tracciati e conserva un pacchetto per il ripristino in caso di errore.
 
 ```bash
 # Dentro il container, come root; dopo avere scaricato il nuovo script:
@@ -111,6 +112,8 @@ Stima dello spazio: **1 Mbit/s ≈ 10,8 GB al giorno** (unità decimali), prima 
 | `NVR_MIN_FREE_GB` | `5` | Riserva sul disco archivio, GB decimali |
 | `NVR_ADMIN_PASSWORD` | richiesta al primo avvio | Imposta/aggiorna la password all'avvio |
 | `NVR_SECURE_COOKIE` | `0` | Usare `1` con HTTPS locale |
+| `NVR_LIVE_MAX_STREAMS` | `16` | Massimo processi live condivisi, da 1 a 32 |
+| `NVR_LIVE_MAX_TRANSCODES` | `2` | Conversioni live H.264 contemporanee, da 0 a 4 |
 | `NVR_FFMPEG`, `NVR_FFPROBE` | nomi nel PATH | Percorsi eseguibili |
 
 Un solo processo/istanza per archivio. Limite iniziale dell'interfaccia: 32 configurazioni, **non una promessa di capacità hardware**. La cache multimediale è limitata a circa 2 GiB e un giorno; conversioni simultanee limitate. La ricerca API restituisce fino a 2.000 segmenti per intervallo (circa un giorno con segmenti da 60 secondi per camera).
@@ -136,7 +139,7 @@ I test multimediali usano FFmpeg/FFprobe e sorgenti sintetiche locali; i test ON
 ## Evoluzione
 
 1. Pilotaggio con telecamere reali, misura di CPU/rete/disco, test di durata e disconnessione.
-2. Streaming live con audio via un gateway locale come go2rtc; estensione della timeline e esportazione intervalli.
+2. Ulteriori ottimizzazioni live e accelerazione hardware; estensione della timeline e esportazione intervalli.
 3. Rilevamento movimento semplice o eventi ONVIF, senza AI, come metadati separati dalle registrazioni.
 4. Eventuale worker AI opzionale, ad esempio YOLO, sul sottostream: non deve bloccare il registratore.
 

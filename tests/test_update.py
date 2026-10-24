@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
+from zipfile import ZipFile
 
 import pytest
 
@@ -14,6 +15,26 @@ SCRIPT = Path(__file__).resolve().parents[1] / "deploy" / "update.sh"
 embedded = SCRIPT.read_text(encoding="utf-8").split("<<'NVR_HEALTH_PY'\n", 1)[1].split("\nNVR_HEALTH_PY", 1)[0]
 health = ModuleType("nvr_update_health")
 exec(compile(embedded, str(SCRIPT) + ":health", "exec"), health.__dict__)
+wheel_source = SCRIPT.read_text(encoding="utf-8").split("<<'NVR_WHEEL_PY'\n", 1)[1].split("\nNVR_WHEEL_PY", 1)[0]
+wheels = ModuleType("nvr_update_wheel")
+exec(compile(wheel_source, str(SCRIPT) + ":wheel", "exec"), wheels.__dict__)
+
+
+def test_wheel_metadata_extracts_runtime_requirements_before_downtime(tmp_path):
+    wheel = tmp_path / "nvr_sr81-test.whl"
+    with ZipFile(wheel, "w") as archive:
+        archive.writestr("nvr_sr81-0.3.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: nvr-sr81\nVersion: 0.3.0\nRequires-Dist: fastapi>=0.115,<1\nRequires-Dist: wsproto>=1.2,<2\n")
+    requirements = tmp_path / "runtime.txt"
+    assert wheels.wheel_metadata(wheel, requirements) == "0.3.0"
+    assert requirements.read_text().splitlines() == ["fastapi>=0.115,<1", "wsproto>=1.2,<2"]
+
+
+def test_direct_url_requirements_cannot_trigger_network_during_offline_install(tmp_path):
+    wheel = tmp_path / "nvr_sr81-test.whl"
+    with ZipFile(wheel, "w") as archive:
+        archive.writestr("nvr_sr81-0.3.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: nvr-sr81\nVersion: 0.3.0\nRequires-Dist: wsproto @ https://example.invalid/wsproto.whl\n")
+    with pytest.raises(ValueError):
+        wheels.wheel_metadata(wheel, tmp_path / "runtime.txt")
 
 
 @pytest.fixture(scope="module")
@@ -88,11 +109,17 @@ def installation(tmp_path):
     python.write_text('''#!/usr/bin/env bash
 if [[ $1 == -c ]]; then printf '0.1.0\\n'; exit 0; fi
 if [[ $1 == -m && $3 == wheel ]]; then
+    printf 'wheel:%s\\n' "$*" >> "$NVR_TEST_LOG"
     while (($#)); do
         if [[ $1 == --wheel-dir ]]; then touch "$2/nvr_sr81-test.whl"; break; fi
         shift
     done
     exit 0
+fi
+if [[ $1 == -m && $3 == install && $* == *--find-links* ]]; then
+    printf 'dependencies:%s\\n' "$*" >> "$NVR_TEST_LOG"
+    [[ ${NVR_TEST_DEPS_FAIL:-0} == 0 ]]
+    exit $?
 fi
 printf 'pip-install:%s\\n' "${*: -1}" >> "$NVR_TEST_LOG"
 [[ ${NVR_TEST_PIP_FAIL:-0} == 0 ]]
@@ -173,7 +200,7 @@ git() {
     esac
 }
 systemctl() { printf 'system:%s\\n' "$1" >> "$NVR_TEST_LOG"; return 0; }
-wheel_version() { printf '0.2.0'; }
+wheel_version() { printf 'wsproto>=1.2,<2\\n' > "$2"; printf '0.2.0'; }
 health_check() {
     printf 'health:%s\\n' "$1" >> "$NVR_TEST_LOG"
     if [[ $1 == 0.2.0 && ${NVR_TEST_SIGNAL:-0} == 1 ]]; then kill -TERM "$BASHPID"; fi
@@ -193,6 +220,16 @@ def test_main_update_preserves_files_and_checks_new_version(bash, installation, 
     assert "flock:-n 9" in commands
     assert "health:0.2.0" in commands
     assert commands.index("system:stop") < commands.index("pip-install:") < commands.index("health:0.2.0")
+    lines = commands.splitlines()
+    downloads = [line for line in lines if line.startswith("wheel:")]
+    assert len(downloads) == 2
+    assert "--no-deps" in downloads[0]
+    assert "--no-deps" not in downloads[1]
+    assert commands.index(downloads[1]) < commands.index("system:stop")
+    dependencies = next(line for line in lines if line.startswith("dependencies:"))
+    assert "--no-index --find-links" in dependencies
+    assert "--upgrade" not in dependencies and "--force-reinstall" not in dependencies
+    assert commands.index("system:stop") < commands.index(dependencies) < commands.index("pip-install:")
     assert (root / "data.sqlite").read_bytes() == b"keep database"
     assert (root / "recording.mkv").read_bytes() == b"keep recording"
 
@@ -220,6 +257,20 @@ def test_failed_new_health_triggers_error_trap_and_verified_rollback(bash, insta
     index = commands.index("health:0.2.0")
     assert commands[index + 1] == "system:stop"
     assert commands[index + 2].startswith("pip-install:")
+    assert commands[-1] == "health:0.1.0"
+
+
+def test_failed_offline_dependency_install_rolls_back_before_new_app_install(bash, installation, tmp_path):
+    root, _, log = installation
+    env = dict(os.environ, NVR_TEST_DEPS_FAIL="1")
+    result = run_shell(bash, MAIN_SETUP, root, log, tmp_path, env=env)
+    assert result.returncode == 1, result.stderr
+    assert "ripristinata e servizio verificato" in result.stderr
+    commands = log.read_text().splitlines()
+    failure = next(index for index, line in enumerate(commands) if line.startswith("dependencies:"))
+    assert commands[failure + 1] == "system:stop"
+    assert commands[failure + 2].startswith("pip-install:") and "/old/" in commands[failure + 2]
+    assert not any(line.startswith("pip-install:") and "/new/" in line for line in commands)
     assert commands[-1] == "health:0.1.0"
 
 
