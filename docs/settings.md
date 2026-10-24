@@ -1,6 +1,8 @@
 # Impostazioni e lingue
 
-La versione 0.6.0 gestisce le traduzioni come **file JSON installabili** nella sola pagina **Settings → Languages**. La scheda Translations e l'editor dei singoli vocaboli sono rimossi. Inglese e italiano sono inclusi; nuovi pacchetti si installano e si selezionano in Languages. Non sono richiesti servizi esterni o un riavvio. La barra sinistra mantiene icone e nomi in stile M777.
+La versione 0.6.1 gestisce le traduzioni come **file JSON installabili** nella sola pagina **Settings → Languages**. La scheda Translations e l'editor dei singoli vocaboli sono rimossi. Inglese e italiano sono inclusi; nuovi pacchetti si installano e si selezionano in Languages. Non sono richiesti servizi esterni o un riavvio. La barra sinistra mantiene icone e nomi in stile M777.
+
+La pagina usa righe compatte per i pacchetti e raccoglie installazione e modello JSON in due riquadri affiancati sul desktop, disposti in colonna sul telefono. La grafica riprende le superfici piatte e i bordi sottili di M777, con una base grigio titanio e accenti verde acqua per comandi, selezioni, timeline e forma d'onda.
 
 ## Cambiare lingua
 

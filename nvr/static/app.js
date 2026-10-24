@@ -500,14 +500,15 @@ function drawWaveform() {
   const dimensions = canvasContext("waveform");
   if (!dimensions) return;
   const {context, width, height} = dimensions;
-  context.fillStyle = "#13191c";
+  const colors = getComputedStyle(document.documentElement);
+  context.fillStyle = colors.getPropertyValue("--panel-deep").trim();
   context.fillRect(0, 0, width, height);
-  context.strokeStyle = "#29373f";
+  context.strokeStyle = colors.getPropertyValue("--line").trim();
   context.beginPath(); context.moveTo(0, height / 2); context.lineTo(width, height / 2); context.stroke();
   const peaks = state.waveform?.peaks;
   if (!Array.isArray(peaks) || !peaks.length) return;
   const barCount = Math.max(1, Math.floor(width / 3));
-  context.fillStyle = "#bba78e";
+  context.fillStyle = colors.getPropertyValue("--accent").trim();
   for (let i = 0; i < barCount; i += 1) {
     const begin = Math.floor(i / barCount * peaks.length);
     const end = Math.min(peaks.length, Math.max(begin + 1, Math.ceil((i + 1) / barCount * peaks.length)));
@@ -530,12 +531,13 @@ function drawTimeline() {
   const dimensions = canvasContext("timeline");
   if (!dimensions) return;
   const {context, width, height} = dimensions;
-  context.fillStyle = "#202b31";
+  const colors = getComputedStyle(document.documentElement);
+  context.fillStyle = colors.getPropertyValue("--panel-deep").trim();
   context.fillRect(0, 0, width, height);
   if (!state.range) return;
   const {start, end} = state.range;
   const duration = end - start;
-  context.strokeStyle = "#34444d";
+  context.strokeStyle = colors.getPropertyValue("--line").trim();
   context.lineWidth = 1;
   for (let i = 0; i <= 12; i += 1) {
     const x = i / 12 * width;
@@ -545,7 +547,7 @@ function drawTimeline() {
     const from = Math.max(start, recording.started_at);
     const to = Math.min(end, recording.started_at + recording.duration);
     if (to <= from) return;
-    context.fillStyle = recording.id === state.recording?.id ? "#ffb184" : "#da7057";
+    context.fillStyle = colors.getPropertyValue(recording.id === state.recording?.id ? "--accent-strong" : "--accent").trim();
     // Segment width is proportional to its duration; gaps are never filled.
     context.fillRect((from - start) / duration * width, 7, (to - from) / duration * width, height - 14);
   });
