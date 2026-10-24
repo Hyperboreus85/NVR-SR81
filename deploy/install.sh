@@ -55,6 +55,7 @@ def quote(value):
 config = {'NVR_HOST': '0.0.0.0', 'NVR_PORT': '8080',
           'NVR_DATA_DIR': os.environ['NVR_DATA_DIR'],
           'NVR_RECORDINGS_DIR': os.environ['NVR_RECORDINGS_DIR'],
+          'NVR_SEGMENT_SECONDS': os.environ.get('NVR_SEGMENT_SECONDS', '1800'),
           'NVR_MIN_FREE_GB': os.environ.get('NVR_MIN_FREE_GB', '5'), 'NVR_ADMIN_PASSWORD': password}
 path = Path('/etc/nvr-sr81/environment')
 with path.open('x') as f:

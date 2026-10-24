@@ -10,7 +10,7 @@ class Settings:
     recordings_dir: Path = field(default_factory=lambda: Path(os.getenv("NVR_RECORDINGS_DIR", "./recordings")))
     ffmpeg: str = field(default_factory=lambda: os.getenv("NVR_FFMPEG", "ffmpeg"))
     ffprobe: str = field(default_factory=lambda: os.getenv("NVR_FFPROBE", "ffprobe"))
-    segment_seconds: int = field(default_factory=lambda: int(os.getenv("NVR_SEGMENT_SECONDS", "60")))
+    segment_seconds: int = field(default_factory=lambda: int(os.getenv("NVR_SEGMENT_SECONDS", "1800")))
     min_free_bytes: int = field(default_factory=lambda: int(float(os.getenv("NVR_MIN_FREE_GB", "5")) * 1_000_000_000))
     password: str = field(default_factory=lambda: os.getenv("NVR_ADMIN_PASSWORD", ""))
     secure_cookie: bool = field(default_factory=lambda: os.getenv("NVR_SECURE_COOKIE", "0") == "1")
@@ -22,8 +22,8 @@ class Settings:
         self.data_dir = self.data_dir.resolve()
         self.recordings_dir = self.recordings_dir.resolve()
         self.cache_dir = self.data_dir / "cache"
-        if not 5 <= self.segment_seconds <= 600:
-            raise ValueError("NVR_SEGMENT_SECONDS must be between 5 and 600")
+        if not 5 <= self.segment_seconds <= 3600:
+            raise ValueError("NVR_SEGMENT_SECONDS must be between 5 and 3600")
         if self.min_free_bytes < 0:
             raise ValueError("NVR_MIN_FREE_GB cannot be negative")
         if not 1 <= self.live_max_streams <= 32:

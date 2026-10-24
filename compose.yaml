@@ -8,7 +8,7 @@ services:
       - "${NVR_BIND_IP:-127.0.0.1}:8080:8080"
     environment:
       NVR_ADMIN_PASSWORD: "${NVR_ADMIN_PASSWORD:?Impostare una password di almeno 12 caratteri in .env}"
-      NVR_SEGMENT_SECONDS: "${NVR_SEGMENT_SECONDS:-60}"
+      NVR_SEGMENT_SECONDS: "${NVR_SEGMENT_SECONDS:-1800}"
       NVR_MIN_FREE_GB: "${NVR_MIN_FREE_GB:-5}"
       NVR_SECURE_COOKIE: "${NVR_SECURE_COOKIE:-0}"
       NVR_LIVE_MAX_STREAMS: "${NVR_LIVE_MAX_STREAMS:-16}"

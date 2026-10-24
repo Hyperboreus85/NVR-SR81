@@ -1,7 +1,6 @@
 """Authenticated same-origin HTTP API and bundled offline interface."""
 import asyncio
 import contextlib
-import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
@@ -12,44 +11,20 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import __version__
 from .config import Settings
 from .discovery import DiscoveryError, discover, list_interfaces, scan_network
 from .live import LiveError, LiveManager
+from .languages import LanguageError, LanguageManager, MAX_PACK_BYTES
 from .media import MediaManager
 from .onvif import get_profiles
 from .security import Auth, redact_url, validate_stream_url
 from .store import Store
 
 LIVE_AUTH_CHECK_SECONDS = 15
-MAX_TRANSLATION_BYTES = 512 * 1024
-TRANSLATION_METADATA_KEY = "translation_overrides_v1"
-
-
-class TranslationSettingsInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    locale: Literal["it"]
-    overrides: dict[
-        Annotated[str, StringConstraints(strict=True, min_length=1, max_length=500)],
-        Annotated[str, StringConstraints(strict=True, max_length=2000)],
-    ] = Field(max_length=1000)
-
-    @field_validator("overrides")
-    @classmethod
-    def plain_string_entries(cls, value):
-        if any(not key.strip() for key in value):
-            raise ValueError("Invalid translation settings.")
-        # Store valid Unicode text only; no templates or markup are executed.
-        try:
-            for key, translation in value.items():
-                key.encode("utf-8")
-                translation.encode("utf-8")
-        except UnicodeEncodeError:
-            raise ValueError("Invalid translation settings.") from None
-        return value
 
 
 class CameraInput(BaseModel):
@@ -88,6 +63,8 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
     store = Store(settings.data_dir)
     auth = Auth(store, settings.password)
+    languages = LanguageManager(settings.data_dir / "languages", Path(__file__).parent / "locales")
+    languages.migrate_legacy(store)
     media = media_factory(settings, store)
     realtime = live_factory(settings)
     media_jobs = asyncio.Semaphore(2)
@@ -127,6 +104,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     app.state.store, app.state.media = store, media
     app.state.settings, app.state.auth = settings, auth
     app.state.realtime = realtime
+    app.state.languages = languages
 
     @app.middleware("http")
     async def access_control(request: Request, call_next):
@@ -138,6 +116,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 if origin and origin != str(request.base_url).rstrip("/"):
                     return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
             public = request.url.path in {"/api/session", "/api/login"}
+            if request.method == "GET":
+                language_path = re.fullmatch(r"/api/languages/([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)", request.url.path)
+                public = public or request.url.path == "/api/languages" or bool(
+                    language_path and len(language_path.group(1)) <= 35)
             if not public and not auth.valid(request.cookies.get("nvr_session")):
                 return JSONResponse({"detail": "Authentication required"}, status_code=401)
         response = await call_next(request)
@@ -160,6 +142,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     async def invalid_request(request, exc):
         # The default validation handler echoes inputs, including credentials.
         return JSONResponse({"detail": "Invalid data: check the fields you entered"}, status_code=422)
+
+    @app.exception_handler(LanguageError)
+    async def invalid_language_pack(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
 
     def camera_or_404(camera_id):
         camera = store.get_camera(camera_id)
@@ -223,40 +209,39 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     def cameras():
         return [public_camera(camera) for camera in store.list_cameras()]
 
-    @app.get("/api/settings/translations")
-    def translation_settings():
-        stored = store.meta_get(TRANSLATION_METADATA_KEY)
-        if stored:
-            try:
-                return TranslationSettingsInput.model_validate_json(stored).model_dump()
-            except (ValidationError, ValueError, TypeError):
-                pass
-        return {"locale": "it", "overrides": {}}
+    @app.get("/api/languages")
+    def available_languages():
+        return languages.list()
 
-    @app.put("/api/settings/translations")
-    async def save_translation_settings(request: Request):
-        # Parse only after bounding the actual incoming bytes. FastAPI's usual
-        # body model parsing would buffer an arbitrarily large JSON request.
+    # Keep the authenticated template route before the locale path route.
+    @app.get("/api/languages/template")
+    def language_template():
+        return languages.template()
+
+    @app.post("/api/languages/install")
+    async def install_language(request: Request):
         body = bytearray()
         async for chunk in request.stream():
-            if len(body) + len(chunk) > MAX_TRANSLATION_BYTES:
-                raise HTTPException(413, "Translation settings are too large.")
+            if len(body) + len(chunk) > MAX_PACK_BYTES:
+                raise LanguageError("Language pack file is too large.", 413)
             body.extend(chunk)
-        try:
-            data = TranslationSettingsInput.model_validate_json(body)
-        except (ValidationError, ValueError, TypeError):
-            raise HTTPException(422, "Invalid translation settings.") from None
-        replacement = data.model_dump()
-        serialized = json.dumps(replacement, ensure_ascii=False, separators=(",", ":"))
+        pack = languages.parse(body)
         async with mutation_lock:
-            # A slow streamed upload can outlive logout or session expiry.
-            # Recheck immediately before the write, without another await.
+            # A streamed file upload can outlive logout or session expiry.
             if not auth.valid(request.cookies.get("nvr_session")):
                 raise HTTPException(401, "Authentication required")
-            # One SQLite transaction replaces the whole dictionary, so an empty
-            # overrides object resets every entry without changing other metadata.
-            store.meta_set(TRANSLATION_METADATA_KEY, serialized)
-        return replacement
+            return languages.install(pack)
+
+    @app.get("/api/languages/{locale}")
+    def language_pack(locale: str):
+        return languages.get(locale)
+
+    @app.delete("/api/languages/{locale}")
+    async def delete_language(locale: str, request: Request):
+        async with mutation_lock:
+            if not auth.valid(request.cookies.get("nvr_session")):
+                raise HTTPException(401, "Authentication required")
+            return languages.delete(locale)
 
     def validated_camera(data, previous=None):
         values = data.model_dump()

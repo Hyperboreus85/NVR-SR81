@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nvr-sr81"
-version = "0.4.0"
+version = "0.5.0"
 description = "Local NVR with continuous RTSP recording and a multilingual web interface"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
@@ -24,7 +24,7 @@ test = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2"]
 nvr-sr81 = "nvr.__main__:main"
 
 [tool.setuptools.package-data]
-nvr = ["static/*"]
+nvr = ["static/*", "locales/*.json"]
 
 [tool.setuptools.packages.find]
 include = ["nvr*"]

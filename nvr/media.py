@@ -271,6 +271,13 @@ class MediaManager:
                 process = worker.process = await self._spawn(*args)
                 worker.state, worker.message = "connecting", "Connecting to camera"
                 while process.returncode is None:
+                    # Long segments remain open for up to 30 minutes. Report
+                    # recording once FFmpeg writes media, without waiting for
+                    # the first completed segment to appear in the manifest.
+                    if worker.state == "connecting":
+                        with contextlib.suppress(OSError):
+                            if (directory / f"{prefix}-000000.mkv").stat().st_size > 0:
+                                worker.state, worker.message = "recording", "Recording"
                     await self._import_manifest(manifest, str(camera["id"]), origin, seen, worker, cursor)
                     if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
                         await self._retention()

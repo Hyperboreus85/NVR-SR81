@@ -74,9 +74,9 @@ La password amministratore viene generata **dentro il container**, salvata tempo
 
 Aprire `http://IP-DEL-CONTAINER:8080` dalla LAN, entrare con la password mostrata e aggiungere una telecamera RTSP oppure importare un endpoint ONVIF. Per il primo collaudo impostare un periodo breve di conservazione e verificare registrazione, audio, riavvio e riproduzione.
 
-## Aggiornare il container esistente alla versione 0.4.0
+## Aggiornare il container esistente alla versione 0.5.0
 
-La versione 0.4.0 aggiunge **Settings** con lingue e traduzioni e imposta l'inglese come lingua iniziale; l'italiano rimane incluso. La barra laterale usa icone con i nomi sotto. **Live monitor** mostra le telecamere in una griglia con video continuo e audio selezionabile; **Network cameras** offre ricerca ONVIF e URL dei profili. Non occorre ricreare il container o i dischi. Dalla Shell del nodo, con ID 181, scaricare ed eseguire lo script aggiornato dentro il guest (unica riga):
+La versione 0.5.0 gestisce le traduzioni come **file lingua JSON installabili** e imposta file di registrazione da **30 minuti** come valore predefinito. Inglese e italiano sono inclusi. La barra laterale usa icone con i nomi sotto; monitor live e ricerca ONVIF restano disponibili. Non occorre ricreare il container o i dischi. Dalla Shell del nodo, con ID 181, scaricare ed eseguire lo script aggiornato dentro il guest (unica riga):
 
 ```bash
 wget -O /tmp/nvr-sr81-update.sh https://raw.githubusercontent.com/Hyperboreus85/NVR-SR81/codex/initial-nvr/deploy/update.sh && pct push 181 /tmp/nvr-sr81-update.sh /tmp/nvr-sr81-update.sh && pct exec 181 -- bash /tmp/nvr-sr81-update.sh
@@ -84,7 +84,7 @@ wget -O /tmp/nvr-sr81-update.sh https://raw.githubusercontent.com/Hyperboreus85/
 
 Lo script verifica il checkout e prepara vecchio pacchetto, nuovo pacchetto e dipendenze prima di fermare il servizio. Installa poi dai file già scaricati e riavvia l'NVR. Durante il breve riavvio la registrazione si interrompe. Conserva ambiente, password, database, chiave e video; se installazione o verifica di avvio falliscono, tenta il ripristino del pacchetto precedente. La versione 0.3.0 aggiunge il supporto WebSocket: usare questo script aggiornato per installare anche le nuove dipendenze. Se ci sono modifiche locali ai file tracciati, lo script si ferma per consentire di conservarle.
 
-Al termine ricaricare completamente la pagina web. La prima apertura usa l'inglese: per l'italiano scegliere **Settings → Languages → Italiano**, oppure il selettore nella pagina di accesso. Per le personalizzazioni, vedere [guida impostazioni](settings.md). Per griglia, browser e scelta del sottostream, vedere [guida Monitor live](live.md); per ricerca, profili e rete del container, vedere [guida discovery](discovery.md). Per impostare una revisione precisa si può passarla come primo argomento allo script `update.sh`.
+Al termine ricaricare completamente la pagina web. Per l'italiano scegliere **Settings → Languages → Italiano**, oppure il selettore nella pagina di accesso. Per installare file lingua vedere [guida impostazioni](settings.md). **Settings → General** mostra la durata effettiva dei file. Le installazioni native create con il vecchio script usavano il valore predefinito, ora 1800 secondi. Se `/etc/nvr-sr81/environment` contiene già `NVR_SEGMENT_SECONDS`, prevale quel valore: impostarlo a `1800` e riavviare `nvr-sr81`. Con Docker aggiornare anche l'eventuale valore nel proprio `.env`. I tagli possono superare leggermente 30 minuti in attesa di un keyframe. Per griglia, browser e sottostream vedere [guida Monitor live](live.md); per ONVIF vedere [guida discovery](discovery.md).
 
 ## Errori, backup e manutenzione
 

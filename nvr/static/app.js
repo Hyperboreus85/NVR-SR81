@@ -81,16 +81,18 @@ function uiError(message) {
 }
 
 async function api(path, options = {}) {
+  const {rawBody, ...requestOptions} = options;
   const authEpoch = state.authEpoch;
-  const method = options.method || "GET";
-  const headers = new Headers(options.headers || {});
+  const method = requestOptions.method || "GET";
+  const headers = new Headers(requestOptions.headers || {});
   if (!["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase())) headers.set("X-NVR-Request", "1");
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
+  if (requestOptions.body !== undefined || rawBody !== undefined) headers.set("Content-Type", "application/json");
+  if (rawBody !== undefined && typeof rawBody !== "string") throw uiError(t("Invalid value"));
   let response;
   try {
     response = await fetch(path, {
-      ...options, method, headers, credentials: "same-origin", cache: "no-store",
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      ...requestOptions, method, headers, credentials: "same-origin", cache: "no-store",
+      body: rawBody !== undefined ? rawBody : requestOptions.body === undefined ? undefined : JSON.stringify(requestOptions.body),
     });
   } catch (error) {
     if (error.name === "AbortError") throw error;
@@ -1506,4 +1508,4 @@ window.addEventListener("nvr-languagechange", () => {
   network.scanProgress?.();
 });
 document.body.classList.add("loading");
-api("/api/session").then((session) => session?.authenticated ? enterApp() : showLogin()).catch((error) => { showLogin(); setText("login-error", errorText(error)); });
+window.NvrI18n.ready.then(() => api("/api/session")).then((session) => session?.authenticated ? enterApp() : showLogin()).catch((error) => { showLogin(); setText("login-error", errorText(error)); });

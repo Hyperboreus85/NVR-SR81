@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.4.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.5.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -9,13 +9,13 @@ NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette 
 - **SQLite:** indice temporale locale; video su un disco/percorso separato.
 - **HTML/CSS/JavaScript senza dipendenze esterne:** interfaccia web disponibile anche senza Internet.
 
-Il flusso originale viene copiato in segmenti **Matroska/MKV**, normalmente di circa 60 secondi. MKV conserva anche audio delle telecamere come G.711; un'interruzione non compromette l'intera giornata. I confini effettivi dipendono dai keyframe della telecamera. Il segmento aperto diventa consultabile dopo la chiusura. Impostare un intervallo dei keyframe di 1–2 secondi sulla telecamera, quando possibile.
+Il flusso originale viene copiato in file **Matroska/MKV di circa 30 minuti** (`1800` secondi). MKV conserva anche audio delle telecamere come G.711. Il taglio avviene al primo keyframe utile, quindi la durata può superare leggermente il valore richiesto. Il segmento aperto diventa consultabile dopo la chiusura; lo stato segnala la registrazione appena FFmpeg inizia a scrivere, senza attendere il primo file completo. Impostare un intervallo dei keyframe di 1–2 secondi sulla telecamera, quando possibile.
 
 ## Funzioni presenti
 
 - Login amministratore locale; password salvata con scrypt e sessione HttpOnly.
 - Interfaccia inglese predefinita e italiano incluso, selezionabili anche prima del login. Barra laterale con icone sopra ai nomi, ispirata al layout M777.
-- **Settings / Impostazioni** con sezioni General, Languages e Translations: lingua e layout predefinito del monitor per browser; ricerca e modifica delle traduzioni italiane, salvataggio sul server, importazione/esportazione JSON e ripristino. [Guida lingue e traduzioni](docs/settings.md).
+- **Settings / Impostazioni** con sezioni General, Languages e Translations: lingua e layout del monitor per browser, durata dei file e gestione di **pacchetti lingua JSON installabili**. Installazione, download e rimozione dei file dalla schermata Traduzioni; i pacchetti installati compaiono in Lingue. Inglese e italiano sono inclusi come file. [Guida pacchetti lingua](docs/settings.md).
 - Aggiunta/modifica/disattivazione di telecamere RTSP/RTSPS e URL HTTP(S) diretti compatibili con FFmpeg.
 - Sezione **Telecamere in rete** con discovery ONVIF multicast, selezione della scheda di rete e ricerca opzionale su sottoreti private fino a /24.
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.
@@ -110,7 +110,7 @@ Stima dello spazio: **1 Mbit/s ≈ 10,8 GB al giorno** (unità decimali), prima 
 | `NVR_PORT` | `8080` | Porta web |
 | `NVR_DATA_DIR` | `./data` | Configurazione, indice e cache |
 | `NVR_RECORDINGS_DIR` | `./recordings` | Archivio originale |
-| `NVR_SEGMENT_SECONDS` | `60` | Durata obiettivo 5–600 secondi |
+| `NVR_SEGMENT_SECONDS` | `1800` | Durata obiettivo: 30 minuti; intervallo ammesso 5–3600 secondi |
 | `NVR_MIN_FREE_GB` | `5` | Riserva sul disco archivio, GB decimali |
 | `NVR_ADMIN_PASSWORD` | richiesta al primo avvio | Imposta/aggiorna la password all'avvio |
 | `NVR_SECURE_COOKIE` | `0` | Usare `1` con HTTPS locale |
@@ -118,7 +118,7 @@ Stima dello spazio: **1 Mbit/s ≈ 10,8 GB al giorno** (unità decimali), prima 
 | `NVR_LIVE_MAX_TRANSCODES` | `2` | Conversioni live H.264 contemporanee, da 0 a 4 |
 | `NVR_FFMPEG`, `NVR_FFPROBE` | nomi nel PATH | Percorsi eseguibili |
 
-Un solo processo/istanza per archivio. Limite iniziale dell'interfaccia: 32 configurazioni, **non una promessa di capacità hardware**. La cache multimediale è limitata a circa 2 GiB e un giorno; conversioni simultanee limitate. La ricerca API restituisce fino a 2.000 segmenti per intervallo (circa un giorno con segmenti da 60 secondi per camera).
+Un solo processo/istanza per archivio. Limite iniziale dell'interfaccia: 32 configurazioni, **non una promessa di capacità hardware**. La cache multimediale è limitata a circa 2 GiB e un giorno; conversioni simultanee limitate. La ricerca API restituisce fino a 2.000 segmenti per intervallo: selezionare una telecamera o ridurre l'intervallo se si raggiunge il limite.
 
 ## Accesso locale
 
