@@ -72,6 +72,18 @@ La password amministratore viene generata **dentro il container**, salvata tempo
 
 Aprire `http://IP-DEL-CONTAINER:8080` dalla LAN, entrare con la password mostrata e aggiungere una telecamera RTSP oppure importare un endpoint ONVIF. Per il primo collaudo impostare un periodo breve di conservazione e verificare registrazione, audio, riavvio e riproduzione.
 
+## Aggiornare il container esistente alla versione 0.2.0
+
+La nuova sezione **Telecamere in rete** cerca i dispositivi ONVIF e permette di copiare gli URL di tutti i profili. Non occorre ricreare il container o i dischi. Dalla Shell del nodo, con ID 181, scaricare ed eseguire lo script di aggiornamento dentro il guest (unica riga):
+
+```bash
+wget -O /tmp/nvr-sr81-update.sh https://raw.githubusercontent.com/Hyperboreus85/NVR-SR81/codex/initial-nvr/deploy/update.sh && pct push 181 /tmp/nvr-sr81-update.sh /tmp/nvr-sr81-update.sh && pct exec 181 -- bash /tmp/nvr-sr81-update.sh
+```
+
+Lo script verifica il checkout, prepara vecchio e nuovo pacchetto prima di fermare il servizio, installa il nuovo pacchetto e riavvia l'NVR. Durante il breve riavvio la registrazione si interrompe. Conserva ambiente, password, database, chiave e video; se installazione o verifica di avvio falliscono, tenta il ripristino del pacchetto precedente. Le dipendenze Python di questo aggiornamento sono invariate. Se ci sono modifiche locali ai file tracciati, lo script si ferma per consentire di conservarle.
+
+Al termine ricaricare completamente la pagina web. Per ricerca, profili e rete del container, vedere [guida discovery](discovery.md). Per impostare una revisione precisa si può passarla come primo argomento allo script `update.sh`.
+
 ## Errori, backup e manutenzione
 
 Un ID occupato viene rifiutato e non viene sostituito. Lo script non esegue rimozioni automatiche in caso di errore. Il comando Proxmox `pct create` può però annullare la propria creazione incompleta, rimuovendo i volumi appena allocati e la configurazione del nuovo guest. Possono rimanere cartelle vuote sul nodo. Se invece il container risulta creato, viene conservato per consentire l'analisi: ripetere la creazione con lo stesso ID fallirà intenzionalmente.

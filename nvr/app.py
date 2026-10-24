@@ -3,7 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Settings
+from .discovery import DiscoveryError, discover, list_interfaces, scan_network
 from .media import MediaManager
 from .onvif import get_profiles
 from .security import Auth, redact_url, validate_stream_url
@@ -38,6 +39,17 @@ class OnvifInput(BaseModel):
     password: str = Field(default="", max_length=1024)
 
 
+class DiscoveryInput(BaseModel):
+    interface_ip: str | None = Field(default=None, max_length=45)
+    timeout: float = Field(default=6, ge=1, le=10)
+
+
+class NetworkScanInput(BaseModel):
+    cidr: str = Field(min_length=9, max_length=43)
+    ports: list[Annotated[int, Field(ge=1, le=65535)]] = Field(
+        default_factory=lambda: [80, 8000, 8080, 8899], min_length=1, max_length=8)
+
+
 def create_app(settings: Settings | None = None, media_factory=MediaManager):
     settings = settings or Settings()
     if settings.password and len(settings.password) < 12:
@@ -46,6 +58,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
     auth = Auth(store, settings.password)
     media = media_factory(settings, store)
     media_jobs = asyncio.Semaphore(2)
+    onvif_jobs = asyncio.Semaphore(2)
+    discovery_lock = asyncio.Lock()
+    active_scan: asyncio.Task | None = None
+    active_scan_session: str | None = None
     login_jobs = asyncio.Semaphore(2)
     mutation_lock = asyncio.Lock()
 
@@ -65,6 +81,9 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
             await media.start()
             yield
         finally:
+            if active_scan is not None:
+                active_scan.cancel()
+                await asyncio.gather(active_scan, return_exceptions=True)
             await media.stop()
             lock.close()
 
@@ -152,8 +171,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
         return response
 
     @app.post("/api/logout")
-    def logout(request: Request):
-        auth.sessions.pop(request.cookies.get("nvr_session"), None)
+    async def logout(request: Request):
+        session_token = request.cookies.get("nvr_session")
+        await cancel_owned_scan(session_token)
+        auth.sessions.pop(session_token, None)
         response = JSONResponse({"authenticated": False})
         response.delete_cookie("nvr_session")
         return response
@@ -245,11 +266,74 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager):
         recording, _ = recording_or_404(recording_id)
         return await media_result(lambda: media.waveform(recording))
 
+    @app.get("/api/onvif/interfaces")
+    async def onvif_interfaces():
+        try:
+            return await asyncio.to_thread(list_interfaces)
+        except OSError:
+            raise HTTPException(503, "Impossibile leggere le interfacce di rete del server.") from None
+
+    async def run_discovery(request: Request, operation, timeout):
+        nonlocal active_scan, active_scan_session
+        if discovery_lock.locked():
+            raise HTTPException(409, "Una ricerca è già in corso. Attendere il completamento.")
+        try:
+            async with discovery_lock:
+                job = asyncio.create_task(asyncio.wait_for(operation(), timeout))
+                active_scan = job
+                active_scan_session = request.cookies.get("nvr_session")
+                try:
+                    return await job
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise
+                    raise HTTPException(499, "Ricerca annullata.") from None
+                finally:
+                    job.cancel()
+                    await asyncio.gather(job, return_exceptions=True)
+                    if active_scan is job:
+                        active_scan = None
+                        active_scan_session = None
+        except DiscoveryError as error:
+            raise HTTPException(422, str(error)) from None
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "Ricerca terminata per limite di tempo. Provare un intervallo più piccolo.") from None
+        except OSError:
+            raise HTTPException(503, "Ricerca non disponibile. Verificare rete e permessi del container.") from None
+
+    async def cancel_owned_scan(session_token):
+        job = active_scan
+        if job is None or job.done() or active_scan_session != session_token:
+            return False
+        job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+        # Wait for the original request's finally block to release the scan slot.
+        async with discovery_lock:
+            pass
+        return True
+
+    @app.post("/api/onvif/cancel")
+    async def cancel_onvif_scan(request: Request):
+        session_token = request.cookies.get("nvr_session")
+        if active_scan and not active_scan.done() and active_scan_session != session_token:
+            raise HTTPException(409, "La ricerca attiva appartiene a un'altra sessione.")
+        return {"cancelled": await cancel_owned_scan(session_token)}
+
+    @app.post("/api/onvif/discover")
+    async def discover_onvif(data: DiscoveryInput, request: Request):
+        return await run_discovery(request, lambda: discover(data.interface_ip, data.timeout), data.timeout + 5)
+
+    @app.post("/api/onvif/scan")
+    async def scan_onvif_network(data: NetworkScanInput, request: Request):
+        return await run_discovery(request, lambda: scan_network(data.cidr, data.ports), 60)
+
     @app.post("/api/onvif/profiles")
     async def onvif(data: OnvifInput):
         try:
-            async with media_jobs:
-                return await get_profiles(data.endpoint, data.username, data.password)
+            async with onvif_jobs:
+                return await asyncio.wait_for(get_profiles(data.endpoint, data.username, data.password), 90)
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "La telecamera non ha completato la lettura dei profili. Riprovare o verificare i servizi ONVIF.") from None
         except (ValueError, RuntimeError, OSError):
             raise HTTPException(422, "ONVIF non disponibile. Verificare endpoint, credenziali e orologio della telecamera.") from None
 

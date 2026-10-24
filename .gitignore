@@ -9,3 +9,4 @@ dist/
 data/
 recordings/
 .coverage
+.nvr-update.lock

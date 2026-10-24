@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Prima versione sperimentale 0.1.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.2.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -15,7 +15,9 @@ Il flusso originale viene copiato in segmenti **Matroska/MKV**, normalmente di c
 
 - Login amministratore locale; password salvata con scrypt e sessione HttpOnly.
 - Aggiunta/modifica/disattivazione di telecamere RTSP/RTSPS e URL HTTP(S) diretti compatibili con FFmpeg.
-- Importazione dei profili ONVIF Media1/Media2 da endpoint inserito manualmente.
+- Sezione **Telecamere in rete** con discovery ONVIF multicast, selezione della scheda di rete e ricerca opzionale su sottoreti private fino a /24.
+- Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.
+- Scelta dei profili principale e secondario per configurare registrazione e anteprima; nomi originali conservati e suggerimenti basati sui metadati per ciascuna sorgente video.
 - Registrazione continua senza ricodifica, audio opzionale, riconnessione automatica e stato per telecamera.
 - Anteprima MJPEG a **2 fps, senza audio**, avviata solo quando richiesta. Massimo quattro telecamere visualizzate contemporaneamente. Consigliato il sottostream H.264 della camera.
 - Ricerca delle registrazioni per telecamera e intervallo, timeline con vuoti reali, riproduzione dei segmenti, download originale.
@@ -75,10 +77,21 @@ L'installer crea l'utente `nvr-sr81` (UID 10001), una virtualenv, il servizio sy
 1. Aprire l'interfaccia, accedere con la password locale e scegliere **Aggiungi telecamera**.
 2. Inserire il flusso, per esempio `rtsp://utente:password@192.168.1.20:554/percorso` (il percorso dipende dal produttore). Codificare i caratteri riservati di username/password nell'URL.
 3. Se disponibile, inserire un sottostream H.264 per l'anteprima. Il flusso principale H.265 resta quello registrato.
-4. In alternativa, indicare l'endpoint ONVIF, spesso `http://IP:PORTA/onvif/device_service`, e scegliere il profilo restituito. Serve che ONVIF sia abilitato sulla camera e che gli orologi siano sincronizzati.
+4. In alternativa, aprire **Telecamere in rete**, cercare dispositivi ONVIF e leggere i loro profili. Si può anche indicare un endpoint manuale, spesso `http://IP:PORTA/onvif/device_service`. Serve che ONVIF sia abilitato sulla camera e che gli orologi siano sincronizzati.
 5. Scegliere conservazione e audio; salvare e verificare lo stato dopo la chiusura del primo segmento.
 
-ONVIF è usato per scoprire i profili e gli URL di streaming, non è un formato video. Questa versione non implementa discovery multicast, PTZ, eventi o tutti i requisiti di conformità ONVIF. I dispositivi che rifiutano le chiamate possono comunque essere aggiunti tramite RTSP. I flussi HTTP annidati che richiedono protocolli non autorizzati (ad esempio playlist con file locali) sono rifiutati.
+ONVIF è usato per trovare i dispositivi, leggere i profili e gli URL di streaming, non è un formato video. Questa versione non implementa PTZ, eventi o tutti i requisiti di conformità ONVIF. La ricerca IPv4 multicast riguarda la LAN del server e può essere filtrata da firewall/VLAN; restano disponibili ricerca per sottorete ed endpoint manuale. I dispositivi che rifiutano le chiamate possono comunque essere aggiunti tramite RTSP. I flussi HTTP annidati che richiedono protocolli non autorizzati (ad esempio playlist con file locali) sono rifiutati. [Guida a discovery e flussi](docs/discovery.md).
+
+## Aggiornare un'installazione esistente
+
+Sul container già installato, il nuovo `deploy/update.sh` prepara il pacchetto mentre la registrazione continua, riavvia brevemente il servizio e conserva configurazione e archivio. Le dipendenze Python della versione 0.2.0 sono le stesse della 0.1.0. L'aggiornamento richiede un checkout Git senza modifiche locali ai file tracciati e conserva un pacchetto per il ripristino in caso di errore.
+
+```bash
+# Dentro il container, come root; dopo avere scaricato il nuovo script:
+bash /opt/nvr-sr81/deploy/update.sh
+```
+
+Il file deve essere della nuova versione: una precedente installazione non lo contiene. La [guida Proxmox](docs/proxmox.md) spiega come scaricarlo ed eseguirlo dalla Shell del nodo senza ricreare il container.
 
 ## Dati, spazio e tempo
 
@@ -115,6 +128,7 @@ pip install '.[test]'
 python -m pytest -q
 bash -n deploy/install.sh
 bash -n deploy/proxmox-create.sh
+bash -n deploy/update.sh
 ```
 
 I test multimediali usano FFmpeg/FFprobe e sorgenti sintetiche locali; i test ONVIF usano risposte simulate. Per includere anche il test RTSP con interruzione e ripresa, impostare `NVR_TEST_RTSP_SERVER` sul percorso di MediaMTX: la CI scarica la versione ufficiale 1.21.2 e lo esegue su Ubuntu. Sono comunque necessari un test prolungato con le telecamere vere e prove su LXC/Raspberry: perdita di rete, riavvio, disco pieno e riproduzione sul proprio browser.

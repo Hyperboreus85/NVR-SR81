@@ -12,6 +12,12 @@ const formatDate = new Intl.DateTimeFormat("it-IT", {day: "2-digit", month: "sho
 const formatTime = new Intl.DateTimeFormat("it-IT", {hour: "2-digit", minute: "2-digit", second: "2-digit"});
 const formatShortTime = new Intl.DateTimeFormat("it-IT", {hour: "2-digit", minute: "2-digit"});
 const player = $("player");
+const network = {
+  view: "recorder", devices: [], selected: null, profiles: [], modalProfiles: [],
+  interfaces: [], interfacesLoaded: false, interfaceEpoch: 0,
+  scanEpoch: 0, profileEpoch: 0, modalEpoch: 0,
+  scanController: null, profileController: null, modalController: null, scanTimer: null,
+};
 
 function icon(name) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -45,7 +51,8 @@ async function api(path, options = {}) {
       ...options, method, headers, credentials: "same-origin", cache: "no-store",
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
-  } catch (_) {
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
     throw new Error("Server non raggiungibile. Controlla la connessione alla rete locale.");
   }
   const raw = await response.text();
@@ -132,6 +139,7 @@ function showLogin() {
   state.recordings = [];
   state.range = null;
   state.archiveRequest += 1;
+  resetNetwork();
   document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
   $("app").hidden = true;
   $("login-screen").hidden = false;
@@ -247,6 +255,7 @@ function renderSystem() {
 }
 
 async function selectCamera(id) {
+  showView("recorder");
   if (id === state.selectedId) return;
   stopLive();
   clearPlayer();
@@ -534,6 +543,7 @@ async function saveCamera(event) {
   try {
     const saved = await api(editingId ? `/api/cameras/${encodeURIComponent(editingId)}` : "/api/cameras", {method: editingId ? "PUT" : "POST", body: payload});
     $("camera-dialog").close();
+    showView("recorder");
     if (!editingId && saved?.id) {
       stopLive(); clearPlayer(); state.selectedId = saved.id;
     }
@@ -565,32 +575,454 @@ async function probeCamera() {
 
 async function findOnvifProfiles(event) {
   event.preventDefault();
+  network.modalController?.abort();
+  const request = ++network.modalEpoch;
+  const authEpoch = state.authEpoch;
+  const controller = new AbortController();
+  network.modalController = controller;
   const button = $("onvif-form").querySelector("button[type=submit]");
   button.disabled = true;
+  button.textContent = "Lettura dei profili…";
   setText("onvif-error", "");
+  network.modalProfiles = [];
   $("onvif-profiles").replaceChildren();
+  $("onvif-stream-tools").hidden = true;
+  showWarnings("onvif-warnings", []);
   try {
-    const data = await api("/api/onvif/profiles", {method: "POST", body: {
+    const data = await api("/api/onvif/profiles", {method: "POST", signal: controller.signal, body: {
       endpoint: $("onvif-endpoint").value.trim(), username: $("onvif-username").value,
       password: $("onvif-password").value,
     }});
-    const profiles = Array.isArray(data?.profiles) ? data.profiles : [];
-    if (!profiles.length) setText("onvif-error", "Il dispositivo non ha restituito profili video utilizzabili.");
-    profiles.forEach((profile) => {
-      const choice = el("button", "onvif-profile");
-      choice.type = "button";
-      const text = el("span");
-      text.append(el("strong", "", profile.name || "Profilo video"), el("small", "", `${profile.encoding || "Video"} · ${profile.token || "ONVIF"}`));
-      choice.append(text, el("span", "accent", "Usa profilo →"));
-      choice.addEventListener("click", () => {
-        $("camera-url").value = profile.url || "";
-        $("onvif-dialog").close();
-        toast("Flusso ONVIF inserito. Salva la telecamera per iniziare.");
-      });
-      $("onvif-profiles").append(choice);
+    if (request !== network.modalEpoch || authEpoch !== state.authEpoch || !$("onvif-dialog").open) return;
+    network.modalProfiles = Array.isArray(data?.profiles) ? data.profiles : [];
+    showWarnings("onvif-warnings", data?.warnings);
+    if (!network.modalProfiles.length) setText("onvif-error", "Il dispositivo non ha restituito profili video. Verifica che ONVIF sia attivo e che l’utente abbia accesso ai servizi video.");
+    renderModalProfiles();
+  } catch (error) {
+    if (error.name !== "AbortError" && request === network.modalEpoch) setText("onvif-error", errorText(error));
+  } finally {
+    if (request === network.modalEpoch) { button.disabled = false; button.textContent = "Cerca profili"; network.modalController = null; }
+  }
+}
+
+function showView(view) {
+  network.view = view;
+  const isNetwork = view === "network";
+  $("recorder-view").hidden = isNetwork;
+  $("network-view").hidden = !isNetwork;
+  setText("current-view-label", isNetwork ? "Telecamere in rete" : "Registratore");
+  ["recorder", "network"].forEach((name) => {
+    const button = $(`nav-${name}`);
+    button.classList.toggle("active", name === view);
+    if (name === view) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
+  if (isNetwork) { stopLive(); player.pause(); }
+  else {
+    cancelNetworkScan(false);
+    if (network.profileController) clearNetworkProfiles(false);
+    drawTimeline(); drawWaveform();
+  }
+}
+
+function showWarnings(id, warnings) {
+  const container = $(id);
+  container.replaceChildren();
+  const list = (Array.isArray(warnings) ? warnings : []).filter((item) => typeof item === "string" && item);
+  container.hidden = !list.length;
+  list.forEach((warning) => container.append(el("p", "", warning)));
+}
+
+function clearNetworkProfiles(clearCredentials = false) {
+  network.profileController?.abort();
+  network.profileController = null;
+  network.profileEpoch += 1;
+  network.profiles = [];
+  if (clearCredentials) {
+    $("network-username").value = "";
+    $("network-password").value = "";
+  }
+  $("network-include-credentials").checked = false;
+  $("network-profiles").replaceChildren();
+  $("network-main-profile").replaceChildren();
+  $("network-preview-profile").replaceChildren();
+  $("network-stream-tools").hidden = true;
+  $("network-recording-pair").hidden = true;
+  $("network-device-info").hidden = true;
+  $("network-device-info").replaceChildren();
+  $("network-profile-progress").hidden = true;
+  $("network-read-profiles").disabled = false;
+  setText("network-profile-error", "");
+  showWarnings("network-profile-warnings", []);
+}
+
+function resetModalProfiles() {
+  network.modalController?.abort();
+  network.modalController = null;
+  network.modalEpoch += 1;
+  network.modalProfiles = [];
+  $("onvif-password").value = "";
+  $("onvif-username").value = "";
+  $("onvif-include-credentials").checked = false;
+  $("onvif-profiles").replaceChildren();
+  $("onvif-stream-tools").hidden = true;
+  const button = $("onvif-form").querySelector("button[type=submit]");
+  button.disabled = false;
+  button.textContent = "Cerca profili";
+}
+
+function resetNetwork() {
+  cancelNetworkScan(false);
+  clearNetworkProfiles(true);
+  resetModalProfiles();
+  network.devices = [];
+  network.selected = null;
+  network.interfaces = [];
+  network.interfacesLoaded = false;
+  network.interfaceEpoch += 1;
+  $("network-interface").replaceChildren(el("option", "", "Automatica · tutte le interfacce disponibili"));
+  $("network-interface").firstChild.value = "";
+  $("network-manual-endpoint").value = "";
+  $("network-cidr").value = "";
+  $("network-endpoint").replaceChildren();
+  $("copy-value").value = "";
+  renderNetworkDevices();
+  $("network-device-explorer").hidden = true;
+  $("network-select-placeholder").hidden = false;
+  showWarnings("network-warnings", []);
+  setText("network-error", "");
+  showView("recorder");
+}
+
+async function loadNetworkInterfaces() {
+  if (network.interfacesLoaded) return;
+  const request = ++network.interfaceEpoch;
+  const authEpoch = state.authEpoch;
+  try {
+    const data = await api("/api/onvif/interfaces");
+    if (request !== network.interfaceEpoch || authEpoch !== state.authEpoch || !state.authenticated) return;
+    network.interfaces = Array.isArray(data) ? data : [];
+    network.interfacesLoaded = true;
+    const select = $("network-interface"), previous = select.value;
+    select.replaceChildren(el("option", "", "Automatica · tutte le interfacce disponibili"));
+    select.firstChild.value = "";
+    network.interfaces.forEach((item) => {
+      const option = el("option", "", `${item.name} · ${item.address}${item.cidr ? ` · ${item.cidr}` : ""}`);
+      option.value = item.address;
+      select.append(option);
     });
-  } catch (error) { setText("onvif-error", errorText(error)); }
-  finally { button.disabled = false; }
+    select.value = previous;
+    suggestNetworkCidr();
+  } catch (error) {
+    if (request === network.interfaceEpoch) setText("network-error", `Interfacce non disponibili: ${errorText(error)} Puoi comunque provare la ricerca automatica o l’endpoint manuale.`);
+  }
+}
+
+function suggestNetworkCidr() {
+  const item = network.interfaces.find((entry) => entry.address === $("network-interface").value) || network.interfaces[0];
+  if (!item) return;
+  const prefix = Number(String(item.cidr || "").split("/")[1]);
+  $("network-cidr").value = prefix >= 24 ? item.cidr : `${String(item.address).split(".").slice(0, 3).join(".")}.0/24`;
+}
+
+function setScanBusy(busy) {
+  $("network-discover").disabled = busy;
+  $("network-scan").disabled = busy;
+  $("network-interface").disabled = busy;
+  $("network-cancel").hidden = !busy;
+  $("network-progress").hidden = !busy;
+}
+
+function cancelNetworkScan(announce = true) {
+  const wasRunning = !!network.scanController;
+  network.scanEpoch += 1;
+  network.scanController?.abort();
+  network.scanController = null;
+  clearInterval(network.scanTimer);
+  network.scanTimer = null;
+  setScanBusy(false);
+  if (wasRunning && !network.devices.length) renderNetworkDevices("Annullamento della ricerca richiesto. Attendi la conferma del server prima di avviare una nuova ricerca.");
+  if (wasRunning && state.authenticated) {
+    const authEpoch = state.authEpoch, cancelEpoch = network.scanEpoch;
+    if (announce) toast("Annullamento della ricerca richiesto.");
+    // Closing the HTTP response alone may leave the server's discovery task
+    // running. Explicit cancellation releases that task and its discovery lock.
+    api("/api/onvif/cancel", {method: "POST", body: {}}).then((result) => {
+      if (!state.authenticated || authEpoch !== state.authEpoch || cancelEpoch !== network.scanEpoch) return;
+      if (typeof result?.cancelled === "boolean" && !network.devices.length) renderNetworkDevices("Ricerca chiusa. Puoi avviare una nuova ricerca oppure inserire un endpoint manuale.");
+    }).catch(() => {
+      // Completion/cancellation races (including 499) are benign. Keep the
+      // request wording; a later search will report any still-active lock.
+    });
+  }
+}
+
+async function runNetworkScan(mode) {
+  if (network.scanController) return;
+  let payload;
+  if (mode === "scan") {
+    const cidr = $("network-cidr").value.trim();
+    const parts = cidr.match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/);
+    const ports = [...new Set($("network-ports").value.split(",").map((value) => Number(value.trim())))];
+    if (!parts || parts[1].split(".").some((value) => Number(value) > 255) || Number(parts[2]) < 24 || Number(parts[2]) > 32) {
+      setText("network-error", "Inserisci una rete IPv4 valida con prefisso da /24 a /32 (massimo 256 indirizzi)."); return;
+    }
+    if (!ports.length || ports.length > 8 || ports.some((port) => !Number.isInteger(port) || port < 1 || port > 65535)) {
+      setText("network-error", "Inserisci da 1 a 8 porte valide, separate da virgole (da 1 a 65535)."); return;
+    }
+    payload = {cidr, ports};
+  } else payload = {interface_ip: $("network-interface").value || null, timeout: 6};
+  const request = ++network.scanEpoch, authEpoch = state.authEpoch;
+  const controller = new AbortController();
+  network.scanController = controller;
+  clearNetworkProfiles(true);
+  network.selected = null;
+  network.devices = [];
+  renderNetworkDevices("Ricerca in corso. I risultati compariranno al termine.");
+  $("network-device-explorer").hidden = true;
+  $("network-select-placeholder").hidden = false;
+  setText("network-error", "");
+  showWarnings("network-warnings", []);
+  setScanBusy(true);
+  const started = Date.now();
+  const progress = () => setText("network-progress-label", `${mode === "scan" ? "Ricerca nell’intervallo IP" : "Ricerca multicast ONVIF"} in corso · ${Math.floor((Date.now() - started) / 1000)} s`);
+  progress();
+  network.scanTimer = setInterval(progress, 1000);
+  try {
+    const data = await api(`/api/onvif/${mode}`, {method: "POST", body: payload, signal: controller.signal});
+    if (request !== network.scanEpoch || authEpoch !== state.authEpoch || network.view !== "network" || !state.authenticated) return;
+    network.devices = Array.isArray(data?.devices) ? data.devices : [];
+    showWarnings("network-warnings", data?.warnings);
+    renderNetworkDevices("Nessun dispositivo trovato. Controlla che ONVIF sia abilitato, che telecamera e server siano nella stessa LAN e che firewall, bridge o container LXC consentano il traffico. Puoi provare l’intervallo IP oppure l’endpoint manuale.");
+    toast(`${network.devices.length} ${network.devices.length === 1 ? "dispositivo trovato" : "dispositivi trovati"}${Number.isFinite(data?.duration) ? ` in ${data.duration.toLocaleString("it-IT", {maximumFractionDigits: 1})} s` : ""}.`);
+  } catch (error) {
+    if (error.name !== "AbortError" && request === network.scanEpoch) {
+      setText("network-error", errorText(error));
+      renderNetworkDevices("Ricerca non completata. Controlla la connettività del server oppure inserisci un endpoint manuale.");
+    }
+  } finally {
+    if (request === network.scanEpoch) {
+      clearInterval(network.scanTimer); network.scanTimer = null; network.scanController = null; setScanBusy(false);
+    }
+  }
+}
+
+function renderNetworkDevices(emptyMessage = "Avvia una ricerca oppure inserisci un endpoint ONVIF.") {
+  const list = $("network-devices");
+  list.replaceChildren();
+  setText("network-device-count", String(network.devices.length));
+  if (!network.devices.length) {
+    const empty = el("div", "network-device-empty");
+    empty.append(icon("network"), el("strong", "", "La tua rete, da esplorare."), el("p", "", emptyMessage));
+    list.append(empty);
+  }
+  network.devices.forEach((device, index) => {
+    const row = el("button", `network-device-row${device === network.selected ? " active" : ""}`);
+    row.type = "button";
+    row.setAttribute("aria-pressed", String(device === network.selected));
+    const copy = el("span");
+    copy.append(el("strong", "", device.name || device.hardware || device.ip || `Dispositivo ${index + 1}`), el("small", "", `${device.ip || "ONVIF"}${device.manual ? " · endpoint manuale" : ""}`));
+    row.append(icon("camera"), copy, el("span", "device-chevron", "›"));
+    row.addEventListener("click", () => chooseNetworkDevice(device));
+    list.append(row);
+  });
+}
+
+function chooseNetworkDevice(device) {
+  if (network.selected === device) return;
+  clearNetworkProfiles(true);
+  network.selected = device;
+  const endpoints = [...new Set([device.endpoint, ...(Array.isArray(device.xaddrs) ? device.xaddrs : [])].filter((value) => typeof value === "string" && value))];
+  $("network-endpoint").replaceChildren();
+  endpoints.forEach((endpoint) => { const option = el("option", "", endpoint); option.value = endpoint; $("network-endpoint").append(option); });
+  setText("network-device-name", device.name || device.hardware || device.ip || "Dispositivo ONVIF");
+  setText("network-device-address", device.ip || "Endpoint manuale");
+  setText("network-device-description", [device.hardware, device.location].filter(Boolean).join(" · "));
+  $("network-select-placeholder").hidden = true;
+  $("network-device-explorer").hidden = false;
+  $("network-read-profiles").disabled = !endpoints.length;
+  if (!endpoints.length) setText("network-profile-error", "Il dispositivo non ha pubblicato un endpoint. Inseriscilo manualmente nel campo sopra.");
+  renderNetworkDevices();
+}
+
+async function readNetworkProfiles(event) {
+  event.preventDefault();
+  if (!network.selected || !$("network-endpoint").value) return;
+  clearNetworkProfiles(false);
+  const request = ++network.profileEpoch, authEpoch = state.authEpoch;
+  const controller = new AbortController();
+  network.profileController = controller;
+  $("network-read-profiles").disabled = true;
+  $("network-profile-progress").hidden = false;
+  try {
+    const data = await api("/api/onvif/profiles", {method: "POST", signal: controller.signal, body: {
+      endpoint: $("network-endpoint").value, username: $("network-username").value,
+      password: $("network-password").value,
+    }});
+    if (request !== network.profileEpoch || authEpoch !== state.authEpoch || !state.authenticated) return;
+    network.profiles = Array.isArray(data?.profiles) ? data.profiles : [];
+    showWarnings("network-profile-warnings", data?.warnings);
+    renderDeviceInfo(data?.device);
+    if (!network.profiles.length) setText("network-profile-error", "Nessun profilo restituito. Verifica endpoint, credenziali ONVIF e permessi dell’utente sulla telecamera.");
+    else if (data?.success === false) setText("network-profile-error", "Profili trovati, ma nessun URL utilizzabile. I dettagli di ciascun profilo possono aiutarti a individuare il problema.");
+    renderNetworkProfiles(true);
+  } catch (error) {
+    if (error.name !== "AbortError" && request === network.profileEpoch) setText("network-profile-error", errorText(error));
+  } finally {
+    if (request === network.profileEpoch) { network.profileController = null; $("network-read-profiles").disabled = false; $("network-profile-progress").hidden = true; }
+  }
+}
+
+function renderDeviceInfo(device) {
+  const list = $("network-device-info");
+  list.replaceChildren();
+  const labels = {manufacturer: "Produttore", model: "Modello", firmware: "Firmware", serial_number: "Numero di serie", hardware_id: "Hardware"};
+  Object.entries(labels).forEach(([key, label]) => {
+    if (!device?.[key]) return;
+    const pair = el("div"); pair.append(el("dt", "", label), el("dd", "", device[key])); list.append(pair);
+  });
+  list.hidden = !list.childElementCount;
+}
+
+function profileRole(profile) {
+  return profile.role === "main" ? "Principale suggerito" : profile.role === "sub" ? "Secondario suggerito" : "Altro profilo";
+}
+
+function cleanStreamUrl(profile) {
+  const source = profile.clean_url || profile.url || "";
+  try { const url = new URL(source); url.username = ""; url.password = ""; return url.href; }
+  catch (_) { return profile.clean_url || ""; }
+}
+
+function streamUrl(profile, includeCredentials = false) {
+  return includeCredentials ? profile.url || profile.clean_url || "" : cleanStreamUrl(profile);
+}
+
+function buildStreamCard(profile, index, mode) {
+  const isNetwork = mode === "network";
+  const includeCredentials = $(isNetwork ? "network-include-credentials" : "onvif-include-credentials").checked;
+  const available = !!(profile.url || profile.clean_url);
+  const card = el("article", "stream-card");
+  card.dataset.profileIndex = String(index);
+  const heading = el("div", "stream-card-heading");
+  const title = el("div");
+  title.append(el("h4", "", profile.name || `Profilo ${index + 1}`), el("small", "", `${profile.service || "ONVIF"} · ${profile.token || "Token non disponibile"}`));
+  heading.append(title, el("span", `badge ${profile.role === "main" ? "" : "neutral"}`, profileRole(profile)));
+  card.append(heading);
+  const metadata = [profile.encoding, profile.width && profile.height ? `${profile.width} × ${profile.height}` : "", profile.fps ? `${profile.fps} fps` : "", profile.bitrate ? `Limite ${profile.bitrate} kb/s` : "", profile.video_source ? `Sorgente ${profile.video_source}` : ""].filter(Boolean);
+  card.append(el("p", "stream-metadata", metadata.join(" · ") || "Metadati video non disponibili"));
+  if (profile.role_basis) card.append(el("p", "field-help", profile.role_basis));
+  if (profile.error) card.append(el("p", "form-error", profile.error));
+  if (available) {
+    const input = el("input", "stream-url"); input.readOnly = true; input.value = streamUrl(profile, includeCredentials);
+    input.setAttribute("aria-label", `URL del profilo ${profile.name || index + 1}`); input.spellcheck = false;
+    input.addEventListener("focus", () => input.select());
+    card.append(input);
+  } else card.append(el("p", "field-help", "URL non disponibile per questo profilo."));
+  const actions = el("div", "stream-actions");
+  const copy = el("button", "button secondary small-button"); copy.type = "button"; copy.disabled = !available;
+  copy.append(icon("copy"), document.createTextNode("Copia URL"));
+  copy.addEventListener("click", () => copyStreamText(streamUrl(profile, $(isNetwork ? "network-include-credentials" : "onvif-include-credentials").checked)));
+  actions.append(copy);
+  ["main", "preview"].forEach((target) => {
+    const button = el("button", "button quiet small-button", target === "main" ? "Per registrazione" : "Per anteprima");
+    button.type = "button"; button.disabled = !available; button.dataset.streamTarget = target;
+    button.addEventListener("click", () => {
+      if (isNetwork) {
+        $(target === "main" ? "network-main-profile" : "network-preview-profile").value = String(index);
+        updateProfilePair();
+      } else {
+        $(target === "main" ? "camera-url" : "camera-preview-url").value = profile.url || profile.clean_url || "";
+        if (target === "preview") { $("clear-preview").checked = false; $("camera-preview-url").disabled = false; }
+        $("onvif-dialog").close();
+        toast(target === "main" ? "Flusso principale inserito. Salva la telecamera per registrare." : "Flusso di anteprima inserito. Salva la configurazione.");
+      }
+    });
+    actions.append(button);
+  });
+  card.append(actions);
+  return card;
+}
+
+function renderModalProfiles() {
+  $("onvif-profiles").replaceChildren(...network.modalProfiles.map((profile, index) => buildStreamCard(profile, index, "modal")));
+  $("onvif-stream-tools").hidden = !network.modalProfiles.length;
+  $("onvif-copy-all").disabled = !network.modalProfiles.some((profile) => profile.url || profile.clean_url);
+}
+
+function renderNetworkProfiles(resetPair = false) {
+  $("network-profiles").replaceChildren(...network.profiles.map((profile, index) => buildStreamCard(profile, index, "network")));
+  $("network-stream-tools").hidden = !network.profiles.length;
+  const available = network.profiles.map((profile, index) => ({profile, index})).filter(({profile}) => profile.url || profile.clean_url);
+  setText("network-profile-count", `${network.profiles.length} ${network.profiles.length === 1 ? "profilo" : "profili"} · ${available.length} URL disponibili`);
+  $("network-copy-all").disabled = !available.length;
+  $("network-recording-pair").hidden = !available.length;
+  if (resetPair) {
+    $("network-main-profile").replaceChildren();
+    $("network-preview-profile").replaceChildren(el("option", "", "Nessuno · usa il flusso principale"));
+    $("network-preview-profile").firstChild.value = "";
+    available.forEach(({profile, index}) => {
+      ["network-main-profile", "network-preview-profile"].forEach((id) => {
+        const option = el("option", "", `${profile.name || `Profilo ${index + 1}`} · ${profile.encoding || "video"}${profile.width ? ` · ${profile.width} × ${profile.height}` : ""}`);
+        option.value = String(index); $(id).append(option);
+      });
+    });
+    const main = available.find(({profile}) => profile.role === "main") || available[0];
+    const preview = available.find(({profile, index}) => profile.role === "sub" && index !== main?.index && main?.profile.video_source && profile.video_source === main.profile.video_source);
+    $("network-main-profile").value = main ? String(main.index) : "";
+    $("network-preview-profile").value = preview ? String(preview.index) : "";
+  }
+  updateProfilePair();
+}
+
+function updateProfilePair() {
+  document.querySelectorAll("#network-profiles .stream-card").forEach((card) => {
+    ["main", "preview"].forEach((target) => {
+      const selected = $(target === "main" ? "network-main-profile" : "network-preview-profile").value === card.dataset.profileIndex;
+      const button = card.querySelector(`[data-stream-target="${target}"]`);
+      button.classList.toggle("chosen", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+  });
+  const mainValue = $("network-main-profile").value, previewValue = $("network-preview-profile").value;
+  const main = mainValue === "" ? null : network.profiles[Number(mainValue)];
+  const preview = previewValue === "" ? null : network.profiles[Number(previewValue)];
+  $("network-pair-note").hidden = !(main?.video_source && preview?.video_source && main.video_source !== preview.video_source);
+}
+
+async function copyStreamText(value) {
+  if (!value) return;
+  const authEpoch = state.authEpoch, profileEpoch = network.profileEpoch, modalEpoch = network.modalEpoch;
+  const stillCurrent = () => state.authenticated && authEpoch === state.authEpoch && profileEpoch === network.profileEpoch && modalEpoch === network.modalEpoch;
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(value); if (stillCurrent()) toast("URL copiati negli appunti."); return; } catch (_) { /* HTTP LAN and browser permissions may require manual copying. */ }
+  }
+  if (!stillCurrent()) return;
+  $("copy-value").value = value;
+  if (!$("copy-dialog").open) $("copy-dialog").showModal();
+  $("copy-value").focus(); $("copy-value").select();
+  let copied = false;
+  try { copied = document.execCommand("copy"); } catch (_) { /* The selected field remains available. */ }
+  if (copied) { $("copy-dialog").close(); toast("URL copiati negli appunti."); }
+  else setText("copy-dialog-message", "Copia automatica non disponibile su questo browser. Il testo è selezionato: usa Ctrl+C, ⌘C o il comando Copia del dispositivo.");
+}
+
+function copyAllProfiles(mode) {
+  const profiles = mode === "network" ? network.profiles : network.modalProfiles;
+  const includeCredentials = $(mode === "network" ? "network-include-credentials" : "onvif-include-credentials").checked;
+  copyStreamText(profiles.map((profile) => streamUrl(profile, includeCredentials)).filter(Boolean).join("\n"));
+}
+
+function addNetworkCamera() {
+  const main = network.profiles[Number($("network-main-profile").value)];
+  const previewValue = $("network-preview-profile").value;
+  const preview = previewValue === "" ? null : network.profiles[Number(previewValue)];
+  if (!main || !(main.url || main.clean_url)) return;
+  // Always create a new draft; never overwrite the recorder's selected camera.
+  openCameraDialog();
+  $("camera-name").value = String(network.selected?.name || network.selected?.hardware || network.selected?.ip || "Telecamera ONVIF").slice(0, 80);
+  $("camera-url").value = main.url || main.clean_url;
+  $("camera-preview-url").value = preview ? preview.url || preview.clean_url || "" : "";
 }
 
 async function deleteCamera() {
@@ -630,11 +1062,50 @@ $("search-form").addEventListener("submit", (event) => { event.preventDefault();
 $("camera-form").addEventListener("submit", saveCamera);
 $("probe-camera").addEventListener("click", probeCamera);
 $("open-onvif").addEventListener("click", () => {
+  resetModalProfiles();
   $("onvif-form").reset(); $("onvif-profiles").replaceChildren(); setText("onvif-error", "");
+  showWarnings("onvif-warnings", []);
   $("onvif-dialog").showModal();
 });
 $("onvif-form").addEventListener("submit", findOnvifProfiles);
-$("onvif-dialog").addEventListener("close", () => { $("onvif-password").value = ""; });
+$("onvif-dialog").addEventListener("close", resetModalProfiles);
+$("nav-recorder").addEventListener("click", () => showView("recorder"));
+$("nav-network").addEventListener("click", () => { showView("network"); loadNetworkInterfaces(); });
+$("network-back").addEventListener("click", () => showView("recorder"));
+$("network-interface").addEventListener("change", suggestNetworkCidr);
+$("network-discover").addEventListener("click", () => runNetworkScan("discover"));
+$("network-cancel").addEventListener("click", () => cancelNetworkScan());
+$("network-scan-form").addEventListener("submit", (event) => { event.preventDefault(); runNetworkScan("scan"); });
+$("network-manual-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const endpoint = $("network-manual-endpoint").value.trim();
+  let url;
+  try { url = new URL(endpoint); } catch (_) { setText("network-error", "Inserisci un endpoint HTTP o HTTPS valido."); return; }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+    setText("network-error", "Usa un endpoint HTTP o HTTPS senza credenziali nell’indirizzo; inseriscile nei campi del dispositivo."); return;
+  }
+  cancelNetworkScan(false);
+  setText("network-error", "");
+  let device = network.devices.find((item) => item.endpoint === endpoint);
+  if (!device) { device = {id: `manual:${endpoint}`, ip: url.hostname, name: url.hostname, endpoint, xaddrs: [endpoint], manual: true}; network.devices.push(device); }
+  chooseNetworkDevice(device);
+});
+$("network-profile-form").addEventListener("submit", readNetworkProfiles);
+$("network-endpoint").addEventListener("change", () => clearNetworkProfiles(true));
+["network-username", "network-password"].forEach((id) => $(id).addEventListener("input", () => clearNetworkProfiles(false)));
+["onvif-endpoint", "onvif-username", "onvif-password"].forEach((id) => $(id).addEventListener("input", () => {
+  network.modalController?.abort(); network.modalController = null; network.modalEpoch += 1; network.modalProfiles = [];
+  $("onvif-profiles").replaceChildren(); $("onvif-stream-tools").hidden = true;
+  setText("onvif-error", ""); showWarnings("onvif-warnings", []);
+  const button = $("onvif-form").querySelector("button[type=submit]"); button.disabled = false; button.textContent = "Cerca profili";
+}));
+$("network-include-credentials").addEventListener("change", () => renderNetworkProfiles());
+$("onvif-include-credentials").addEventListener("change", renderModalProfiles);
+$("network-copy-all").addEventListener("click", () => copyAllProfiles("network"));
+$("onvif-copy-all").addEventListener("click", () => copyAllProfiles("modal"));
+["network-main-profile", "network-preview-profile"].forEach((id) => $(id).addEventListener("change", updateProfilePair));
+$("network-add-recorder").addEventListener("click", addNetworkCamera);
+$("copy-dialog").addEventListener("close", () => { $("copy-value").value = ""; });
 $("camera-dialog").addEventListener("close", () => { $("camera-url").value = ""; $("camera-preview-url").value = ""; });
 $("delete-camera").addEventListener("click", () => { setText("delete-error", ""); $("delete-dialog").showModal(); });
 $("confirm-delete").addEventListener("click", deleteCamera);

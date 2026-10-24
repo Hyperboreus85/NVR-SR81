@@ -21,3 +21,4 @@ jobs:
       - run: |
           bash -n deploy/install.sh
           bash -n deploy/proxmox-create.sh
+          bash -n deploy/update.sh

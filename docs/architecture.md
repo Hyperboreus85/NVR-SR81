@@ -11,7 +11,7 @@ SQLite conserva configurazione e indice delle registrazioni; i video sono file s
 ```mermaid
 flowchart LR
     C[Telecamera RTSP] --> F[FFmpeg: copia dei flussi]
-    O[Endpoint ONVIF manuale] --> A[API FastAPI]
+    O[Discovery ONVIF o endpoint manuale] --> A[API FastAPI]
     A --> F
     F --> D[Segmenti MKV sul disco]
     A --> S[SQLite: configurazione e indice]
@@ -28,7 +28,7 @@ L'importazione parte da un endpoint inserito manualmente, ad esempio `http://192
 
 Il risultato è una lista di profili con nome, codec dichiarato e URL. Gli indirizzi non specificati `0.0.0.0` o `::` vengono sostituiti con l'host dell'endpoint; le credenziali vengono aggiunte all'URI RTSP quando mancano, codificando i caratteri speciali. Un URI che contiene credenziali è un segreto e va trattato come tale.
 
-È **supporto all'importazione manuale ONVIF**, non una dichiarazione di piena conformità ONVIF. Il primo rilascio non comprende ricerca multicast WS-Discovery, PTZ, gestione utenti della telecamera, eventi ONVIF o configurazione dei codec sulla telecamera. Alcuni produttori richiedono l'attivazione di ONVIF o un account specifico: in questi casi rimane disponibile l'inserimento diretto dell'URL RTSP.
+La versione 0.2.0 include **discovery IPv4 WS-Discovery ed esplorazione dei profili ONVIF Media1/Media2**, oltre all'endpoint manuale. Un fallback esplicito verifica il servizio ONVIF su sottoreti private fino a /24. I profili mantengono nome/token e metadati originali; i suggerimenti main/sub sono calcolati per sorgente video e non configurano la telecamera. Non è una dichiarazione di piena conformità ONVIF: restano esclusi PTZ, gestione utenti, eventi e modifica dei codec. Alcuni produttori richiedono l'attivazione di ONVIF o un account specifico; rimane disponibile l'inserimento diretto dell'URL RTSP. [Guida discovery](discovery.md)
 
 ## Registrazione originale e riproduzione web
 
