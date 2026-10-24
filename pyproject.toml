@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nvr-sr81"
+version = "0.1.0"
+description = "NVR locale con registrazione continua RTSP e interfaccia web"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.34,<1",
+  "httpx>=0.28,<1",
+  "cryptography>=44,<50",
+  "defusedxml>=0.7,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2"]
+
+[project.scripts]
+nvr-sr81 = "nvr.__main__:main"
+
+[tool.setuptools.package-data]
+nvr = ["static/*"]
+
+[tool.setuptools.packages.find]
+include = ["nvr*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
