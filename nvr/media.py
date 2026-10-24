@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
 
+from .motion import FRAME_BYTES, SAMPLE_SECONDS, MotionAnalyzer, motion_timeout
+
 
 INPUT_PROTOCOLS = "rtsp,rtsps,http,https,tcp,tls,udp,rtp"
 MAX_JPEG_BYTES = 8 * 1024 * 1024
@@ -99,6 +101,7 @@ class MediaManager:
         self._hub_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
         self._transcode_slots = asyncio.Semaphore(2)
+        self._motion_slots = asyncio.Semaphore(1)
         # Four shared live streams plus two one-shot snapshots.
         self._decode_slots = asyncio.Semaphore(6)
         self._jobs: dict[str, asyncio.Task] = {}
@@ -669,3 +672,73 @@ class MediaManager:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise MediaError("Waveform unavailable.") from None
+
+    async def motion(self, recording: dict[str, Any], sensitivity: str = "medium") -> dict[str, Any]:
+        try:
+            duration = float(recording["duration"])
+            analyzer = MotionAnalyzer(duration, sensitivity)
+        except (KeyError, TypeError, ValueError) as exc:
+            message = str(exc) if isinstance(exc, ValueError) and str(exc).startswith((
+                "Invalid motion sensitivity.", "Motion analysis requires")) else "Invalid recording duration."
+            raise MediaError(message) from None
+        source = self.recording_path(recording)
+        destination = self._cache_path(recording, f"motion-v1-{sensitivity}", "json")
+
+        async def extract() -> Path:
+            process = None
+            temporary = destination.with_suffix(".part.json")
+            # Pin even while queued: retention must not delete the selected source.
+            self._in_use[source] = self._in_use.get(source, 0) + 1
+            try:
+                async with self._motion_slots, self._transcode_slots:
+                    process = await self._spawn(self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
+                        "-threads", "1", "-filter_threads", "1", "-i", str(source),
+                        "-map", "0:v:0", "-an", "-sn", "-dn",
+                        "-vf", "setpts=PTS-STARTPTS,fps=2:start_time=0,scale=160:90:flags=bilinear,format=gray",
+                        "-threads", "1", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1", pipe=True)
+                    assert process.stdout
+
+                    async def consume() -> None:
+                        while True:
+                            try:
+                                frame = await process.stdout.readexactly(FRAME_BYTES)
+                            except asyncio.IncompleteReadError as exc:
+                                if exc.partial:
+                                    raise MediaError("Motion analysis received an incomplete video frame.") from None
+                                break
+                            try:
+                                analyzer.push(frame)
+                            except ValueError as exc:
+                                raise MediaError(str(exc)) from None
+                            if analyzer.frames % 16 == 0:
+                                await asyncio.sleep(0)
+                        await process.wait()
+
+                    await asyncio.wait_for(consume(), motion_timeout(duration))
+                    if process.returncode or not analyzer.frames:
+                        raise MediaError("Motion analysis failed.")
+                    # A clean pipe EOF can still hide a truncated video track.
+                    # Allow rounding and a short audio lead, but never mark an
+                    # undecoded tail of the recording as having no movement.
+                    if duration - analyzer.frames * SAMPLE_SECONDS > 2:
+                        raise MediaError("Video duration does not match the recording.")
+                    temporary.write_text(json.dumps(analyzer.result()), encoding="utf-8")
+                    temporary.replace(destination)
+                    return destination
+            except asyncio.TimeoutError:
+                raise MediaError("Motion analysis timed out.") from None
+            except OSError:
+                raise MediaError("Motion analysis unavailable.") from None
+            finally:
+                await _stop_process(process)
+                self._in_use[source] -= 1
+                if self._in_use[source] == 0:
+                    del self._in_use[source]
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
+
+        path = await self._cached_job(destination, extract)
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise MediaError("Motion analysis unavailable.") from None

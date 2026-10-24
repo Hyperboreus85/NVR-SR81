@@ -430,6 +430,11 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         recording, _ = recording_or_404(recording_id)
         return await media_result(lambda: media.waveform(recording))
 
+    @app.get("/api/recordings/{recording_id}/motion")
+    async def motion(recording_id: str, sensitivity: Literal["low", "medium", "high"] = "medium"):
+        recording, _ = recording_or_404(recording_id)
+        return await media_result(lambda: media.motion(recording, sensitivity))
+
     @app.get("/api/onvif/interfaces")
     async def onvif_interfaces():
         try:

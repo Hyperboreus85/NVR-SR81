@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.6.1:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.7.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -26,6 +26,7 @@ Il flusso originale viene copiato in file **Matroska/MKV di circa 30 minuti** (`
 - Ricerca delle registrazioni per telecamera e intervallo, timeline con vuoti reali, riproduzione dei segmenti, download originale.
 - MP4 per il browser: copia video originale e conversione audio in AAC. Se H.265 non è supportato, modalità compatibile su richiesta con conversione H.264, più onerosa per la CPU.
 - Forma d'onda da campioni audio reali, calcolata su richiesta e conservata in cache; clic per spostarsi nel video. L'assenza di audio è indicata, senza inventare dati.
+- Traccia di movimento senza AI sotto l'audio: analizza automaticamente la registrazione completata selezionata, con intervalli cliccabili, precedente/successivo e sensibilità bassa/media/alta. Risultati in cache locale; luce, pioggia e vegetazione possono generare indicazioni. Il primo calcolo usa CPU, senza modificare la registrazione continua. [Guida agli indizi di movimento](docs/motion.md).
 - Conservazione per giorni e rimozione dei segmenti chiusi più vecchi quando lo spazio libero scende sotto la riserva configurata. Se lo spazio resta insufficiente, la registrazione si sospende e riprende quando torna disponibile.
 - Recupero all'avvio dell'indice dei segmenti chiusi, credenziali dei flussi cifrate su disco con chiave locale.
 
@@ -142,7 +143,7 @@ I test multimediali usano FFmpeg/FFprobe e sorgenti sintetiche locali; i test ON
 
 1. Pilotaggio con telecamere reali, misura di CPU/rete/disco, test di durata e disconnessione.
 2. Ulteriori ottimizzazioni live e accelerazione hardware; estensione della timeline e esportazione intervalli.
-3. Rilevamento movimento semplice o eventi ONVIF, senza AI, come metadati separati dalle registrazioni.
+3. Estensione degli indizi di movimento registrato con maschere, eventi ONVIF o analisi live opzionale, come metadati separati dalle registrazioni.
 4. Eventuale worker AI opzionale, ad esempio YOLO, sul sottostream: non deve bloccare il registratore.
 
 Dettagli e fonti ufficiali: [docs/architecture.md](docs/architecture.md). Licenza GPL-3.0, vedere [LICENSE](LICENSE).

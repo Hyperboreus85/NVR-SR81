@@ -35,6 +35,7 @@ const state = {
   live: false, editingId: null, poll: null, archiveRequest: 0,
   waveformRequest: 0, toastTimer: null, refreshPromise: null, authEpoch: 0,
   rangeFollowsNow: true,
+  motionSeek: null,
 };
 const formatDate = dateFormat({day: "2-digit", month: "short"});
 const formatTime = dateFormat({hour: "2-digit", minute: "2-digit", second: "2-digit"});
@@ -52,6 +53,11 @@ const monitor = {
   fullscreenId: null, audioCameraId: null, statusEpoch: 0,
   statusTimer: null,
 };
+const motionTrack = window.NvrMotionTrack ? new window.NvrMotionTrack({
+  elements: {track: $("motion-track"), markers: $("motion-markers"), cursor: $("motion-cursor"), status: $("motion-status"), error: $("motion-error"), sensitivity: $("motion-sensitivity"), previous: $("motion-previous"), next: $("motion-next"), retry: $("motion-retry"), position: $("motion-event-position")},
+  request: (id, sensitivity, signal) => api(`/api/recordings/${encodeURIComponent(id)}/motion?${new URLSearchParams({sensitivity})}`, {signal}),
+  t, seek: seekMotion,
+}) : null;
 
 function icon(name) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -399,6 +405,8 @@ function renderRecordings() {
 }
 
 function clearPlayer() {
+  motionTrack?.clear();
+  state.motionSeek = null;
   state.recording = null;
   state.waveform = null;
   state.waveformRequest += 1;
@@ -419,6 +427,11 @@ function clearPlayer() {
 function selectRecording(recording, offset = 0, autoplay = true) {
   const same = state.recording?.id === recording.id;
   state.recording = recording;
+  if (!same) {
+    state.motionSeek = null;
+    if (motionTrack) motionTrack.select(recording);
+    else setText("motion-status", t("Motion analysis unavailable."));
+  }
   archiveError();
   if (same && player.src && !player.error) {
     seekPlayer(offset);
@@ -434,7 +447,9 @@ function selectRecording(recording, offset = 0, autoplay = true) {
   const source = player.getAttribute("src");
   player.onloadedmetadata = () => {
     if (player.getAttribute("src") !== source) return;
-    seekPlayer(offset);
+    const requested = state.motionSeek?.id === recording.id ? state.motionSeek.offset : offset;
+    state.motionSeek = null;
+    seekPlayer(requested);
     if (autoplay) player.play().catch(() => {});
   };
   renderPlayingLabels();
@@ -461,6 +476,12 @@ function seekPlayer(offset) {
   if (!Number.isFinite(offset) || offset < 0 || !state.recording) return;
   const duration = Number.isFinite(player.duration) ? player.duration : state.recording.duration;
   try { player.currentTime = Math.max(0, Math.min(offset, Math.max(0, duration - .05))); } catch (_) { /* Metadata may still be loading. */ }
+}
+
+function seekMotion(offset) {
+  if (!state.recording) return;
+  state.motionSeek = player.readyState < 1 ? {id: state.recording.id, offset} : null;
+  seekPlayer(offset);
 }
 
 async function loadWaveform(recording) {
@@ -1409,6 +1430,8 @@ $("compatible").addEventListener("change", () => {
   selectRecording(recording, offset, autoplay);
 });
 player.addEventListener("timeupdate", updateWaveformCursor);
+player.addEventListener("timeupdate", () => motionTrack?.setTime(player.currentTime));
+player.addEventListener("seeked", () => motionTrack?.setTime(player.currentTime));
 player.addEventListener("error", () => {
   if (!state.recording) return;
   archiveError($("compatible").checked
@@ -1468,6 +1491,7 @@ window.addEventListener("nvr-languagechange", () => {
     if ($(id)) $(id).textContent = t(key, values);
   });
   updateClock();
+  motionTrack?.relabel();
   setText("current-view-label", t(({recorder: "Recorder", monitor: "Live monitor", network: "Network cameras", settings: "Settings"})[network.view] || "Recorder"));
   $("toggle-live").replaceChildren(icon(state.live ? "close" : "play"), document.createTextNode(t(state.live ? "Close preview" : "Open preview")));
   $("onvif-form").querySelector("button[type=submit]").textContent = t(network.modalController ? "Reading profiles…" : "Find profiles");
