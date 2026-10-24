@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.5.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.6.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -15,7 +15,7 @@ Il flusso originale viene copiato in file **Matroska/MKV di circa 30 minuti** (`
 
 - Login amministratore locale; password salvata con scrypt e sessione HttpOnly.
 - Interfaccia inglese predefinita e italiano incluso, selezionabili anche prima del login. Barra laterale con icone sopra ai nomi, ispirata al layout M777.
-- **Settings / Impostazioni** con sezioni General, Languages e Translations: lingua e layout del monitor per browser, durata dei file e gestione di **pacchetti lingua JSON installabili**. Installazione, download e rimozione dei file dalla schermata Traduzioni; i pacchetti installati compaiono in Lingue. Inglese e italiano sono inclusi come file. [Guida pacchetti lingua](docs/settings.md).
+- **Settings / Impostazioni** con sezioni General e Languages: lingua e layout del monitor per browser, durata dei file e gestione di **pacchetti lingua JSON installabili**. Scelta della lingua, installazione, download dei modelli e rimozione dei file sono tutti nella pagina Languages. Inglese e italiano sono inclusi come file. [Guida pacchetti lingua](docs/settings.md).
 - Aggiunta/modifica/disattivazione di telecamere RTSP/RTSPS e URL HTTP(S) diretti compatibili con FFmpeg.
 - Sezione **Telecamere in rete** con discovery ONVIF multicast, selezione della scheda di rete e ricerca opzionale su sottoreti private fino a /24.
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.

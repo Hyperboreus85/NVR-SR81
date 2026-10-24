@@ -623,6 +623,7 @@
     "Use language": "Use language",
     "{count} minutes": "{count} minutes",
     "{count} seconds": "{count} seconds",
-    "{translated} / {total} strings": "{translated} / {total} strings"
+    "{translated} / {total} strings": "{translated} / {total} strings",
+    "Application preferences and language packs.": "Application preferences and language packs."
   }
 }

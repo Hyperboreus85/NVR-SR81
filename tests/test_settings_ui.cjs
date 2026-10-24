@@ -34,7 +34,7 @@ function environment() {
   const nodes = new Map(), calls = [], events = new Map(), emitted = [], blobs = new Map(), revoked = [], timers = [], downloads = [], storage = new Map();
   const byId = (id) => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   byId("app").hidden = true;
-  const tabs = ["general", "languages", "translations"].map((name) => Object.assign(new Element("button"), {dataset: {settingsTab: name}}));
+  const tabs = ["general", "languages"].map((name) => Object.assign(new Element("button"), {dataset: {settingsTab: name}}));
   const panels = tabs.map((item) => Object.assign(new Element(), {dataset: {settingsPanel: item.dataset.settingsTab}}));
   const keys = ["Hello", "Device {number}", "Empty"];
   const pack = (locale = "fr", translations = {Hello: "Bonjour"}, extra = {}) => ({format: "nvr-sr81.language-pack", version: 1, locale, name: "French", native_name: "Français", translations, ...extra});
@@ -207,4 +207,36 @@ test("General reports the real 30-minute duration, layout preferences persist, a
   assert.equal(env.storage.get("nvr.monitor.layout"), "16"); assert.equal(env.emitted.at(-1).detail.layout, 16);
   env.refreshHandler(async () => { throw Error("Language files are unavailable. Try again."); }); await env.context.NvrSettings.open(); assert.equal(env.byId("settings-error").hidden, false);
   env.refreshHandler(null); await env.context.NvrSettings.open(); assert.equal(env.byId("settings-error").hidden, true);
+});
+
+test("Settings has exactly General and Languages, with every language-file control inside Languages", () => {
+  const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8");
+  const stack = [], elements = [], ids = new Map();
+  const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+  for (const token of html.matchAll(/<(\/?)([a-z][\w:-]*)([^>]*?)>/gi)) {
+    const tag = token[2].toLowerCase();
+    if (token[1]) {
+      assert.equal(stack.at(-1)?.tag, tag, "Unbalanced HTML while locating Settings controls");
+      stack.pop();
+      continue;
+    }
+    const attributes = Object.fromEntries([...token[3].matchAll(/([a-z][\w-]*)="([^"]*)"/gi)].map((match) => [match[1], match[2]]));
+    const entry = {tag, attributes, ancestors: stack.map((item) => item.attributes.id).filter(Boolean)};
+    elements.push(entry);
+    if (attributes.id) {
+      assert.equal(ids.has(attributes.id), false, "Duplicate ID: " + attributes.id);
+      ids.set(attributes.id, entry);
+    }
+    if (!voidTags.has(tag) && !/\/\s*$/.test(token[3])) stack.push(entry);
+  }
+  assert.equal(stack.length, 0);
+  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-tab"]).map((item) => item.attributes["data-settings-tab"]), ["general", "languages"]);
+  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-panel"]).map((item) => item.attributes["data-settings-panel"]), ["general", "languages"]);
+  for (const id of ["settings-language", "settings-language-list", "settings-pack-file", "settings-pack-preview", "settings-pack-name", "settings-pack-locale", "settings-pack-coverage", "settings-pack-install", "settings-pack-selection", "settings-pack-template", "settings-pack-list"]) {
+    assert.ok(ids.get(id)?.ancestors.includes("settings-languages-panel"), id + " must belong to the Languages page");
+  }
+  assert.equal(ids.get("settings-pack-file").attributes.type, "file");
+  assert.match(ids.get("settings-pack-file").attributes.accept, /json/);
+  for (const id of ["settings-translations-panel", "settings-translation-search", "settings-translations-list", "settings-translations-save", "settings-translations-reset", "settings-translations-import", "settings-translations-export"]) assert.equal(ids.has(id), false);
+  assert.equal(elements.some((item) => item.tag === "textarea" && item.ancestors.includes("settings-languages-panel")), false, "Languages must install files rather than edit individual translations");
 });

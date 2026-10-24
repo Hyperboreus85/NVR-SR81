@@ -1,6 +1,6 @@
-# Impostazioni, lingue e traduzioni
+# Impostazioni e lingue
 
-La versione 0.5.0 gestisce le traduzioni come **file JSON installabili**. Inglese e italiano sono inclusi; nuovi pacchetti si installano da **Settings → Translations** e vengono poi selezionati in **Languages**. Non sono richiesti servizi esterni o un riavvio. La barra sinistra mantiene icone e nomi in stile M777.
+La versione 0.6.0 gestisce le traduzioni come **file JSON installabili** nella sola pagina **Settings → Languages**. La scheda Translations e l'editor dei singoli vocaboli sono rimossi. Inglese e italiano sono inclusi; nuovi pacchetti si installano e si selezionano in Languages. Non sono richiesti servizi esterni o un riavvio. La barra sinistra mantiene icone e nomi in stile M777.
 
 ## Cambiare lingua
 
@@ -14,12 +14,12 @@ La preferenza viene salvata nel browser. Ogni dispositivo può usare una lingua 
 
 ## Installare un file lingua
 
-La schermata Traduzioni contiene soltanto gestione dei pacchetti: l'editor dei singoli testi è stato rimosso.
+**Settings → Languages** raccoglie la scelta della lingua e tutti i controlli per installare, scaricare e rimuovere i pacchetti JSON.
 
 1. Premere **Choose language file** e scegliere un pacchetto `.json`.
 2. Controllare nome, codice lingua e numero di traduzioni nell'anteprima.
 3. Premere **Install language pack**. Se la lingua esiste già, il file installato la aggiorna.
-4. In **Languages** scegliere la lingua installata. La preferenza riguarda il proprio browser; il file è disponibile per tutti gli utenti dell'NVR.
+4. Nella stessa pagina **Languages** scegliere la lingua installata. La preferenza riguarda il proprio browser; il file è disponibile per tutti gli utenti dell'NVR.
 
 **Download file** scarica un pacchetto esistente. **Download template** scarica un modello con tutte le chiavi inglesi: compilare codice, nome, nome nativo e traduzioni con un editor di testo, conservando i segnaposto come `{count}`. Le chiavi mancanti o le traduzioni vuote ripiegano sull'inglese.
 

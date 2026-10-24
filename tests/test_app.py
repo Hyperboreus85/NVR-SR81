@@ -120,3 +120,11 @@ def test_parallel_failed_logins_reserve_attempts_before_hashing(tmp_path, monkey
 def test_reject_unsafe_url(url):
     with pytest.raises(ValueError):
         validate_stream_url(url)
+
+
+def test_root_interface_and_api_are_not_cached(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert client.get("/api/session").headers["cache-control"] == "no-store"
+

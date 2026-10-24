@@ -74,9 +74,9 @@ La password amministratore viene generata **dentro il container**, salvata tempo
 
 Aprire `http://IP-DEL-CONTAINER:8080` dalla LAN, entrare con la password mostrata e aggiungere una telecamera RTSP oppure importare un endpoint ONVIF. Per il primo collaudo impostare un periodo breve di conservazione e verificare registrazione, audio, riavvio e riproduzione.
 
-## Aggiornare il container esistente alla versione 0.5.0
+## Aggiornare il container esistente alla versione 0.6.0
 
-La versione 0.5.0 gestisce le traduzioni come **file lingua JSON installabili** e imposta file di registrazione da **30 minuti** come valore predefinito. Inglese e italiano sono inclusi. La barra laterale usa icone con i nomi sotto; monitor live e ricerca ONVIF restano disponibili. Non occorre ricreare il container o i dischi. Dalla Shell del nodo, con ID 181, scaricare ed eseguire lo script aggiornato dentro il guest (unica riga):
+La versione 0.6.0 gestisce le traduzioni come **file lingua JSON installabili da Settings → Languages**, elimina la scheda Translations e imposta file di registrazione da **30 minuti** come valore predefinito. Inglese e italiano sono inclusi. La barra laterale usa icone con i nomi sotto; monitor live e ricerca ONVIF restano disponibili. Non occorre ricreare il container o i dischi. Dalla Shell del nodo, con ID 181, scaricare ed eseguire lo script aggiornato dentro il guest (unica riga):
 
 ```bash
 wget -O /tmp/nvr-sr81-update.sh https://raw.githubusercontent.com/Hyperboreus85/NVR-SR81/codex/initial-nvr/deploy/update.sh && pct push 181 /tmp/nvr-sr81-update.sh /tmp/nvr-sr81-update.sh && pct exec 181 -- bash /tmp/nvr-sr81-update.sh

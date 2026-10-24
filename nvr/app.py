@@ -134,7 +134,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self' blob: data:; media-src 'self' blob:; "
             f"connect-src 'self' {websocket_origin}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-        if request.url.path.startswith("/api/"):
+        if request.url.path == "/" or request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
