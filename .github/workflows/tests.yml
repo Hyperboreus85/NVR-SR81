@@ -20,8 +20,8 @@ jobs:
       - run: python -m pytest -q
       - name: Check browser scripts
         run: |
-          node --check nvr/static/app.js
-          node --check nvr/static/live-player.js
+          for script in nvr/static/*.js; do node --check "$script"; done
+          node --test tests/test_*.cjs
       - run: |
           bash -n deploy/install.sh
           bash -n deploy/proxmox-create.sh

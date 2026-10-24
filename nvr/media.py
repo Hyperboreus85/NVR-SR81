@@ -34,7 +34,7 @@ def validate_url(url: str) -> str:
             raise ValueError
         _ = parts.port
     except (TypeError, ValueError):
-        raise MediaError("Indirizzo del flusso non valido: usare RTSP, RTSPS, HTTP o HTTPS.") from None
+        raise MediaError("Invalid stream address: use RTSP, RTSPS, HTTP or HTTPS.") from None
     return url
 
 
@@ -76,7 +76,7 @@ class _Worker:
     task: asyncio.Task | None = None
     process: asyncio.subprocess.Process | None = None
     state: str = "starting"
-    message: str = "Avvio registrazione"
+    message: str = "Starting recording"
     last_segment_at: float | None = None
     stopping: bool = False
 
@@ -162,7 +162,7 @@ class MediaManager:
     def camera_status(self, camera_id: str) -> dict[str, Any]:
         worker = self.workers.get(str(camera_id))
         if not worker:
-            return {"state": "stopped", "message": "Registrazione disattivata", "last_segment_at": None}
+            return {"state": "stopped", "message": "Recording disabled", "last_segment_at": None}
         return {"state": worker.state, "message": worker.message, "last_segment_at": worker.last_segment_at}
 
     async def _spawn(self, *args: str, pipe: bool = False) -> asyncio.subprocess.Process:
@@ -175,7 +175,7 @@ class MediaManager:
                 limit=256 * 1024,
             )
         except (OSError, ValueError):
-            raise MediaError("FFmpeg/FFprobe non disponibile o non eseguibile.") from None
+            raise MediaError("FFmpeg/FFprobe unavailable or not executable.") from None
 
     async def _capture(self, args: list[str], timeout: float = 20, max_bytes: int = MAX_JPEG_BYTES) -> bytes:
         process = await self._spawn(*args, pipe=True)
@@ -185,15 +185,15 @@ class MediaManager:
             while chunk := await process.stdout.read(65536):
                 data.extend(chunk)
                 if len(data) > max_bytes:
-                    raise MediaError("Risposta del flusso troppo grande.")
+                    raise MediaError("Stream response too large.")
             await process.wait()
             if process.returncode:
-                raise MediaError("Impossibile leggere il flusso o il file multimediale.")
+                raise MediaError("Unable to read the stream or media file.")
             return bytes(data)
         try:
             return await asyncio.wait_for(read(), timeout)
         except asyncio.TimeoutError:
-            raise MediaError("Tempo di attesa del flusso scaduto.") from None
+            raise MediaError("Stream request timed out.") from None
         finally:
             await _stop_process(process)
 
@@ -221,21 +221,21 @@ class MediaManager:
                     "audio_codec": audio.get("codec_name"), "width": video.get("width"),
                     "height": video.get("height"), "duration": duration, "streams": streams}
         except (ValueError, TypeError, KeyError, StopIteration):
-            raise MediaError("Il flusso non contiene una traccia video leggibile.") from None
+            raise MediaError("The stream does not contain a readable video track.") from None
 
     def _camera_dir(self, camera_id: str) -> Path:
         # IDs normally are UUIDs; this prevents store content becoming a filesystem path.
         if not camera_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in camera_id):
-            raise MediaError("Identificativo telecamera non valido.")
+            raise MediaError("Invalid camera ID.")
         path = (self.recordings_dir / camera_id).resolve()
         if not path.is_relative_to(self.recordings_dir):
-            raise MediaError("Percorso archivio non valido.")
+            raise MediaError("Invalid archive path.")
         return path
 
     def recording_path(self, recording: dict[str, Any]) -> Path:
         path = (self.recordings_dir / str(recording["path"])).resolve()
         if not path.is_relative_to(self.recordings_dir):
-            raise MediaError("Percorso registrazione non valido.")
+            raise MediaError("Invalid recording path.")
         return path
 
     async def _record(self, worker: _Worker) -> None:
@@ -254,7 +254,7 @@ class MediaManager:
                 if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
                     await self._retention()
                     if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
-                        worker.state, worker.message = "storage_full", "Spazio insufficiente; registrazione sospesa"
+                        worker.state, worker.message = "storage_full", "Insufficient storage; recording paused"
                         await asyncio.sleep(10)
                         continue
                 origin = time.time()
@@ -269,14 +269,14 @@ class MediaManager:
                          "-segment_format", "matroska", "-reset_timestamps", "1",
                          "-segment_list", str(manifest), "-segment_list_type", "csv", str(output)]
                 process = worker.process = await self._spawn(*args)
-                worker.state, worker.message = "connecting", "Connessione alla telecamera"
+                worker.state, worker.message = "connecting", "Connecting to camera"
                 while process.returncode is None:
                     await self._import_manifest(manifest, str(camera["id"]), origin, seen, worker, cursor)
                     if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
                         await self._retention()
                         if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
                             await _stop_process(process)
-                            worker.state, worker.message = "storage_full", "Spazio insufficiente; registrazione sospesa"
+                            worker.state, worker.message = "storage_full", "Insufficient storage; recording paused"
                             break
                     try:
                         await asyncio.wait_for(process.wait(), 1)
@@ -284,11 +284,11 @@ class MediaManager:
                         pass
                 await self._import_manifest(manifest, str(camera["id"]), origin, seen, worker, cursor)
                 if worker.state != "storage_full":
-                    worker.state, worker.message = "reconnecting", "Flusso interrotto; riconnessione in corso"
+                    worker.state, worker.message = "reconnecting", "Stream interrupted; reconnecting"
             except asyncio.CancelledError:
                 raise
             except (MediaError, OSError, KeyError, ValueError):
-                worker.state, worker.message = "error", "Telecamera non raggiungibile o registrazione non disponibile"
+                worker.state, worker.message = "error", "Camera unreachable or recording unavailable"
             finally:
                 await _stop_process(process)
                 worker.process = None
@@ -340,7 +340,7 @@ class MediaManager:
                 if worker:
                     worker.last_segment_at = origin + start + duration
                     if worker.state != "storage_full":
-                        worker.state, worker.message = "recording", "Registrazione in corso"
+                        worker.state, worker.message = "recording", "Recording"
             except (OSError, ValueError, MediaError):
                 continue
 
@@ -457,7 +457,7 @@ class MediaManager:
         try:
             await asyncio.wait_for(self._decode_slots.acquire(), 10)
         except asyncio.TimeoutError:
-            raise MediaError("Troppe richieste di anteprima simultanee.") from None
+            raise MediaError("Too many simultaneous preview requests.") from None
         try:
             result = await self._capture([
                 self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
@@ -467,7 +467,7 @@ class MediaManager:
         finally:
             self._decode_slots.release()
         if not result.startswith(b"\xff\xd8"):
-            raise MediaError("Anteprima non disponibile.")
+            raise MediaError("Preview unavailable.")
         return result
 
     async def live(self, camera: dict[str, Any]) -> AsyncIterator[bytes]:
@@ -477,12 +477,12 @@ class MediaManager:
             hub = self._hubs.get(camera_id)
             if hub is None:
                 if len(self._hubs) >= 4:
-                    raise MediaError("Limite di quattro anteprime simultanee raggiunto.")
+                    raise MediaError("The limit of four simultaneous previews has been reached.")
                 hub = _LiveHub(dict(camera))
                 self._hubs[camera_id] = hub
                 hub.task = asyncio.create_task(self._live_worker(hub), name=f"preview-{camera_id}")
             if len(hub.clients) >= 8:
-                raise MediaError("Troppi spettatori per questa telecamera.")
+                raise MediaError("Too many viewers for this camera.")
             hub.clients.add(queue)
         try:
             while True:
@@ -491,7 +491,7 @@ class MediaManager:
                     break
                 yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
         except asyncio.TimeoutError:
-            raise MediaError("Anteprima interrotta.") from None
+            raise MediaError("Preview interrupted.") from None
         finally:
             async with self._hub_lock:
                 hub.clients.discard(queue)
@@ -515,7 +515,7 @@ class MediaManager:
                 while chunk := await process.stdout.read(65536):
                     buffer.extend(chunk)
                     if len(buffer) > MAX_JPEG_BYTES:
-                        raise MediaError("Anteprima troppo grande.")
+                        raise MediaError("Preview too large.")
                     while True:
                         start, end = buffer.find(b"\xff\xd8"), buffer.find(b"\xff\xd9")
                         if start < 0 or end < start:
@@ -542,7 +542,7 @@ class MediaManager:
         try:
             stat = source.stat()
         except OSError:
-            raise MediaError("Registrazione non disponibile.") from None
+            raise MediaError("Recording unavailable.") from None
         identity = f"{recording['id']}:{source}:{stat.st_size}:{stat.st_mtime_ns}:{variant}"
         key = hashlib.sha256(identity.encode()).hexdigest()
         return self.cache_dir / f"{key}.{extension}"
@@ -586,11 +586,11 @@ class MediaManager:
                     timeout = max(120, min(float(recording["duration"]) * 10, 3600))
                     await asyncio.wait_for(process.wait(), timeout)
                     if process.returncode or not temporary.is_file() or temporary.stat().st_size == 0:
-                        raise MediaError("Conversione della registrazione non riuscita.")
+                        raise MediaError("Recording conversion failed.")
                     temporary.replace(destination)
                     return destination
                 except asyncio.TimeoutError:
-                    raise MediaError("Conversione della registrazione troppo lenta.") from None
+                    raise MediaError("Recording conversion timed out.") from None
                 finally:
                     await _stop_process(process)
                     self._in_use[source] -= 1
@@ -630,7 +630,7 @@ class MediaManager:
                             for (value,) in struct.iter_unpack("<f", pending[:usable]):
                                 total_samples += 1
                                 if total_samples > (duration + 10) * sample_rate:
-                                    raise MediaError("Durata audio non coerente con la registrazione.")
+                                    raise MediaError("Audio duration does not match the recording.")
                                 if math.isfinite(value):
                                     peak = max(peak, min(1.0, abs(value)))
                                 count += 1
@@ -641,7 +641,7 @@ class MediaManager:
                         await process.wait()
                     await asyncio.wait_for(consume(), max(60, min(duration * 2, 600)))
                     if process.returncode:
-                        raise MediaError("Estrazione della forma d'onda non riuscita.")
+                        raise MediaError("Waveform extraction failed.")
                     if count:
                         peaks.append(round(peak, 4))
                     payload = {"duration": duration, "peaks": peaks, "sample_seconds": samples_per_bin / sample_rate}
@@ -649,7 +649,7 @@ class MediaManager:
                     temporary.replace(destination)
                     return destination
                 except asyncio.TimeoutError:
-                    raise MediaError("Estrazione della forma d'onda troppo lenta.") from None
+                    raise MediaError("Waveform extraction timed out.") from None
                 finally:
                     await _stop_process(process)
                     self._in_use[source] -= 1
@@ -661,4 +661,4 @@ class MediaManager:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            raise MediaError("Forma d'onda non disponibile.") from None
+            raise MediaError("Waveform unavailable.") from None

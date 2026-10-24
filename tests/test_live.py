@@ -95,7 +95,9 @@ class LiveManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", json.dumps(self.manager.status()))
         await first_stream.aclose()
         await second_stream.aclose()
-        await asyncio.sleep(0.05)
+        # Await the scheduled idle retirement itself; host load must not turn
+        # an arbitrary 50 ms sleep into a false failure.
+        await asyncio.wait_for(asyncio.shield(first.hub.idle_task), 1)
         self.assertEqual(self.manager.status()["active_streams"], 0)
 
     async def test_slow_viewer_is_closed_instead_of_receiving_dropped_fragments(self):
@@ -141,7 +143,9 @@ class LiveManagerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_initialization_releases_pending_viewer_and_worker(self):
         started = asyncio.Event()
+        pending_hubs = []
         async def pending(hub):
+            pending_hubs.append(hub)
             started.set()
             await asyncio.Future()
         self.manager._run = pending
@@ -150,7 +154,7 @@ class LiveManagerTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(asyncio.shield(pending_hubs[0].idle_task), 1)
         self.assertEqual(self.manager.status()["active_streams"], 0)
 
     async def test_close_detaches_while_another_retirement_holds_the_manager_lock(self):
@@ -160,7 +164,7 @@ class LiveManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(subscription, subscription.hub.subscribers)
             self.assertEqual(self.manager.status()["viewers"], 0)
         await subscription.close()
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(asyncio.shield(subscription.hub.idle_task), 1)
         self.assertEqual(self.manager.status()["active_streams"], 0)
 
     async def test_cancelled_retirement_keeps_cleanup_and_limits_until_producer_exits(self):

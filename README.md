@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.3.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.4.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -14,6 +14,8 @@ Il flusso originale viene copiato in segmenti **Matroska/MKV**, normalmente di c
 ## Funzioni presenti
 
 - Login amministratore locale; password salvata con scrypt e sessione HttpOnly.
+- Interfaccia inglese predefinita e italiano incluso, selezionabili anche prima del login. Barra laterale con icone sopra ai nomi, ispirata al layout M777.
+- **Settings / Impostazioni** con sezioni General, Languages e Translations: lingua e layout predefinito del monitor per browser; ricerca e modifica delle traduzioni italiane, salvataggio sul server, importazione/esportazione JSON e ripristino. [Guida lingue e traduzioni](docs/settings.md).
 - Aggiunta/modifica/disattivazione di telecamere RTSP/RTSPS e URL HTTP(S) diretti compatibili con FFmpeg.
 - Sezione **Telecamere in rete** con discovery ONVIF multicast, selezione della scheda di rete e ricerca opzionale su sottoreti private fino a /24.
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.

@@ -1,6 +1,7 @@
 """Authenticated same-origin HTTP API and bundled offline interface."""
 import asyncio
 import contextlib
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
@@ -11,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
 from starlette.background import BackgroundTask
 
 from . import __version__
@@ -24,6 +25,31 @@ from .security import Auth, redact_url, validate_stream_url
 from .store import Store
 
 LIVE_AUTH_CHECK_SECONDS = 15
+MAX_TRANSLATION_BYTES = 512 * 1024
+TRANSLATION_METADATA_KEY = "translation_overrides_v1"
+
+
+class TranslationSettingsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    locale: Literal["it"]
+    overrides: dict[
+        Annotated[str, StringConstraints(strict=True, min_length=1, max_length=500)],
+        Annotated[str, StringConstraints(strict=True, max_length=2000)],
+    ] = Field(max_length=1000)
+
+    @field_validator("overrides")
+    @classmethod
+    def plain_string_entries(cls, value):
+        if any(not key.strip() for key in value):
+            raise ValueError("Invalid translation settings.")
+        # Store valid Unicode text only; no templates or markup are executed.
+        try:
+            for key, translation in value.items():
+                key.encode("utf-8")
+                translation.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("Invalid translation settings.") from None
+        return value
 
 
 class CameraInput(BaseModel):
@@ -59,7 +85,7 @@ class NetworkScanInput(BaseModel):
 def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager):
     settings = settings or Settings()
     if settings.password and len(settings.password) < 12:
-        raise ValueError("NVR_ADMIN_PASSWORD deve contenere almeno 12 caratteri")
+        raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
     store = Store(settings.data_dir)
     auth = Auth(store, settings.password)
     media = media_factory(settings, store)
@@ -83,7 +109,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 lock.close()
-                raise RuntimeError("Un'altra istanza usa già questa directory dati") from None
+                raise RuntimeError("Another instance is already using this data directory") from None
         try:
             await media.start()
             await realtime.start()
@@ -107,13 +133,13 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         if request.url.path.startswith("/api/"):
             if request.method not in {"GET", "HEAD", "OPTIONS"}:
                 if request.headers.get("x-nvr-request") != "1":
-                    return JSONResponse({"detail": "Richiesta non valida"}, status_code=403)
+                    return JSONResponse({"detail": "Invalid request"}, status_code=403)
                 origin = request.headers.get("origin")
                 if origin and origin != str(request.base_url).rstrip("/"):
-                    return JSONResponse({"detail": "Origine non consentita"}, status_code=403)
+                    return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
             public = request.url.path in {"/api/session", "/api/login"}
             if not public and not auth.valid(request.cookies.get("nvr_session")):
-                return JSONResponse({"detail": "Accesso richiesto"}, status_code=401)
+                return JSONResponse({"detail": "Authentication required"}, status_code=401)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -133,21 +159,21 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
         # The default validation handler echoes inputs, including credentials.
-        return JSONResponse({"detail": "Dati non validi: controllare i campi inseriti"}, status_code=422)
+        return JSONResponse({"detail": "Invalid data: check the fields you entered"}, status_code=422)
 
     def camera_or_404(camera_id):
         camera = store.get_camera(camera_id)
         if camera is None:
-            raise HTTPException(404, "Telecamera non trovata")
+            raise HTTPException(404, "Camera not found")
         return camera
 
     def recording_or_404(recording_id):
         recording = store.get_recording(recording_id)
         if recording is None:
-            raise HTTPException(404, "Registrazione non trovata")
+            raise HTTPException(404, "Recording not found")
         path = (settings.recordings_dir / recording["path"]).resolve()
         if not path.is_relative_to(settings.recordings_dir) or not path.is_file():
-            raise HTTPException(404, "File della registrazione non disponibile")
+            raise HTTPException(404, "Recording file unavailable")
         return recording, path
 
     def public_camera(camera):
@@ -162,7 +188,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             async with media_jobs:
                 return await operation()
         except (ValueError, RuntimeError, OSError, asyncio.TimeoutError):
-            raise HTTPException(503, "Operazione multimediale non riuscita. Controllare il flusso e FFmpeg.") from None
+            raise HTTPException(503, "Media operation failed. Check the stream and FFmpeg.") from None
 
     @app.get("/healthz")
     def health():
@@ -178,7 +204,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         async with login_jobs:
             accepted = await asyncio.to_thread(auth.check, data.password, host)
         if not accepted:
-            raise HTTPException(401, "Password non valida o troppi tentativi. Attendere un minuto.")
+            raise HTTPException(401, "Invalid password or too many attempts. Wait one minute.")
         response = JSONResponse({"authenticated": True})
         response.set_cookie("nvr_session", auth.login(), httponly=True, secure=settings.secure_cookie,
                             samesite="strict", max_age=12*3600)
@@ -197,17 +223,52 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     def cameras():
         return [public_camera(camera) for camera in store.list_cameras()]
 
+    @app.get("/api/settings/translations")
+    def translation_settings():
+        stored = store.meta_get(TRANSLATION_METADATA_KEY)
+        if stored:
+            try:
+                return TranslationSettingsInput.model_validate_json(stored).model_dump()
+            except (ValidationError, ValueError, TypeError):
+                pass
+        return {"locale": "it", "overrides": {}}
+
+    @app.put("/api/settings/translations")
+    async def save_translation_settings(request: Request):
+        # Parse only after bounding the actual incoming bytes. FastAPI's usual
+        # body model parsing would buffer an arbitrarily large JSON request.
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_TRANSLATION_BYTES:
+                raise HTTPException(413, "Translation settings are too large.")
+            body.extend(chunk)
+        try:
+            data = TranslationSettingsInput.model_validate_json(body)
+        except (ValidationError, ValueError, TypeError):
+            raise HTTPException(422, "Invalid translation settings.") from None
+        replacement = data.model_dump()
+        serialized = json.dumps(replacement, ensure_ascii=False, separators=(",", ":"))
+        async with mutation_lock:
+            # A slow streamed upload can outlive logout or session expiry.
+            # Recheck immediately before the write, without another await.
+            if not auth.valid(request.cookies.get("nvr_session")):
+                raise HTTPException(401, "Authentication required")
+            # One SQLite transaction replaces the whole dictionary, so an empty
+            # overrides object resets every entry without changing other metadata.
+            store.meta_set(TRANSLATION_METADATA_KEY, serialized)
+        return replacement
+
     def validated_camera(data, previous=None):
         values = data.model_dump()
         values["name"] = values["name"].strip()
         if not values["name"]:
-            raise HTTPException(422, "Inserire un nome")
+            raise HTTPException(422, "Enter a name")
         for field in ("url", "preview_url"):
             value = values[field]
             if value is None:
                 value = previous[field] if previous else ""
             if field == "url" and not value:
-                raise HTTPException(422, "Inserire il flusso principale")
+                raise HTTPException(422, "Enter the main stream")
             try:
                 values[field] = validate_stream_url(value) if value else ""
             except ValueError as exc:
@@ -218,7 +279,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     async def add_camera(data: CameraInput):
         async with mutation_lock:
             if len(store.list_cameras()) >= 32:
-                raise HTTPException(422, "Questa prima versione gestisce al massimo 32 telecamere")
+                raise HTTPException(422, "This version supports up to 32 cameras")
             camera = store.save_camera(validated_camera(data))
             await media.reconcile()
             await realtime.reconcile(store.list_cameras())
@@ -268,7 +329,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             status = getattr(error, "status_code", 503)
             raise HTTPException(status if status in {422, 429, 503, 504} else 503, str(error)) from None
         except (OSError, asyncio.TimeoutError):
-            raise HTTPException(503, "Diretta non disponibile. Controllare il flusso della telecamera.") from None
+            raise HTTPException(503, "Live view unavailable. Check the camera stream.") from None
         return StreamingResponse(
             subscription.stream(), media_type=subscription.mime,
             headers={"X-NVR-Live-Mode": subscription.mode, "X-Accel-Buffering": "no"},
@@ -364,7 +425,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     def recordings(camera_id: str | None = None, start: float | None = Query(None, ge=0),
                    end: float | None = Query(None, ge=0), limit: int = Query(2000, ge=1, le=10000)):
         if start is not None and end is not None and end <= start:
-            raise HTTPException(422, "Intervallo temporale non valido")
+            raise HTTPException(422, "Invalid time range")
         return [{key: value for key, value in row.items() if key != "path"}
                 for row in store.list_recordings(camera_id, start, end, limit)]
 
@@ -389,12 +450,12 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         try:
             return await asyncio.to_thread(list_interfaces)
         except OSError:
-            raise HTTPException(503, "Impossibile leggere le interfacce di rete del server.") from None
+            raise HTTPException(503, "Unable to read the server network interfaces.") from None
 
     async def run_discovery(request: Request, operation, timeout):
         nonlocal active_scan, active_scan_session
         if discovery_lock.locked():
-            raise HTTPException(409, "Una ricerca è già in corso. Attendere il completamento.")
+            raise HTTPException(409, "A search is already running. Wait for it to finish.")
         try:
             async with discovery_lock:
                 job = asyncio.create_task(asyncio.wait_for(operation(), timeout))
@@ -405,7 +466,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 except asyncio.CancelledError:
                     if asyncio.current_task().cancelling():
                         raise
-                    raise HTTPException(499, "Ricerca annullata.") from None
+                    raise HTTPException(499, "Search cancelled.") from None
                 finally:
                     job.cancel()
                     await asyncio.gather(job, return_exceptions=True)
@@ -415,9 +476,9 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         except DiscoveryError as error:
             raise HTTPException(422, str(error)) from None
         except asyncio.TimeoutError:
-            raise HTTPException(504, "Ricerca terminata per limite di tempo. Provare un intervallo più piccolo.") from None
+            raise HTTPException(504, "Search timed out. Try a smaller range.") from None
         except OSError:
-            raise HTTPException(503, "Ricerca non disponibile. Verificare rete e permessi del container.") from None
+            raise HTTPException(503, "Search unavailable. Check the network and container permissions.") from None
 
     async def cancel_owned_scan(session_token):
         job = active_scan
@@ -434,7 +495,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     async def cancel_onvif_scan(request: Request):
         session_token = request.cookies.get("nvr_session")
         if active_scan and not active_scan.done() and active_scan_session != session_token:
-            raise HTTPException(409, "La ricerca attiva appartiene a un'altra sessione.")
+            raise HTTPException(409, "The active search belongs to another session.")
         return {"cancelled": await cancel_owned_scan(session_token)}
 
     @app.post("/api/onvif/discover")
@@ -451,9 +512,9 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             async with onvif_jobs:
                 return await asyncio.wait_for(get_profiles(data.endpoint, data.username, data.password), 90)
         except asyncio.TimeoutError:
-            raise HTTPException(504, "La telecamera non ha completato la lettura dei profili. Riprovare o verificare i servizi ONVIF.") from None
+            raise HTTPException(504, "The camera did not finish returning its profiles. Try again or check its ONVIF services.") from None
         except (ValueError, RuntimeError, OSError):
-            raise HTTPException(422, "ONVIF non disponibile. Verificare endpoint, credenziali e orologio della telecamera.") from None
+            raise HTTPException(422, "ONVIF unavailable. Check the endpoint, credentials and camera clock.") from None
 
     @app.get("/api/system")
     def system():

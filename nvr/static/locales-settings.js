@@ -1,0 +1,32 @@
+"use strict";
+window.NVR_LOCALE_PARTS = window.NVR_LOCALE_PARTS || [];
+window.NVR_LOCALE_PARTS.push({it: {
+  "Loading translations…": "Caricamento traduzioni…",
+  "Translations could not be loaded. Try opening Settings again.": "Impossibile caricare le traduzioni. Prova a riaprire Impostazioni.",
+  "Translations saved on this NVR.": "Traduzioni salvate su questo NVR.",
+  "Default Italian translations restored.": "Traduzioni italiane predefinite ripristinate.",
+  "Restore the default Italian translations? Your saved custom translations will be removed.": "Ripristinare le traduzioni italiane predefinite? Le traduzioni personalizzate salvate verranno rimosse.",
+  "English source": "Testo originale inglese",
+  "Italian translation": "Traduzione italiana",
+  "Custom translation": "Traduzione personalizzata",
+  "Built-in translation": "Traduzione inclusa",
+  "No matching translations.": "Nessuna traduzione corrispondente.",
+  "{count} strings · custom translations: {custom}": "{count} testi · traduzioni personalizzate: {custom}",
+  "Page {page} of {total}": "Pagina {page} di {total}",
+  "{count} strings": "{count} testi",
+  "Unsaved changes": "Modifiche non salvate",
+  "All changes saved": "Tutte le modifiche salvate",
+  "Saving…": "Salvataggio…",
+  "The JSON file must be smaller than 512 KiB.": "Il file JSON deve essere inferiore a 512 KiB.",
+  "Choose a valid Italian translation catalog exported by this app.": "Scegli un catalogo di traduzione italiano valido esportato da questa app.",
+  "Unknown translation key: {key}": "Chiave di traduzione sconosciuta: {key}",
+  "Translation values must be text with at most 2000 characters.": "Le traduzioni devono essere testi di massimo 2000 caratteri.",
+  "Keep the same placeholders in this translation: {key}": "Mantieni gli stessi segnaposto in questa traduzione: {key}",
+  "Import ready. Review the translations, then save your changes.": "Importazione pronta. Controlla le traduzioni e salva le modifiche.",
+  "Translation catalog exported.": "Catalogo delle traduzioni esportato.",
+  "This browser could not download the catalog.": "Questo browser non ha potuto scaricare il catalogo.",
+  "Default monitor layout saved for this browser.": "Layout predefinito del monitor salvato per questo browser.",
+  "Language saved for this browser.": "Lingua salvata per questo browser.",
+  "{active} / {maximum}": "{active} / {maximum}",
+  "Not available": "Non disponibile"
+}});

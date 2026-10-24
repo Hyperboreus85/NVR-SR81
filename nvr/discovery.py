@@ -90,7 +90,7 @@ def list_interfaces() -> list[dict]:
                 candidates.append(probe.getsockname()[0])
         for address in candidates:
             if _lan_address(address) and address not in seen:
-                interfaces.append({"name": "predefinita", "address": address, "netmask": "", "cidr": ""})
+                interfaces.append({"name": "default", "address": address, "netmask": "", "cidr": ""})
                 seen.add(address)
     return sorted(interfaces, key=lambda item: (item["name"], ipaddress.IPv4Address(item["address"])))
 
@@ -277,11 +277,11 @@ async def _discover_interface(address: str, timeout: float) -> tuple[list[dict],
             for device in _parse_probe_matches(data, source[0], message_ids):
                 _merge_device(devices, device)
         else:
-            warnings.append("Troppe risposte discovery: scansione limitata per proteggere il registratore.")
+            warnings.append("Too many discovery responses: search limited to protect the recorder.")
         if sender.done() and not sender.cancelled() and sender.exception():
-            warnings.append(f"Invio multicast non disponibile sull'interfaccia {address}.")
+            warnings.append(f"Multicast sending unavailable on interface {address}.")
     except OSError:
-        warnings.append(f"Discovery multicast non disponibile sull'interfaccia {address}.")
+        warnings.append(f"Multicast discovery unavailable on interface {address}.")
     finally:
         if sender:
             sender.cancel()
@@ -294,7 +294,7 @@ async def _discover_interface(address: str, timeout: float) -> tuple[list[dict],
 async def discover(interface_ip: str | None = None, timeout: float = 6) -> dict:
     """Probe ONVIF devices on selected interfaces, without credentials or HTTP calls."""
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0.1 <= timeout <= 10:
-        raise DiscoveryError("La durata della discovery deve essere tra 0,1 e 10 secondi.")
+        raise DiscoveryError("Discovery duration must be between 0.1 and 10 seconds.")
     started = time.monotonic()
     try:
         interfaces = await asyncio.wait_for(asyncio.to_thread(list_interfaces), 1)
@@ -306,16 +306,16 @@ async def discover(interface_ip: str | None = None, timeout: float = 6) -> dict:
         try:
             interface_ip = str(ipaddress.IPv4Address(interface_ip))
         except (ValueError, TypeError):
-            raise DiscoveryError("Selezionare un indirizzo IPv4 locale valido.") from None
+            raise DiscoveryError("Select a valid local IPv4 address.") from None
         if interface_ip not in addresses:
-            raise DiscoveryError("L'indirizzo selezionato non appartiene a un'interfaccia LAN disponibile.")
+            raise DiscoveryError("The selected address does not belong to an available LAN interface.")
         addresses = [interface_ip]
     if not addresses:
         addresses = ["0.0.0.0"]
-        warnings.append("Interfaccia LAN non identificata: viene usata la route multicast predefinita.")
+        warnings.append("LAN interface not identified: using the default multicast route.")
     if len(addresses) > 16:
         addresses = addresses[:16]
-        warnings.append("Discovery limitata alle prime 16 interfacce IPv4 disponibili.")
+        warnings.append("Discovery limited to the first 16 available IPv4 interfaces.")
     results = await asyncio.gather(*(_discover_interface(address, timeout) for address in addresses))
     devices = []
     for found, notices in results:
@@ -323,7 +323,7 @@ async def discover(interface_ip: str | None = None, timeout: float = 6) -> dict:
         for device in found:
             _merge_device(devices, device)
     if not devices:
-        warnings.append("Nessun dispositivo ONVIF trovato. Controllare ONVIF, interfaccia, VLAN e multicast UDP 3702; in alternativa usare la scansione per sottorete o inserire l'endpoint.")
+        warnings.append("No ONVIF devices found. Check ONVIF, interface, VLAN and UDP 3702 multicast; alternatively scan a subnet or enter the endpoint.")
     return {"devices": sorted(devices, key=lambda device: (device["ip"], device["endpoint"])),
             "warnings": list(dict.fromkeys(warnings)), "duration": round(time.monotonic() - started, 3)}
 
@@ -337,7 +337,7 @@ def _scan_targets(cidr: str, ports: list[int]) -> tuple[list[str], list[int]]:
             raise ValueError
         return [str(host) for host in network.hosts()], list(dict.fromkeys(ports))
     except (ValueError, TypeError, AttributeError):
-        raise DiscoveryError("Usare una sottorete IPv4 privata /24 o più piccola e da 1 a 8 porte valide.") from None
+        raise DiscoveryError("Use a private IPv4 subnet of /24 or smaller and 1 to 8 valid ports.") from None
 
 
 async def _verify_endpoint(client: httpx.AsyncClient, host: str, port: int, timeout: float) -> dict | None:
@@ -378,7 +378,7 @@ async def scan_network(cidr: str, ports: list[int], timeout: float = 0.6) -> dic
     """
     hosts, ports = _scan_targets(cidr, ports)
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0.1 <= timeout <= 2:
-        raise DiscoveryError("Il timeout per endpoint deve essere tra 0,1 e 2 secondi.")
+        raise DiscoveryError("The endpoint timeout must be between 0.1 and 2 seconds.")
     started = time.monotonic()
     queue = asyncio.Queue()
     for host in hosts:
@@ -405,6 +405,6 @@ async def scan_network(cidr: str, ports: list[int], timeout: float = 0.6) -> dic
             await asyncio.gather(*tasks, return_exceptions=True)
     warnings = []
     if not devices:
-        warnings.append("Nessun endpoint ONVIF verificato. La scansione usa /onvif/device_service sulle porte selezionate; endpoint diversi o dispositivi che richiedono autenticazione vanno inseriti manualmente.")
+        warnings.append("No ONVIF endpoints verified. The scan uses /onvif/device_service on the selected ports; enter other endpoints or devices requiring authentication manually.")
     return {"devices": sorted(devices, key=lambda device: (device["ip"], device["endpoint"])),
             "warnings": warnings, "duration": round(time.monotonic() - started, 3)}

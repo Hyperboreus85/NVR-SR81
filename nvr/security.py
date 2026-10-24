@@ -16,7 +16,7 @@ def validate_stream_url(url: str) -> str:
         if any(ord(c) < 32 or ord(c) == 127 for c in url) or len(url) > 4096:
             raise ValueError
     except ValueError:
-        raise ValueError("Inserire un URL RTSP, RTSPS, HTTP o HTTPS valido") from None
+        raise ValueError("Enter a valid RTSP, RTSPS, HTTP or HTTPS URL") from None
     return url
 
 
@@ -42,7 +42,7 @@ class Auth:
             current = salt.hex() + ":" + digest.hex()
             store.meta_set("password_hash", current)
         if not current:
-            raise ValueError("Impostare NVR_ADMIN_PASSWORD prima del primo avvio (almeno 12 caratteri)")
+            raise ValueError("Set NVR_ADMIN_PASSWORD before the first start (at least 12 characters)")
         self.password_hash = current
         self.sessions = {}
         self.failures = {}

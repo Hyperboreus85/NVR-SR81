@@ -103,7 +103,7 @@ class DiscoveryParserTests(unittest.TestCase):
             (None, None, None, None, ("8.8.8.8", 0))]), patch.object(d.socket, "socket") as factory:
             factory.return_value.__enter__.return_value.getsockname.return_value = ("192.168.8.2", 0)
             interfaces = d.list_interfaces()
-        self.assertEqual(interfaces, [{"name": "predefinita", "address": "192.168.8.2", "netmask": "", "cidr": ""}])
+        self.assertEqual(interfaces, [{"name": "default", "address": "192.168.8.2", "netmask": "", "cidr": ""}])
 
 
 class DiscoveryAsyncTests(unittest.IsolatedAsyncioTestCase):

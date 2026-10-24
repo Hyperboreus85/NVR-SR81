@@ -1,6 +1,34 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const locale = () => window.NvrI18n.locale();
+const translatedMessages = new Map();
+const messageBindings = new Map();
+const warningLists = new Map();
+const rawTextIds = new Set(["selected-name", "live-camera-name", "network-device-name", "network-device-address", "network-device-description"]);
+const t = (key, params) => {
+  const prior = translatedMessages.get(key);
+  const source = prior && prior.key !== key && !params ? prior : {key, params};
+  const value = window.NvrI18n.t(source.key, source.params);
+  if (typeof key === "string" && key) {
+    translatedMessages.set(value, {key: source.key, params: source.params ? {...source.params} : undefined});
+    if (translatedMessages.size > 4000) translatedMessages.delete(translatedMessages.keys().next().value);
+  }
+  return value;
+};
+const number = (value, options = {}) => Number(value || 0).toLocaleString(locale(), options);
+function dateFormat(options) {
+  const formats = new Map();
+  return {format(date) {
+    const language = locale();
+    if (!formats.has(language)) formats.set(language, new Intl.DateTimeFormat(language, options));
+    return formats.get(language).format(date);
+  }};
+}
+function savedMonitorLayout() {
+  try { const value = Number(localStorage.getItem("nvr.monitor.layout")); return [1, 4, 9, 16].includes(value) ? value : 4; }
+  catch (_) { return 4; }
+}
 const state = {
   authenticated: false, cameras: [], system: null, selectedId: null,
   recordings: [], recording: null, range: null, waveform: null,
@@ -8,18 +36,19 @@ const state = {
   waveformRequest: 0, toastTimer: null, refreshPromise: null, authEpoch: 0,
   rangeFollowsNow: true,
 };
-const formatDate = new Intl.DateTimeFormat("it-IT", {day: "2-digit", month: "short"});
-const formatTime = new Intl.DateTimeFormat("it-IT", {hour: "2-digit", minute: "2-digit", second: "2-digit"});
-const formatShortTime = new Intl.DateTimeFormat("it-IT", {hour: "2-digit", minute: "2-digit"});
+const formatDate = dateFormat({day: "2-digit", month: "short"});
+const formatTime = dateFormat({hour: "2-digit", minute: "2-digit", second: "2-digit"});
+const formatShortTime = dateFormat({hour: "2-digit", minute: "2-digit"});
 const player = $("player");
 const network = {
   view: "recorder", devices: [], selected: null, profiles: [], modalProfiles: [],
   interfaces: [], interfacesLoaded: false, interfaceEpoch: 0,
   scanEpoch: 0, profileEpoch: 0, modalEpoch: 0,
   scanController: null, profileController: null, modalController: null, scanTimer: null,
+  scanProgress: null, deviceInfo: null, emptyMessage: null,
 };
 const monitor = {
-  playing: true, layout: 4, page: 0, tiles: new Map(), observer: null,
+  playing: true, layout: savedMonitorLayout(), page: 0, tiles: new Map(), observer: null,
   fullscreenId: null, audioCameraId: null, statusEpoch: 0,
   statusTimer: null,
 };
@@ -41,7 +70,14 @@ function el(tag, className, content) {
 }
 
 function errorText(error) {
-  return error instanceof Error ? error.message : "Si è verificato un errore.";
+  return error instanceof Error ? t(error.message, error.i18nParams) : t("An error occurred.");
+}
+
+function uiError(message) {
+  const source = translatedMessages.get(message);
+  const error = new Error(source?.key || message);
+  if (source?.params) error.i18nParams = source.params;
+  return error;
 }
 
 async function api(path, options = {}) {
@@ -58,7 +94,7 @@ async function api(path, options = {}) {
     });
   } catch (error) {
     if (error.name === "AbortError") throw error;
-    throw new Error("Server non raggiungibile. Controlla la connessione alla rete locale.");
+    throw uiError(t("Cannot reach the server. Check your local network connection."));
   }
   const raw = await response.text();
   let data;
@@ -66,9 +102,9 @@ async function api(path, options = {}) {
   if (!response.ok) {
     if (response.status === 401 && path !== "/api/login" && authEpoch === state.authEpoch) showLogin();
     const detail = typeof data?.detail === "string" ? data.detail
-      : Array.isArray(data?.detail) ? data.detail.map((item) => item.msg || "Dato non valido").join(" · ")
-      : `Richiesta non riuscita (${response.status}).`;
-    throw new Error(detail);
+      : Array.isArray(data?.detail) ? data.detail.map((item) => item.msg || t("Invalid value")).join(" · ")
+      : t("Request failed ({status}).", {status: response.status});
+    throw uiError(detail);
   }
   return data;
 }
@@ -78,7 +114,7 @@ function bytes(value) {
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   let n = Math.max(0, Number(value)), i = 0;
   while (n >= 1000 && i < units.length - 1) { n /= 1000; i += 1; }
-  return `${n.toLocaleString("it-IT", {maximumFractionDigits: i > 1 ? 1 : 0})} ${units[i]}`;
+  return `${n.toLocaleString(locale(), {maximumFractionDigits: i > 1 ? 1 : 0})} ${units[i]}`;
 }
 
 function seconds(value) {
@@ -104,7 +140,11 @@ function localInput(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function setText(id, value) { $(id).textContent = value; }
+function setText(id, value) {
+  const source = !rawTextIds.has(id) && translatedMessages.get(value);
+  if (source) messageBindings.set(id, source); else messageBindings.delete(id);
+  $(id).textContent = value;
+}
 function selectedCamera() { return state.cameras.find((camera) => camera.id === state.selectedId); }
 function toast(message) {
   setText("toast", message);
@@ -124,17 +164,18 @@ function archiveError(message = "") {
 }
 
 function cameraStatus(camera) {
-  if (!camera.enabled) return {label: "In pausa", color: "", badge: "neutral", message: "Registrazione disattivata per questa telecamera."};
+  if (!camera.enabled) return {label: t("Paused"), color: "", badge: "neutral", message: t("Recording is disabled for this camera.")};
   const status = camera.status || {};
   const raw = String(status.state || "unknown").toLowerCase();
-  if (["recording", "running", "connected"].includes(raw)) return {label: "In registrazione", color: "green", badge: "", message: status.message || "Il registratore sta ricevendo e salvando il flusso."};
-  if (["error", "failed", "offline", "backoff", "retrying", "reconnecting", "storage_full"].includes(raw)) return {label: ["retrying", "backoff", "reconnecting"].includes(raw) ? "Riconnessione" : raw === "storage_full" ? "Disco pieno" : "Non disponibile", color: "orange", badge: "error", message: status.message || "Il flusso non è disponibile. Il registratore riproverà a collegarsi."};
-  return {label: ["starting", "connecting"].includes(raw) ? "Collegamento" : "In attesa", color: "yellow", badge: "waiting", message: status.message || "In attesa del primo segmento del flusso."};
+  if (["recording", "running", "connected"].includes(raw)) return {label: t("Recording"), color: "green", badge: "", message: status.message ? t(status.message) : t("The recorder is receiving and saving the stream.")};
+  if (["error", "failed", "offline", "backoff", "retrying", "reconnecting", "storage_full"].includes(raw)) return {label: ["retrying", "backoff", "reconnecting"].includes(raw) ? t("Reconnecting") : raw === "storage_full" ? t("Disk full") : t("Unavailable"), color: "orange", badge: "error", message: status.message ? t(status.message) : t("The stream is unavailable. The recorder will try to reconnect.")};
+  return {label: ["starting", "connecting"].includes(raw) ? t("Connecting") : t("Waiting"), color: "yellow", badge: "waiting", message: status.message ? t(status.message) : t("Waiting for the first stream segment.")};
 }
 
 function showLogin() {
   state.authEpoch += 1;
   state.authenticated = false;
+  window.dispatchEvent(new CustomEvent("nvr-authchange", {detail: {authenticated: false}}));
   clearInterval(state.poll);
   state.poll = null;
   stopLive();
@@ -158,6 +199,7 @@ function showLogin() {
 async function enterApp() {
   state.authEpoch += 1;
   state.authenticated = true;
+  window.dispatchEvent(new CustomEvent("nvr-authchange", {detail: {authenticated: true}}));
   $("login-screen").hidden = true;
   $("app").hidden = false;
   $("password").value = "";
@@ -205,17 +247,17 @@ async function refreshData(showErrors) {
 }
 
 function renderStats() {
-  setText("stat-cameras", String(state.cameras.length));
-  setText("stat-enabled", `${state.cameras.filter((camera) => camera.enabled).length} attive`);
-  setText("stat-recording", String(state.cameras.filter((camera) => camera.enabled && ["recording", "running", "connected"].includes(camera.status?.state)).length));
+  setText("stat-cameras", number(state.cameras.length));
+  setText("stat-enabled", t("{count} active", {count: number(state.cameras.filter((camera) => camera.enabled).length)}));
+  setText("stat-recording", number(state.cameras.filter((camera) => camera.enabled && ["recording", "running", "connected"].includes(camera.status?.state)).length));
   setText("stat-storage", bytes(state.system?.recordings_bytes));
-  setText("stat-free", state.system?.disk ? `${bytes(state.system.disk.free)} liberi sul disco` : "Disco non disponibile");
+  setText("stat-free", state.system?.disk ? t("{space} free on disk", {space: bytes(state.system.disk.free)}) : t("Disk unavailable"));
 }
 
 function renderCameras() {
   const list = $("camera-list");
   list.replaceChildren();
-  if (!state.cameras.length) list.append(el("p", "sidebar-empty", "Il tuo registratore è pronto. Collega la prima telecamera per iniziare."));
+  if (!state.cameras.length) list.append(el("p", "sidebar-empty", t("Your recorder is ready. Connect your first camera to get started.")));
   state.cameras.forEach((camera) => {
     const status = cameraStatus(camera);
     const row = el("button", `camera-row${camera.id === state.selectedId ? " active" : ""}`);
@@ -243,25 +285,25 @@ function renderSelected() {
   setText("camera-status-message", status.message);
   $("camera-status-message").className = `status-message ${status.badge === "neutral" ? "waiting" : status.badge}`;
   setText("last-segment", timeLabel(camera.status?.last_segment_at, true));
-  setText("camera-audio", camera.audio_mode === "none" ? "Disattivato" : "Originale, se presente");
-  setText("camera-retention", `${camera.retention_days} giorni`);
+  setText("camera-audio", camera.audio_mode === "none" ? t("Disabled") : t("Original, if available"));
+  setText("camera-retention", t("{count} days", {count: number(camera.retention_days)}));
   setText("live-camera-name", camera.name);
 }
 
 function renderSystem() {
   const system = state.system;
   if (!system) return;
-  setText("version", `SR81 · ${system.version || "locale"}`);
+  setText("version", `SR81 · ${system.version || t("local")}`);
   setText("segment-length", seconds(system.segment_seconds));
   const disk = system.disk;
   if (disk && Number(disk.total) > 0) {
     const percent = Math.min(100, Math.max(0, Number(disk.used) / Number(disk.total) * 100));
-    setText("disk-percent", `${percent.toLocaleString("it-IT", {maximumFractionDigits: 0})}% utilizzato`);
+    setText("disk-percent", t("{percent}% used", {percent: number(percent, {maximumFractionDigits: 0})}));
     $("disk-fill").style.width = `${percent}%`;
-    setText("disk-caption", `${bytes(disk.free)} disponibili di ${bytes(disk.total)}`);
+    setText("disk-caption", t("{free} available of {total}", {free: bytes(disk.free), total: bytes(disk.total)}));
   }
   $("system-warning").hidden = system.ffmpeg_available !== false;
-  setText("system-warning", "FFmpeg non è disponibile sul server. Installa FFmpeg e riavvia il registratore per attivare registrazioni, anteprime e riproduzione.");
+  setText("system-warning", t("FFmpeg is unavailable on the server. Install FFmpeg and restart the recorder to enable recording, previews and playback."));
 }
 
 async function selectCamera(id) {
@@ -286,7 +328,7 @@ function stopLive() {
   $("live-label").hidden = true;
   $("live-camera-name").hidden = true;
   const button = $("toggle-live");
-  button.replaceChildren(icon("play"), document.createTextNode("Apri anteprima"));
+  button.replaceChildren(icon("play"), document.createTextNode(t("Open preview")));
 }
 
 function toggleLive() {
@@ -298,7 +340,7 @@ function toggleLive() {
   $("live-label").hidden = false;
   $("live-camera-name").hidden = false;
   $("live-image").src = `/api/cameras/${encodeURIComponent(state.selectedId)}/live`;
-  $("toggle-live").replaceChildren(icon("close"), document.createTextNode("Chiudi anteprima"));
+  $("toggle-live").replaceChildren(icon("close"), document.createTextNode(t("Close preview")));
 }
 
 async function loadRecordings() {
@@ -306,7 +348,7 @@ async function loadRecordings() {
   const start = new Date($("search-start").value).getTime() / 1000;
   const end = new Date($("search-end").value).getTime() / 1000;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-    archiveError("Scegli un intervallo valido: la fine deve essere successiva all’inizio.");
+    archiveError(t("Choose a valid range: the end must be after the start."));
     return;
   }
   const request = ++state.archiveRequest;
@@ -320,7 +362,7 @@ async function loadRecordings() {
     if (request !== state.archiveRequest || state.selectedId !== cameraId || !state.authenticated) return;
     state.recordings = (Array.isArray(recordings) ? recordings : []).sort((a, b) => a.started_at - b.started_at);
     state.range = {start, end};
-    if (state.recordings.length >= 10000) archiveError("Sono mostrati i primi 10.000 segmenti. Restringi l’intervallo per visualizzare e verificare il resto dell’archivio.");
+    if (state.recordings.length >= 10000) archiveError(t("Showing the first 10,000 segments. Narrow the range to view and check the rest of the archive."));
     if (state.recording && !state.recordings.some((recording) => recording.id === state.recording.id)) clearPlayer();
     renderRecordings();
     drawTimeline();
@@ -335,14 +377,14 @@ function renderRecordings() {
   const list = $("recordings-list");
   list.replaceChildren();
   const count = state.recordings.length;
-  setText("recording-count", `${count} ${count === 1 ? "segmento" : "segmenti"}`);
+  setText("recording-count", t(count === 1 ? "{count} segment" : "{count} segments", {count: number(count)}));
   setText("recordings-total", bytes(state.recordings.reduce((sum, item) => sum + (Number(item.size) || 0), 0)));
-  if (!count) list.append(el("p", "no-recordings", "Nessuna registrazione nell’intervallo selezionato. Prova a cambiare data o attendi il primo segmento completo."));
+  if (!count) list.append(el("p", "no-recordings", t("No recordings in the selected range. Try another date or wait for the first complete segment.")));
   state.recordings.forEach((recording) => {
     const row = el("button", `recording-row${recording.id === state.recording?.id ? " active" : ""}`);
     row.type = "button";
     row.setAttribute("aria-pressed", String(recording.id === state.recording?.id));
-    row.setAttribute("aria-label", `Riproduci registrazione del ${timeLabel(recording.started_at, true)}, durata ${seconds(recording.duration)}`);
+    row.setAttribute("aria-label", t("Play recording from {time}, duration {duration}", {time: timeLabel(recording.started_at, true), duration: seconds(recording.duration)}));
     const playIcon = el("span", "clip-play");
     playIcon.append(icon("play"));
     const copy = el("span", "clip-copy");
@@ -365,9 +407,9 @@ function clearPlayer() {
   $("player-placeholder").hidden = false;
   $("download").hidden = true;
   $("download").removeAttribute("href");
-  setText("playing-label", "Nessuna registrazione selezionata");
+  setText("playing-label", t("No recording selected"));
   setText("playing-codec", "");
-  setText("waveform-label", "Seleziona una registrazione");
+  setText("waveform-label", t("Select a recording"));
   $("waveform-cursor").hidden = true;
   drawWaveform();
 }
@@ -393,14 +435,24 @@ function selectRecording(recording, offset = 0, autoplay = true) {
     seekPlayer(offset);
     if (autoplay) player.play().catch(() => {});
   };
-  setText("playing-label", timeLabel(recording.started_at, true));
-  const videoCodec = String(recording.video_codec || "Video").toUpperCase();
-  const audioCodec = recording.audio_codec ? ` · ${String(recording.audio_codec).toUpperCase()}` : " · senza audio";
-  setText("playing-codec", `${videoCodec}${audioCodec} · ${seconds(recording.duration)}${compatible ? " · Conversione compatibile" : ""}`);
+  renderPlayingLabels();
   $("download").href = `/api/recordings/${encodeURIComponent(recording.id)}/download`;
   $("download").hidden = false;
   renderRecordings();
   if (!same || !state.waveform) loadWaveform(recording);
+}
+
+function renderPlayingLabels() {
+  const recording = state.recording;
+  if (!recording) {
+    setText("playing-label", t("No recording selected"));
+    setText("playing-codec", "");
+    return;
+  }
+  setText("playing-label", timeLabel(recording.started_at, true));
+  const videoCodec = String(recording.video_codec || t("Video")).toUpperCase();
+  const audioCodec = recording.audio_codec ? ` · ${String(recording.audio_codec).toUpperCase()}` : t(" · no audio");
+  setText("playing-codec", `${videoCodec}${audioCodec} · ${seconds(recording.duration)}${$("compatible").checked ? t(" · Compatibility conversion") : ""}`);
 }
 
 function seekPlayer(offset) {
@@ -412,7 +464,7 @@ function seekPlayer(offset) {
 async function loadWaveform(recording) {
   const request = ++state.waveformRequest;
   state.waveform = null;
-  setText("waveform-label", recording.audio_codec ? "Analisi dell’audio…" : "Nessuna traccia audio");
+  setText("waveform-label", recording.audio_codec ? t("Analysing audio…") : t("No audio track"));
   drawWaveform();
   if (!recording.audio_codec) return;
   try {
@@ -420,11 +472,11 @@ async function loadWaveform(recording) {
     if (request !== state.waveformRequest || state.recording?.id !== recording.id) return;
     state.waveform = waveform;
     const peaks = Array.isArray(waveform?.peaks) ? waveform.peaks : [];
-    setText("waveform-label", peaks.length ? `${seconds(waveform.duration)} · intensità audio` : "Audio non disponibile");
+    setText("waveform-label", peaks.length ? t("{duration} · audio intensity", {duration: seconds(waveform.duration)}) : t("Audio unavailable"));
     drawWaveform();
   } catch (error) {
     if (request !== state.waveformRequest) return;
-    setText("waveform-label", "Forma d’onda non disponibile");
+    setText("waveform-label", t("Waveform unavailable"));
     $("waveform-label").title = errorText(error);
   }
 }
@@ -506,9 +558,9 @@ function timelineSeek(event) {
   const time = state.range.start + fraction * (state.range.end - state.range.start);
   const recording = state.recordings.find((item) => time >= item.started_at && time < item.started_at + item.duration);
   if (recording) {
-    setText("timeline-message", "I vuoti indicano periodi per cui non sono presenti registrazioni.");
+    setText("timeline-message", t("Gaps indicate periods with no recordings."));
     selectRecording(recording, time - recording.started_at);
-  } else setText("timeline-message", `Nessun segmento disponibile alle ${timeLabel(time)}. Seleziona un tratto colorato.`);
+  } else setText("timeline-message", t("No segment available at {time}. Select a coloured section.", {time: timeLabel(time)}));
 }
 
 function openCameraDialog(camera = null) {
@@ -517,19 +569,19 @@ function openCameraDialog(camera = null) {
   setText("camera-form-error", "");
   $("probe-result").hidden = true;
   $("camera-url").required = !camera;
-  setText("camera-dialog-title", camera ? "Configura telecamera" : "Aggiungi telecamera");
+  setText("camera-dialog-title", camera ? t("Configure camera") : t("Add camera"));
   $("camera-name").value = camera?.name || "";
   $("camera-url").value = "";
-  $("camera-url").placeholder = camera ? "Lascia vuoto per mantenere il flusso salvato" : "rtsp://utente:password@192.168.1.50:554/stream";
+  $("camera-url").placeholder = camera ? t("Leave blank to keep the saved stream") : "rtsp://user:password@192.168.1.50:554/stream";
   $("camera-preview-url").value = "";
   $("camera-preview-url").disabled = false;
-  $("camera-preview-url").placeholder = camera ? "Lascia vuoto per mantenere il flusso salvato" : "rtsp://192.168.1.50:554/substream";
+  $("camera-preview-url").placeholder = camera ? t("Leave blank to keep the saved stream") : "rtsp://192.168.1.50:554/substream";
   $("camera-audio-mode").value = camera?.audio_mode || "copy";
   $("camera-retention-days").value = camera?.retention_days || 7;
   $("camera-enabled").checked = camera ? camera.enabled : true;
   $("clear-preview-row").hidden = !camera?.preview_source;
   $("stored-source").hidden = !camera;
-  setText("stored-source", camera ? `Flusso salvato: ${camera.source || "configurato"}` : "");
+  setText("stored-source", camera ? t("Saved stream: {source}", {source: camera.source || t("configured")}) : "");
   $("delete-camera").hidden = !camera;
   $("probe-camera").hidden = !camera;
   $("camera-dialog").showModal();
@@ -547,7 +599,7 @@ async function saveCamera(event) {
     audio_mode: $("camera-audio-mode").value,
     retention_days: Number($("camera-retention-days").value),
   };
-  if (!payload.name) { setText("camera-form-error", "Inserisci un nome per la telecamera."); return; }
+  if (!payload.name) { setText("camera-form-error", t("Enter a camera name.")); return; }
   $("save-camera").disabled = true;
   setText("camera-form-error", "");
   try {
@@ -559,7 +611,7 @@ async function saveCamera(event) {
     }
     await refresh(true, true);
     if (!editingId && state.selectedId) await loadRecordings();
-    toast(editingId ? "Configurazione aggiornata." : "Telecamera aggiunta. Il registratore proverà a collegarsi al flusso.");
+    toast(editingId ? t("Configuration updated.") : t("Camera added. The recorder will try to connect to the stream."));
   } catch (error) { setText("camera-form-error", errorText(error)); }
   finally { $("save-camera").disabled = false; }
 }
@@ -569,16 +621,16 @@ async function probeCamera() {
   $("probe-camera").disabled = true;
   $("probe-result").hidden = false;
   $("probe-result").className = "probe-result";
-  setText("probe-result", "Verifica del flusso salvato in corso…");
+  setText("probe-result", t("Checking the saved stream…"));
   try {
     const data = await api(`/api/cameras/${encodeURIComponent(state.editingId)}/probe`, {method: "POST"});
     const streams = Array.isArray(data?.streams) ? data.streams : [];
-    const details = streams.map((stream) => `${stream.codec_type || "flusso"}: ${stream.codec_name || "sconosciuto"}${stream.width ? ` · ${stream.width} × ${stream.height}` : ""}`);
+    const details = streams.map((stream) => `${stream.codec_type || t("stream")}: ${stream.codec_name || t("unknown")}${stream.width ? ` · ${number(stream.width)} × ${number(stream.height)}` : ""}`);
     if (!details.length) {
-      if (data?.video_codec) details.push(`Video: ${data.video_codec}`);
-      if (data?.audio_codec) details.push(`Audio: ${data.audio_codec}`);
+      if (data?.video_codec) details.push(t("Video: {codec}", {codec: data.video_codec}));
+      if (data?.audio_codec) details.push(t("Audio: {codec}", {codec: data.audio_codec}));
     }
-    setText("probe-result", details.length ? `Flusso raggiungibile.\n${details.join("\n")}` : "Flusso raggiungibile. Verifica completata.");
+    setText("probe-result", details.length ? t("Stream reachable.\n{details}", {details: details.join("\n")}) : t("Stream reachable. Check completed."));
   } catch (error) { $("probe-result").className = "probe-result error"; setText("probe-result", errorText(error)); }
   finally { $("probe-camera").disabled = false; }
 }
@@ -592,7 +644,7 @@ async function findOnvifProfiles(event) {
   network.modalController = controller;
   const button = $("onvif-form").querySelector("button[type=submit]");
   button.disabled = true;
-  button.textContent = "Lettura dei profili…";
+  button.textContent = t("Reading profiles…");
   setText("onvif-error", "");
   network.modalProfiles = [];
   $("onvif-profiles").replaceChildren();
@@ -606,24 +658,27 @@ async function findOnvifProfiles(event) {
     if (request !== network.modalEpoch || authEpoch !== state.authEpoch || !$("onvif-dialog").open) return;
     network.modalProfiles = Array.isArray(data?.profiles) ? data.profiles : [];
     showWarnings("onvif-warnings", data?.warnings);
-    if (!network.modalProfiles.length) setText("onvif-error", "Il dispositivo non ha restituito profili video. Verifica che ONVIF sia attivo e che l’utente abbia accesso ai servizi video.");
+    if (!network.modalProfiles.length) setText("onvif-error", t("The device returned no video profiles. Check that ONVIF is enabled and the user can access video services."));
     renderModalProfiles();
   } catch (error) {
     if (error.name !== "AbortError" && request === network.modalEpoch) setText("onvif-error", errorText(error));
   } finally {
-    if (request === network.modalEpoch) { button.disabled = false; button.textContent = "Cerca profili"; network.modalController = null; }
+    if (request === network.modalEpoch) { button.disabled = false; button.textContent = t("Find profiles"); network.modalController = null; }
   }
 }
 
 function showView(view) {
+  if (!["recorder", "monitor", "network", "settings"].includes(view)) view = "recorder";
   network.view = view;
   const isNetwork = view === "network";
   $("recorder-view").hidden = view !== "recorder";
   $("network-view").hidden = !isNetwork;
   $("monitor-view").hidden = view !== "monitor";
-  setText("current-view-label", isNetwork ? "Telecamere in rete" : view === "monitor" ? "Monitor live" : "Registratore");
-  ["recorder", "monitor", "network"].forEach((name) => {
+  if ($("settings-view")) $("settings-view").hidden = view !== "settings";
+  setText("current-view-label", isNetwork ? t("Network cameras") : view === "monitor" ? t("Live monitor") : view === "settings" ? t("Settings") : t("Recorder"));
+  ["recorder", "monitor", "network", "settings"].forEach((name) => {
     const button = $(`nav-${name}`);
+    if (!button) return;
     button.classList.toggle("active", name === view);
     if (name === view) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
@@ -636,6 +691,7 @@ function showView(view) {
   }
   if (view === "monitor") { renderMonitor(); loadMonitorStatus(); }
   else releaseMonitor();
+  if (view === "settings") window.NvrSettings?.open();
 }
 
 function releaseMonitor() {
@@ -646,6 +702,7 @@ function releaseMonitor() {
   $("monitor-grid").replaceChildren();
   monitor.audioCameraId = null;
   monitor.fullscreenId = null;
+  monitor.serverStatus = null;
   monitor.statusEpoch += 1;
 }
 
@@ -658,11 +715,11 @@ function syncMonitorPlayers() {
     if (monitorCanPlay(tile)) tile.live?.start();
     else {
       tile.live?.stop();
-      const message = !monitor.playing ? "Monitor sospeso" : document.hidden ? "Scheda in background" : "Riquadro fuori vista";
+      const message = !monitor.playing ? t("Monitor paused") : document.hidden ? t("Tab in the background") : t("Tile outside the visible area");
       updateMonitorTile(tile, {state: "paused", message, audio: tile.hasAudio, mode: tile.mode});
     }
   });
-  $("monitor-toggle").replaceChildren(icon(monitor.playing ? "pause" : "play"), el("span", "", monitor.playing ? "Sospendi monitor" : "Avvia monitor"));
+  $("monitor-toggle").replaceChildren(icon(monitor.playing ? "pause" : "play"), el("span", "", monitor.playing ? t("Pause monitor") : t("Start monitor")));
   $("monitor-toggle").disabled = !state.cameras.length;
 }
 
@@ -670,26 +727,27 @@ function updateMonitorAudio(tile) {
   const active = tile.hasAudio && !tile.video.muted;
   tile.audioButton.replaceChildren(icon(active ? "audio" : "muted"));
   tile.audioButton.disabled = !tile.hasAudio;
-  tile.audioButton.setAttribute("aria-label", !tile.hasAudio ? "Audio non disponibile nel flusso" : active ? `Disattiva audio di ${tile.name}` : `Ascolta ${tile.name}`);
-  tile.audioButton.title = !tile.hasAudio ? "Audio non disponibile nel flusso" : active ? "Disattiva audio" : "Ascolta solo questa telecamera";
+  tile.audioButton.setAttribute("aria-label", !tile.hasAudio ? t("Audio is unavailable in this stream") : active ? t("Mute {camera}", {camera: tile.name}) : t("Listen to {camera}", {camera: tile.name}));
+  tile.audioButton.title = !tile.hasAudio ? t("Audio is unavailable in this stream") : active ? t("Mute audio") : t("Listen to this camera only");
   tile.audioButton.setAttribute("aria-pressed", String(active));
   tile.audioButton.classList.toggle("audio-on", active);
 }
 
 function updateMonitorTile(tile, info) {
   if (!monitor.tiles.has(tile.id)) return;
+  tile.lastInfo = info;
   tile.hasAudio = !!info.audio;
   tile.mode = info.mode || "copy";
   const changed = tile.liveState !== info.state;
   tile.liveState = info.state;
   tile.element.dataset.liveState = info.state;
-  tile.connection.textContent = info.state === "playing" ? "LIVE" : info.state === "connecting" || info.state === "buffering" ? "COLLEGAMENTO" : info.state === "reconnecting" ? "RICONNESSIONE" : info.state === "unsupported" ? "NON SUPPORTATO" : "SOSPESO";
+  tile.connection.textContent = info.state === "playing" ? t("LIVE") : info.state === "connecting" || info.state === "buffering" ? t("CONNECTING") : info.state === "reconnecting" ? t("RECONNECTING") : info.state === "unsupported" ? t("UNSUPPORTED") : t("PAUSED");
   const failed = ["reconnecting", "unsupported"].includes(info.state);
-  tile.message.textContent = failed ? info.state === "unsupported" ? "Browser non compatibile" : "Collegamento non disponibile" : info.message || "";
+  tile.message.textContent = failed ? info.state === "unsupported" ? t("Unsupported browser") : t("Connection unavailable") : t(info.message || "");
   tile.errorDetail.hidden = !failed;
-  tile.errorDetail.textContent = failed ? info.message || "" : "";
+  tile.errorDetail.textContent = failed ? t(info.message || "") : "";
   tile.overlay.hidden = info.state === "playing";
-  tile.modeLabel.textContent = tile.mode === "compatible" ? "H.264 compatibile · CPU" : "Flusso originale";
+  tile.modeLabel.textContent = tile.mode === "compatible" ? t("Compatible H.264 · CPU") : t("Original stream");
   tile.modeLabel.classList.toggle("converted", tile.mode === "compatible");
   updateMonitorAudio(tile);
   if (changed && ["playing", "paused", "reconnecting", "unsupported"].includes(info.state) && network.view === "monitor" && state.authenticated && !document.hidden) {
@@ -709,20 +767,21 @@ function makeMonitorTile(camera) {
   const frame = el("div", "monitor-video-frame");
   tile.video = el("video", "monitor-video");
   tile.video.muted = true; tile.video.playsInline = true; tile.video.autoplay = true;
-  tile.video.setAttribute("aria-label", `Video live di ${camera.name}`);
+  tile.video.setAttribute("aria-label", t("Live video from {camera}", {camera: camera.name}));
   tile.overlay = el("div", "monitor-video-overlay");
-  tile.message = el("span", "", "Collegamento al flusso…");
+  tile.message = el("span", "", t("Connecting to the stream…"));
   tile.overlay.append(icon("camera"), tile.message);
   const connection = el("div", "monitor-connection");
-  tile.connection = el("span", "", "IN ATTESA");
+  tile.connection = el("span", "", t("WAITING"));
   connection.append(el("i"), tile.connection);
-  tile.quality = el("span", "monitor-quality", camera.preview_source ? "SECONDARIO" : "PRINCIPALE");
+  tile.quality = el("span", "monitor-quality", camera.preview_source ? t("SUBSTREAM") : t("MAIN STREAM"));
   frame.append(tile.video, tile.overlay, connection, tile.quality);
   tile.errorDetail = el("p", "monitor-tile-error"); tile.errorDetail.hidden = true;
   const footer = el("div", "monitor-tile-footer");
-  tile.modeLabel = el("span", "monitor-mode", "Flusso originale");
+  tile.modeLabel = el("span", "monitor-mode", t("Original stream"));
   const controls = el("div", "monitor-tile-controls");
-  const archive = el("button", "icon-button"); archive.type = "button"; archive.title = "Apri registrazioni"; archive.setAttribute("aria-label", `Apri registrazioni di ${camera.name}`); archive.append(icon("archive"));
+  const archive = el("button", "icon-button"); archive.type = "button"; archive.title = t("Open recordings"); archive.setAttribute("aria-label", t("Open recordings from {camera}", {camera: camera.name})); archive.append(icon("archive"));
+  tile.archiveButton = archive;
   archive.addEventListener("click", () => selectCamera(camera.id));
   tile.audioButton = el("button", "icon-button"); tile.audioButton.type = "button";
   tile.audioButton.addEventListener("click", () => {
@@ -734,13 +793,14 @@ function makeMonitorTile(camera) {
     updateMonitorAudio(tile);
   });
   tile.video.addEventListener("volumechange", () => updateMonitorAudio(tile));
-  const fullscreen = el("button", "icon-button"); fullscreen.type = "button"; fullscreen.title = "Schermo intero"; fullscreen.setAttribute("aria-label", `Mostra ${camera.name} a schermo intero`); fullscreen.append(icon("fullscreen"));
+  const fullscreen = el("button", "icon-button"); fullscreen.type = "button"; fullscreen.title = t("Fullscreen"); fullscreen.setAttribute("aria-label", t("Show {camera} fullscreen", {camera: camera.name})); fullscreen.append(icon("fullscreen"));
+  tile.fullscreenButton = fullscreen;
   fullscreen.addEventListener("click", async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
       else if (tile.element.requestFullscreen) { await tile.element.requestFullscreen(); monitor.fullscreenId = camera.id; syncMonitorPlayers(); }
-      else toast("Schermo intero non disponibile in questo browser.");
-    } catch (_) { toast("Il browser non ha consentito lo schermo intero."); }
+      else toast(t("Fullscreen is unavailable in this browser."));
+    } catch (_) { toast(t("The browser did not allow fullscreen.")); }
   });
   controls.append(archive, tile.audioButton, fullscreen); footer.append(tile.modeLabel, controls);
   tile.element.append(heading, frame, tile.errorDetail, footer);
@@ -748,7 +808,7 @@ function makeMonitorTile(camera) {
   if (window.NvrLivePlayer) {
     tile.live = new window.NvrLivePlayer(tile.video, {cameraId: camera.id, onStatus: (info) => updateMonitorTile(tile, info), onUnauthorized: () => { if (state.authenticated) showLogin(); }});
   } else {
-    tile.element.dataset.liveState = "unsupported"; tile.message.textContent = "Lettore video non disponibile. Ricarica la pagina.";
+    tile.element.dataset.liveState = "unsupported"; tile.message.textContent = t("Video player unavailable. Reload the page.");
   }
   return tile;
 }
@@ -780,12 +840,17 @@ function renderMonitor() {
       if (monitor.observer) monitor.observer.observe(tile.element); else tile.visible = true;
     }
     tile.name = camera.name; tile.title.textContent = camera.name;
-    tile.quality.textContent = camera.preview_source ? "SECONDARIO" : "PRINCIPALE";
+    tile.video.setAttribute("aria-label", t("Live video from {camera}", {camera: camera.name}));
+    tile.archiveButton.title = t("Open recordings");
+    tile.archiveButton.setAttribute("aria-label", t("Open recordings from {camera}", {camera: camera.name}));
+    tile.fullscreenButton.title = t("Fullscreen");
+    tile.fullscreenButton.setAttribute("aria-label", t("Show {camera} fullscreen", {camera: camera.name}));
+    tile.quality.textContent = camera.preview_source ? t("SUBSTREAM") : t("MAIN STREAM");
     const status = cameraStatus(camera);
     const recording = camera.enabled && ["recording", "running", "connected"].includes(camera.status?.state);
-    tile.recordingBadge.textContent = recording ? "● REC" : !camera.enabled ? "In pausa" : status.label;
+    tile.recordingBadge.textContent = recording ? t("● REC") : !camera.enabled ? t("Paused") : status.label;
     tile.recordingBadge.classList.toggle("recording", recording);
-    tile.recordingBadge.title = !camera.enabled ? "Registrazione in pausa. La diretta resta disponibile." : status.message;
+    tile.recordingBadge.title = !camera.enabled ? t("Recording paused. Live video is still available.") : status.message;
   });
   cameras.forEach((camera, index) => {
     const tile = monitor.tiles.get(camera.id), grid = $("monitor-grid");
@@ -794,7 +859,7 @@ function renderMonitor() {
   $("monitor-grid").className = `monitor-grid layout-${monitor.layout}`;
   $("monitor-empty").hidden = !!state.cameras.length;
   $("monitor-grid").hidden = !state.cameras.length;
-  setText("monitor-page-label", state.cameras.length ? `${monitor.page * monitor.layout + 1}–${Math.min(state.cameras.length, (monitor.page + 1) * monitor.layout)} di ${state.cameras.length}` : "0 telecamere");
+  setText("monitor-page-label", state.cameras.length ? t("{first}–{last} of {total}", {first: number(monitor.page * monitor.layout + 1), last: number(Math.min(state.cameras.length, (monitor.page + 1) * monitor.layout)), total: number(state.cameras.length)}) : t("0 cameras"));
   $("monitor-previous").disabled = monitor.page === 0;
   $("monitor-next").disabled = monitor.page >= pages - 1;
   document.querySelectorAll("[data-monitor-layout]").forEach((button) => {
@@ -810,12 +875,14 @@ async function loadMonitorStatus() {
   try {
     const data = await api("/api/live/status");
     if (epoch !== monitor.statusEpoch || authEpoch !== state.authEpoch || network.view !== "monitor") return;
-    setText("monitor-live-status", `Sul server: ${data.active_streams} / ${data.max_streams} flussi · ${data.active_transcodes} / ${data.max_transcodes} conversioni`);
+    monitor.serverStatus = data;
+    setText("monitor-live-status", t("On the server: {active} / {max} streams · {converted} / {maxConverted} conversions", {active: number(data.active_streams), max: number(data.max_streams), converted: number(data.active_transcodes), maxConverted: number(data.max_transcodes)}));
     $("monitor-server-dot").className = "status-dot green";
     $("monitor-error").hidden = true;
   } catch (error) {
     if (epoch !== monitor.statusEpoch || authEpoch !== state.authEpoch || network.view !== "monitor") return;
-    setText("monitor-live-status", "Stato delle connessioni non disponibile"); $("monitor-server-dot").className = "status-dot orange";
+    monitor.serverStatus = null;
+    setText("monitor-live-status", t("Connection status unavailable")); $("monitor-server-dot").className = "status-dot orange";
     setText("monitor-error", errorText(error)); $("monitor-error").hidden = false;
   }
 }
@@ -824,8 +891,9 @@ function showWarnings(id, warnings) {
   const container = $(id);
   container.replaceChildren();
   const list = (Array.isArray(warnings) ? warnings : []).filter((item) => typeof item === "string" && item);
+  warningLists.set(id, list);
   container.hidden = !list.length;
-  list.forEach((warning) => container.append(el("p", "", warning)));
+  list.forEach((warning) => container.append(el("p", "", t(warning))));
 }
 
 function clearNetworkProfiles(clearCredentials = false) {
@@ -833,6 +901,7 @@ function clearNetworkProfiles(clearCredentials = false) {
   network.profileController = null;
   network.profileEpoch += 1;
   network.profiles = [];
+  network.deviceInfo = null;
   if (clearCredentials) {
     $("network-username").value = "";
     $("network-password").value = "";
@@ -863,7 +932,7 @@ function resetModalProfiles() {
   $("onvif-stream-tools").hidden = true;
   const button = $("onvif-form").querySelector("button[type=submit]");
   button.disabled = false;
-  button.textContent = "Cerca profili";
+  button.textContent = t("Find profiles");
 }
 
 function resetNetwork() {
@@ -875,7 +944,7 @@ function resetNetwork() {
   network.interfaces = [];
   network.interfacesLoaded = false;
   network.interfaceEpoch += 1;
-  $("network-interface").replaceChildren(el("option", "", "Automatica · tutte le interfacce disponibili"));
+  $("network-interface").replaceChildren(el("option", "", t("Automatic · all available interfaces")));
   $("network-interface").firstChild.value = "";
   $("network-manual-endpoint").value = "";
   $("network-cidr").value = "";
@@ -899,7 +968,7 @@ async function loadNetworkInterfaces() {
     network.interfaces = Array.isArray(data) ? data : [];
     network.interfacesLoaded = true;
     const select = $("network-interface"), previous = select.value;
-    select.replaceChildren(el("option", "", "Automatica · tutte le interfacce disponibili"));
+    select.replaceChildren(el("option", "", t("Automatic · all available interfaces")));
     select.firstChild.value = "";
     network.interfaces.forEach((item) => {
       const option = el("option", "", `${item.name} · ${item.address}${item.cidr ? ` · ${item.cidr}` : ""}`);
@@ -909,7 +978,7 @@ async function loadNetworkInterfaces() {
     select.value = previous;
     suggestNetworkCidr();
   } catch (error) {
-    if (request === network.interfaceEpoch) setText("network-error", `Interfacce non disponibili: ${errorText(error)} Puoi comunque provare la ricerca automatica o l’endpoint manuale.`);
+    if (request === network.interfaceEpoch) setText("network-error", t("Interfaces unavailable: {error} You can still try automatic discovery or a manual endpoint.", {error: errorText(error)}));
   }
 }
 
@@ -935,16 +1004,17 @@ function cancelNetworkScan(announce = true) {
   network.scanController = null;
   clearInterval(network.scanTimer);
   network.scanTimer = null;
+  network.scanProgress = null;
   setScanBusy(false);
-  if (wasRunning && !network.devices.length) renderNetworkDevices("Annullamento della ricerca richiesto. Attendi la conferma del server prima di avviare una nuova ricerca.");
+  if (wasRunning && !network.devices.length) renderNetworkDevices(t("Search cancellation requested. Wait for server confirmation before starting another search."));
   if (wasRunning && state.authenticated) {
     const authEpoch = state.authEpoch, cancelEpoch = network.scanEpoch;
-    if (announce) toast("Annullamento della ricerca richiesto.");
+    if (announce) toast(t("Search cancellation requested."));
     // Closing the HTTP response alone may leave the server's discovery task
     // running. Explicit cancellation releases that task and its discovery lock.
     api("/api/onvif/cancel", {method: "POST", body: {}}).then((result) => {
       if (!state.authenticated || authEpoch !== state.authEpoch || cancelEpoch !== network.scanEpoch) return;
-      if (typeof result?.cancelled === "boolean" && !network.devices.length) renderNetworkDevices("Ricerca chiusa. Puoi avviare una nuova ricerca oppure inserire un endpoint manuale.");
+      if (typeof result?.cancelled === "boolean" && !network.devices.length) renderNetworkDevices(t("Search closed. You can start another search or enter an endpoint manually."));
     }).catch(() => {
       // Completion/cancellation races (including 499) are benign. Keep the
       // request wording; a later search will report any still-active lock.
@@ -960,10 +1030,10 @@ async function runNetworkScan(mode) {
     const parts = cidr.match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/);
     const ports = [...new Set($("network-ports").value.split(",").map((value) => Number(value.trim())))];
     if (!parts || parts[1].split(".").some((value) => Number(value) > 255) || Number(parts[2]) < 24 || Number(parts[2]) > 32) {
-      setText("network-error", "Inserisci una rete IPv4 valida con prefisso da /24 a /32 (massimo 256 indirizzi)."); return;
+      setText("network-error", t("Enter a valid IPv4 network with a prefix from /24 to /32 (up to 256 addresses).")); return;
     }
     if (!ports.length || ports.length > 8 || ports.some((port) => !Number.isInteger(port) || port < 1 || port > 65535)) {
-      setText("network-error", "Inserisci da 1 a 8 porte valide, separate da virgole (da 1 a 65535)."); return;
+      setText("network-error", t("Enter 1 to 8 valid ports, separated by commas (1 to 65535).")); return;
     }
     payload = {cidr, ports};
   } else payload = {interface_ip: $("network-interface").value || null, timeout: 6};
@@ -973,14 +1043,15 @@ async function runNetworkScan(mode) {
   clearNetworkProfiles(true);
   network.selected = null;
   network.devices = [];
-  renderNetworkDevices("Ricerca in corso. I risultati compariranno al termine.");
+  renderNetworkDevices(t("Searching. Results will appear when the search finishes."));
   $("network-device-explorer").hidden = true;
   $("network-select-placeholder").hidden = false;
   setText("network-error", "");
   showWarnings("network-warnings", []);
   setScanBusy(true);
   const started = Date.now();
-  const progress = () => setText("network-progress-label", `${mode === "scan" ? "Ricerca nell’intervallo IP" : "Ricerca multicast ONVIF"} in corso · ${Math.floor((Date.now() - started) / 1000)} s`);
+  const progress = () => setText("network-progress-label", t("{search} in progress · {seconds} s", {search: mode === "scan" ? t("IP range search") : t("ONVIF multicast search"), seconds: number(Math.floor((Date.now() - started) / 1000))}));
+  network.scanProgress = progress;
   progress();
   network.scanTimer = setInterval(progress, 1000);
   try {
@@ -988,27 +1059,28 @@ async function runNetworkScan(mode) {
     if (request !== network.scanEpoch || authEpoch !== state.authEpoch || network.view !== "network" || !state.authenticated) return;
     network.devices = Array.isArray(data?.devices) ? data.devices : [];
     showWarnings("network-warnings", data?.warnings);
-    renderNetworkDevices("Nessun dispositivo trovato. Controlla che ONVIF sia abilitato, che telecamera e server siano nella stessa LAN e che firewall, bridge o container LXC consentano il traffico. Puoi provare l’intervallo IP oppure l’endpoint manuale.");
-    toast(`${network.devices.length} ${network.devices.length === 1 ? "dispositivo trovato" : "dispositivi trovati"}${Number.isFinite(data?.duration) ? ` in ${data.duration.toLocaleString("it-IT", {maximumFractionDigits: 1})} s` : ""}.`);
+    renderNetworkDevices(t("No devices found. Check that ONVIF is enabled, camera and server share the same LAN, and the firewall, bridge or LXC container allows traffic. Try an IP range or enter an endpoint manually."));
+    toast(t(Number.isFinite(data?.duration) ? network.devices.length === 1 ? "{count} device found in {seconds} s." : "{count} devices found in {seconds} s." : network.devices.length === 1 ? "{count} device found." : "{count} devices found.", {count: number(network.devices.length), seconds: number(data?.duration, {maximumFractionDigits: 1})}));
   } catch (error) {
     if (error.name !== "AbortError" && request === network.scanEpoch) {
       setText("network-error", errorText(error));
-      renderNetworkDevices("Ricerca non completata. Controlla la connettività del server oppure inserisci un endpoint manuale.");
+      renderNetworkDevices(t("Search did not finish. Check server connectivity or enter an endpoint manually."));
     }
   } finally {
     if (request === network.scanEpoch) {
-      clearInterval(network.scanTimer); network.scanTimer = null; network.scanController = null; setScanBusy(false);
+      clearInterval(network.scanTimer); network.scanTimer = null; network.scanProgress = null; network.scanController = null; setScanBusy(false);
     }
   }
 }
 
-function renderNetworkDevices(emptyMessage = "Avvia una ricerca oppure inserisci un endpoint ONVIF.") {
+function renderNetworkDevices(emptyMessage = t("Start a search or enter an ONVIF endpoint.")) {
+  network.emptyMessage = translatedMessages.get(emptyMessage) || {key: emptyMessage};
   const list = $("network-devices");
   list.replaceChildren();
-  setText("network-device-count", String(network.devices.length));
+  setText("network-device-count", number(network.devices.length));
   if (!network.devices.length) {
     const empty = el("div", "network-device-empty");
-    empty.append(icon("network"), el("strong", "", "La tua rete, da esplorare."), el("p", "", emptyMessage));
+    empty.append(icon("network"), el("strong", "", t("Explore your network.")), el("p", "", emptyMessage));
     list.append(empty);
   }
   network.devices.forEach((device, index) => {
@@ -1016,7 +1088,7 @@ function renderNetworkDevices(emptyMessage = "Avvia una ricerca oppure inserisci
     row.type = "button";
     row.setAttribute("aria-pressed", String(device === network.selected));
     const copy = el("span");
-    copy.append(el("strong", "", device.name || device.hardware || device.ip || `Dispositivo ${index + 1}`), el("small", "", `${device.ip || "ONVIF"}${device.manual ? " · endpoint manuale" : ""}`));
+    copy.append(el("strong", "", device.name || device.hardware || device.ip || t("Device {number}", {number: number(index + 1)})), el("small", "", `${device.ip || "ONVIF"}${device.manual ? t(" · manual endpoint") : ""}`));
     row.append(icon("camera"), copy, el("span", "device-chevron", "›"));
     row.addEventListener("click", () => chooseNetworkDevice(device));
     list.append(row);
@@ -1030,13 +1102,13 @@ function chooseNetworkDevice(device) {
   const endpoints = [...new Set([device.endpoint, ...(Array.isArray(device.xaddrs) ? device.xaddrs : [])].filter((value) => typeof value === "string" && value))];
   $("network-endpoint").replaceChildren();
   endpoints.forEach((endpoint) => { const option = el("option", "", endpoint); option.value = endpoint; $("network-endpoint").append(option); });
-  setText("network-device-name", device.name || device.hardware || device.ip || "Dispositivo ONVIF");
-  setText("network-device-address", device.ip || "Endpoint manuale");
+  setText("network-device-name", device.name || device.hardware || device.ip || t("ONVIF device"));
+  setText("network-device-address", device.ip || t("Manual endpoint"));
   setText("network-device-description", [device.hardware, device.location].filter(Boolean).join(" · "));
   $("network-select-placeholder").hidden = true;
   $("network-device-explorer").hidden = false;
   $("network-read-profiles").disabled = !endpoints.length;
-  if (!endpoints.length) setText("network-profile-error", "Il dispositivo non ha pubblicato un endpoint. Inseriscilo manualmente nel campo sopra.");
+  if (!endpoints.length) setText("network-profile-error", t("The device did not advertise an endpoint. Enter it manually in the field above."));
   renderNetworkDevices();
 }
 
@@ -1058,8 +1130,8 @@ async function readNetworkProfiles(event) {
     network.profiles = Array.isArray(data?.profiles) ? data.profiles : [];
     showWarnings("network-profile-warnings", data?.warnings);
     renderDeviceInfo(data?.device);
-    if (!network.profiles.length) setText("network-profile-error", "Nessun profilo restituito. Verifica endpoint, credenziali ONVIF e permessi dell’utente sulla telecamera.");
-    else if (data?.success === false) setText("network-profile-error", "Profili trovati, ma nessun URL utilizzabile. I dettagli di ciascun profilo possono aiutarti a individuare il problema.");
+    if (!network.profiles.length) setText("network-profile-error", t("No profiles returned. Check the endpoint, ONVIF credentials and camera user permissions."));
+    else if (data?.success === false) setText("network-profile-error", t("Profiles found, but no usable URLs. Each profile’s details may help identify the problem."));
     renderNetworkProfiles(true);
   } catch (error) {
     if (error.name !== "AbortError" && request === network.profileEpoch) setText("network-profile-error", errorText(error));
@@ -1069,9 +1141,10 @@ async function readNetworkProfiles(event) {
 }
 
 function renderDeviceInfo(device) {
+  network.deviceInfo = device;
   const list = $("network-device-info");
   list.replaceChildren();
-  const labels = {manufacturer: "Produttore", model: "Modello", firmware: "Firmware", serial_number: "Numero di serie", hardware_id: "Hardware"};
+  const labels = {manufacturer: t("Manufacturer"), model: t("Model"), firmware: t("Firmware"), serial_number: t("Serial number"), hardware_id: t("Hardware")};
   Object.entries(labels).forEach(([key, label]) => {
     if (!device?.[key]) return;
     const pair = el("div"); pair.append(el("dt", "", label), el("dd", "", device[key])); list.append(pair);
@@ -1080,7 +1153,7 @@ function renderDeviceInfo(device) {
 }
 
 function profileRole(profile) {
-  return profile.role === "main" ? "Principale suggerito" : profile.role === "sub" ? "Secondario suggerito" : "Altro profilo";
+  return profile.role === "main" ? t("Suggested main stream") : profile.role === "sub" ? t("Suggested substream") : t("Other profile");
 }
 
 function cleanStreamUrl(profile) {
@@ -1101,26 +1174,26 @@ function buildStreamCard(profile, index, mode) {
   card.dataset.profileIndex = String(index);
   const heading = el("div", "stream-card-heading");
   const title = el("div");
-  title.append(el("h4", "", profile.name || `Profilo ${index + 1}`), el("small", "", `${profile.service || "ONVIF"} · ${profile.token || "Token non disponibile"}`));
+  title.append(el("h4", "", profile.name || t("Profile {number}", {number: number(index + 1)})), el("small", "", `${profile.service || "ONVIF"} · ${profile.token || t("Token unavailable")}`));
   heading.append(title, el("span", `badge ${profile.role === "main" ? "" : "neutral"}`, profileRole(profile)));
   card.append(heading);
-  const metadata = [profile.encoding, profile.width && profile.height ? `${profile.width} × ${profile.height}` : "", profile.fps ? `${profile.fps} fps` : "", profile.bitrate ? `Limite ${profile.bitrate} kb/s` : "", profile.video_source ? `Sorgente ${profile.video_source}` : ""].filter(Boolean);
-  card.append(el("p", "stream-metadata", metadata.join(" · ") || "Metadati video non disponibili"));
-  if (profile.role_basis) card.append(el("p", "field-help", profile.role_basis));
-  if (profile.error) card.append(el("p", "form-error", profile.error));
+  const metadata = [profile.encoding, profile.width && profile.height ? `${number(profile.width)} × ${number(profile.height)}` : "", profile.fps ? t("{fps} fps", {fps: number(profile.fps)}) : "", profile.bitrate ? t("Limit {bitrate} kb/s", {bitrate: number(profile.bitrate)}) : "", profile.video_source ? t("Source {source}", {source: profile.video_source}) : ""].filter(Boolean);
+  card.append(el("p", "stream-metadata", metadata.join(" · ") || t("Video metadata unavailable")));
+  if (profile.role_basis) card.append(el("p", "field-help", t(profile.role_basis)));
+  if (profile.error) card.append(el("p", "form-error", t(profile.error)));
   if (available) {
     const input = el("input", "stream-url"); input.readOnly = true; input.value = streamUrl(profile, includeCredentials);
-    input.setAttribute("aria-label", `URL del profilo ${profile.name || index + 1}`); input.spellcheck = false;
+    input.setAttribute("aria-label", t("URL for profile {profile}", {profile: profile.name || number(index + 1)})); input.spellcheck = false;
     input.addEventListener("focus", () => input.select());
     card.append(input);
-  } else card.append(el("p", "field-help", "URL non disponibile per questo profilo."));
+  } else card.append(el("p", "field-help", t("URL unavailable for this profile.")));
   const actions = el("div", "stream-actions");
   const copy = el("button", "button secondary small-button"); copy.type = "button"; copy.disabled = !available;
-  copy.append(icon("copy"), document.createTextNode("Copia URL"));
+  copy.append(icon("copy"), document.createTextNode(t("Copy URL")));
   copy.addEventListener("click", () => copyStreamText(streamUrl(profile, $(isNetwork ? "network-include-credentials" : "onvif-include-credentials").checked)));
   actions.append(copy);
   ["main", "preview"].forEach((target) => {
-    const button = el("button", "button quiet small-button", target === "main" ? "Per registrazione" : "Per anteprima");
+    const button = el("button", "button quiet small-button", target === "main" ? t("Use for recording") : t("Use for preview"));
     button.type = "button"; button.disabled = !available; button.dataset.streamTarget = target;
     button.addEventListener("click", () => {
       if (isNetwork) {
@@ -1130,7 +1203,7 @@ function buildStreamCard(profile, index, mode) {
         $(target === "main" ? "camera-url" : "camera-preview-url").value = profile.url || profile.clean_url || "";
         if (target === "preview") { $("clear-preview").checked = false; $("camera-preview-url").disabled = false; }
         $("onvif-dialog").close();
-        toast(target === "main" ? "Flusso principale inserito. Salva la telecamera per registrare." : "Flusso di anteprima inserito. Salva la configurazione.");
+        toast(target === "main" ? t("Main stream entered. Save the camera to record.") : t("Preview stream entered. Save the configuration."));
       }
     });
     actions.append(button);
@@ -1149,16 +1222,16 @@ function renderNetworkProfiles(resetPair = false) {
   $("network-profiles").replaceChildren(...network.profiles.map((profile, index) => buildStreamCard(profile, index, "network")));
   $("network-stream-tools").hidden = !network.profiles.length;
   const available = network.profiles.map((profile, index) => ({profile, index})).filter(({profile}) => profile.url || profile.clean_url);
-  setText("network-profile-count", `${network.profiles.length} ${network.profiles.length === 1 ? "profilo" : "profili"} · ${available.length} URL disponibili`);
+  setText("network-profile-count", t(network.profiles.length === 1 ? "{profiles} profile · {urls} URLs available" : "{profiles} profiles · {urls} URLs available", {profiles: number(network.profiles.length), urls: number(available.length)}));
   $("network-copy-all").disabled = !available.length;
   $("network-recording-pair").hidden = !available.length;
   if (resetPair) {
     $("network-main-profile").replaceChildren();
-    $("network-preview-profile").replaceChildren(el("option", "", "Nessuno · usa il flusso principale"));
+    $("network-preview-profile").replaceChildren(el("option", "", t("None · use the main stream")));
     $("network-preview-profile").firstChild.value = "";
     available.forEach(({profile, index}) => {
       ["network-main-profile", "network-preview-profile"].forEach((id) => {
-        const option = el("option", "", `${profile.name || `Profilo ${index + 1}`} · ${profile.encoding || "video"}${profile.width ? ` · ${profile.width} × ${profile.height}` : ""}`);
+        const option = el("option", "", `${profile.name || t("Profile {number}", {number: number(index + 1)})} · ${profile.encoding || t("Video")}${profile.width ? ` · ${profile.width} × ${profile.height}` : ""}`);
         option.value = String(index); $(id).append(option);
       });
     });
@@ -1190,7 +1263,7 @@ async function copyStreamText(value) {
   const authEpoch = state.authEpoch, profileEpoch = network.profileEpoch, modalEpoch = network.modalEpoch;
   const stillCurrent = () => state.authenticated && authEpoch === state.authEpoch && profileEpoch === network.profileEpoch && modalEpoch === network.modalEpoch;
   if (navigator.clipboard?.writeText) {
-    try { await navigator.clipboard.writeText(value); if (stillCurrent()) toast("URL copiati negli appunti."); return; } catch (_) { /* HTTP LAN and browser permissions may require manual copying. */ }
+    try { await navigator.clipboard.writeText(value); if (stillCurrent()) toast(t("URLs copied to the clipboard.")); return; } catch (_) { /* HTTP LAN and browser permissions may require manual copying. */ }
   }
   if (!stillCurrent()) return;
   $("copy-value").value = value;
@@ -1198,8 +1271,8 @@ async function copyStreamText(value) {
   $("copy-value").focus(); $("copy-value").select();
   let copied = false;
   try { copied = document.execCommand("copy"); } catch (_) { /* The selected field remains available. */ }
-  if (copied) { $("copy-dialog").close(); toast("URL copiati negli appunti."); }
-  else setText("copy-dialog-message", "Copia automatica non disponibile su questo browser. Il testo è selezionato: usa Ctrl+C, ⌘C o il comando Copia del dispositivo.");
+  if (copied) { $("copy-dialog").close(); toast(t("URLs copied to the clipboard.")); }
+  else setText("copy-dialog-message", t("Automatic copying is unavailable in this browser. The text is selected: use Ctrl+C, ⌘C or your device’s Copy command."));
 }
 
 function copyAllProfiles(mode) {
@@ -1215,7 +1288,7 @@ function addNetworkCamera() {
   if (!main || !(main.url || main.clean_url)) return;
   // Always create a new draft; never overwrite the recorder's selected camera.
   openCameraDialog();
-  $("camera-name").value = String(network.selected?.name || network.selected?.hardware || network.selected?.ip || "Telecamera ONVIF").slice(0, 80);
+  $("camera-name").value = String(network.selected?.name || network.selected?.hardware || network.selected?.ip || t("ONVIF camera")).slice(0, 80);
   $("camera-url").value = main.url || main.clean_url;
   $("camera-preview-url").value = preview ? preview.url || preview.clean_url || "" : "";
 }
@@ -1228,7 +1301,7 @@ async function deleteCamera() {
     await api(`/api/cameras/${encodeURIComponent(state.editingId)}`, {method: "DELETE"});
     $("delete-dialog").close(); $("camera-dialog").close();
     await refresh(true, true);
-    toast("Telecamera rimossa. Le registrazioni esistenti rimangono sul disco.");
+    toast(t("Camera removed. Existing recordings remain on disk."));
   } catch (error) { setText("delete-error", errorText(error)); }
   finally { $("confirm-delete").disabled = false; }
 }
@@ -1252,7 +1325,7 @@ $("refresh").addEventListener("click", async () => {
   await refresh(true, true); await loadRecordings();
 });
 $("toggle-live").addEventListener("click", toggleLive);
-$("live-image").addEventListener("error", () => { if (state.live) { stopLive(); toast("Anteprima non disponibile. Verifica il flusso e FFmpeg sul server."); } });
+$("live-image").addEventListener("error", () => { if (state.live) { stopLive(); toast(t("Preview unavailable. Check the stream and FFmpeg on the server.")); } });
 $("search-form").addEventListener("submit", (event) => { event.preventDefault(); state.rangeFollowsNow = false; loadRecordings(); });
 $("camera-form").addEventListener("submit", saveCamera);
 $("probe-camera").addEventListener("click", probeCamera);
@@ -1266,11 +1339,18 @@ $("onvif-form").addEventListener("submit", findOnvifProfiles);
 $("onvif-dialog").addEventListener("close", resetModalProfiles);
 $("nav-recorder").addEventListener("click", () => showView("recorder"));
 $("nav-monitor").addEventListener("click", () => showView("monitor"));
+$("nav-settings")?.addEventListener("click", () => showView("settings"));
 $("monitor-toggle").addEventListener("click", () => { monitor.playing = !monitor.playing; syncMonitorPlayers(); loadMonitorStatus(); });
 $("monitor-find-cameras").addEventListener("click", () => { showView("network"); loadNetworkInterfaces(); });
 document.querySelectorAll("[data-monitor-layout]").forEach((button) => button.addEventListener("click", () => {
   monitor.layout = Number(button.dataset.monitorLayout); monitor.page = 0; renderMonitor();
 }));
+window.addEventListener("nvr-monitor-layoutchange", (event) => {
+  const layout = Number(event.detail?.layout);
+  if (![1, 4, 9, 16].includes(layout)) return;
+  monitor.layout = layout; monitor.page = 0;
+  if (network.view === "monitor") renderMonitor();
+});
 $("monitor-previous").addEventListener("click", () => { monitor.page -= 1; renderMonitor(); });
 $("monitor-next").addEventListener("click", () => { monitor.page += 1; renderMonitor(); });
 document.addEventListener("fullscreenchange", () => {
@@ -1287,9 +1367,9 @@ $("network-manual-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const endpoint = $("network-manual-endpoint").value.trim();
   let url;
-  try { url = new URL(endpoint); } catch (_) { setText("network-error", "Inserisci un endpoint HTTP o HTTPS valido."); return; }
+  try { url = new URL(endpoint); } catch (_) { setText("network-error", t("Enter a valid HTTP or HTTPS endpoint.")); return; }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-    setText("network-error", "Usa un endpoint HTTP o HTTPS senza credenziali nell’indirizzo; inseriscile nei campi del dispositivo."); return;
+    setText("network-error", t("Use an HTTP or HTTPS endpoint without credentials in the address; enter them in the device fields.")); return;
   }
   cancelNetworkScan(false);
   setText("network-error", "");
@@ -1304,7 +1384,7 @@ $("network-endpoint").addEventListener("change", () => clearNetworkProfiles(true
   network.modalController?.abort(); network.modalController = null; network.modalEpoch += 1; network.modalProfiles = [];
   $("onvif-profiles").replaceChildren(); $("onvif-stream-tools").hidden = true;
   setText("onvif-error", ""); showWarnings("onvif-warnings", []);
-  const button = $("onvif-form").querySelector("button[type=submit]"); button.disabled = false; button.textContent = "Cerca profili";
+  const button = $("onvif-form").querySelector("button[type=submit]"); button.disabled = false; button.textContent = t("Find profiles");
 }));
 $("network-include-credentials").addEventListener("change", () => renderNetworkProfiles());
 $("onvif-include-credentials").addEventListener("change", renderModalProfiles);
@@ -1328,15 +1408,15 @@ player.addEventListener("timeupdate", updateWaveformCursor);
 player.addEventListener("error", () => {
   if (!state.recording) return;
   archiveError($("compatible").checked
-    ? "Riproduzione non disponibile. Verifica il file e il servizio FFmpeg sul server; puoi scaricare la registrazione originale."
-    : "Il browser potrebbe non supportare questo codec. Prova la riproduzione compatibile H.264 oppure scarica il file originale.");
+    ? t("Playback unavailable. Check the file and FFmpeg service on the server; you can download the original recording.")
+    : t("Your browser may not support this codec. Try compatible H.264 playback or download the original file."));
 });
 player.addEventListener("ended", () => {
   if (!state.recording) return;
   const current = state.recording;
   const next = state.recordings.find((item) => item.started_at > current.started_at);
   if (next && next.started_at <= current.started_at + current.duration + 2) selectRecording(next);
-  else if (next) toast("Fine segmento. Prima della registrazione successiva c’è un intervallo senza video.");
+  else if (next) toast(t("End of segment. There is a gap before the next recording."));
 });
 $("waveform").addEventListener("click", (event) => {
   if (!state.recording || !state.waveform?.peaks?.length) return;
@@ -1371,5 +1451,59 @@ $("search-start").value = localInput(today);
 $("search-end").value = localInput(new Date(now.getTime() + 60000));
 function updateClock() { $("wall-clock").textContent = `${formatDate.format(new Date())} · ${formatShortTime.format(new Date())}`; }
 updateClock(); setInterval(updateClock, 30000);
+
+window.addEventListener("nvr-languagechange", () => {
+  // Relabel existing state. Do not navigate, reset drafts, cancel discovery,
+  // reload the archive video, or replace active live player instances.
+  messageBindings.forEach(({key, params}, id) => {
+    const values = params ? {...params} : undefined;
+    ["message", "error", "search"].forEach((name) => {
+      const nested = values && typeof values[name] === "string" && translatedMessages.get(values[name]);
+      if (nested) values[name] = t(nested.key, nested.params);
+    });
+    if ($(id)) $(id).textContent = t(key, values);
+  });
+  updateClock();
+  setText("current-view-label", t(({recorder: "Recorder", monitor: "Live monitor", network: "Network cameras", settings: "Settings"})[network.view] || "Recorder"));
+  $("toggle-live").replaceChildren(icon(state.live ? "close" : "play"), document.createTextNode(t(state.live ? "Close preview" : "Open preview")));
+  $("onvif-form").querySelector("button[type=submit]").textContent = t(network.modalController ? "Reading profiles…" : "Find profiles");
+  const automatic = $("network-interface").options[0];
+  if (automatic) automatic.textContent = t("Automatic · all available interfaces");
+  if ($("camera-dialog").open) {
+    setText("camera-dialog-title", t(state.editingId ? "Configure camera" : "Add camera"));
+    $("camera-url").placeholder = state.editingId ? t("Leave blank to keep the saved stream") : "rtsp://user:password@192.168.1.50:554/stream";
+    $("camera-preview-url").placeholder = state.editingId ? t("Leave blank to keep the saved stream") : "rtsp://192.168.1.50:554/substream";
+  }
+  if (state.authenticated) {
+    renderCameras(); renderSelected(); renderStats(); renderSystem();
+    renderRecordings(); renderPlayingLabels(); drawTimeline(); drawWaveform();
+    const empty = network.emptyMessage;
+    renderNetworkDevices(empty ? t(empty.key, empty.params) : t("Start a search or enter an ONVIF endpoint."));
+    if (network.selected) {
+      const device = network.selected;
+      setText("network-device-name", device.name || device.hardware || device.ip || t("ONVIF device"));
+      setText("network-device-address", device.ip || t("Manual endpoint"));
+    }
+    renderDeviceInfo(network.deviceInfo);
+    if (network.profiles.length) {
+      const main = $("network-main-profile").value, preview = $("network-preview-profile").value;
+      renderNetworkProfiles(true);
+      $("network-main-profile").value = main; $("network-preview-profile").value = preview;
+      updateProfilePair();
+    }
+    if (network.modalProfiles.length) renderModalProfiles();
+    if (network.view === "monitor") {
+      renderMonitor();
+      monitor.tiles.forEach((tile) => {
+        if (tile.live?.relabel) tile.live.relabel();
+        else if (tile.lastInfo) updateMonitorTile(tile, tile.lastInfo);
+      });
+      const data = monitor.serverStatus;
+      if (data) setText("monitor-live-status", t("On the server: {active} / {max} streams · {converted} / {maxConverted} conversions", {active: number(data.active_streams), max: number(data.max_streams), converted: number(data.active_transcodes), maxConverted: number(data.max_transcodes)}));
+    }
+  }
+  warningLists.forEach((warnings, id) => showWarnings(id, warnings));
+  network.scanProgress?.();
+});
 document.body.classList.add("loading");
 api("/api/session").then((session) => session?.authenticated ? enterApp() : showLogin()).catch((error) => { showLogin(); setText("login-error", errorText(error)); });

@@ -23,7 +23,7 @@ READ_TIMEOUT = 30
 
 class LiveError(RuntimeError):
     """Safe user-facing failure: no URL, credential or FFmpeg stderr."""
-    def __init__(self, message: str = "Diretta non disponibile. Verificare il flusso e FFmpeg.", status_code: int = 503):
+    def __init__(self, message: str = "Live view unavailable. Check the stream and FFmpeg.", status_code: int = 503):
         super().__init__(message)
         self.status_code = status_code
 
@@ -32,29 +32,29 @@ def _boxes(data: bytes, start: int = 0, end: int | None = None):
     end = len(data) if end is None else end
     while start < end:
         if end - start < 8:
-            raise LiveError("Contenitore della diretta non valido.")
+            raise LiveError("Invalid live stream container.")
         size, kind = struct.unpack_from(">I4s", data, start)
         header = 8
         if size == 1:
             if end - start < 16:
-                raise LiveError("Contenitore della diretta non valido.")
+                raise LiveError("Invalid live stream container.")
             size = struct.unpack_from(">Q", data, start + 8)[0]
             header = 16
         if size < header or start + size > end:
-            raise LiveError("Contenitore della diretta non valido.")
+            raise LiveError("Invalid live stream container.")
         yield kind, start + header, start + size
         start += size
 
 
 def _avc_codec(configuration: bytes, sample_entry: str = "avc1") -> str:
     if len(configuration) < 7 or configuration[0] != 1:
-        raise LiveError("Configurazione H.264 della diretta non valida.")
+        raise LiveError("Invalid live H.264 configuration.")
     return sample_entry + "." + configuration[1:4].hex().upper()
 
 
 def _hevc_codec(configuration: bytes, sample_entry: str = "hev1") -> str:
     if len(configuration) < 23 or configuration[0] != 1:
-        raise LiveError("Configurazione H.265 della diretta non valida.")
+        raise LiveError("Invalid live H.265 configuration.")
     profile = configuration[1]
     space = ("", "A", "B", "C")[profile >> 6]
     compatibility = int.from_bytes(configuration[2:6], "big")
@@ -70,13 +70,13 @@ def _mime_from_init(initialization: bytes) -> str:
     video, audio = [], []
     def visit(start, end, depth=0):
         if depth > 8:
-            raise LiveError("Contenitore della diretta non valido.")
+            raise LiveError("Invalid live stream container.")
         for kind, payload, stop in _boxes(initialization, start, end):
             if kind in {b"moov", b"trak", b"mdia", b"minf", b"stbl"}:
                 visit(payload, stop, depth + 1)
             elif kind == b"stsd":
                 if stop - payload < 8:
-                    raise LiveError("Contenitore della diretta non valido.")
+                    raise LiveError("Invalid live stream container.")
                 for entry, entry_data, entry_end in _boxes(initialization, payload + 8, stop):
                     if entry in {b"avc1", b"avc3", b"hev1", b"hvc1"}:
                         for child, data, child_end in _boxes(initialization, entry_data + 78, entry_end):
@@ -89,7 +89,7 @@ def _mime_from_init(initialization: bytes) -> str:
                         audio.append("mp4a.40.2")
     visit(0, len(initialization))
     if len(video) != 1 or len(audio) > 1:
-        raise LiveError("Codec della diretta non supportato: provare la modalità compatibile.", 422)
+        raise LiveError("Unsupported live codec: try compatible mode.", 422)
     return 'video/mp4; codecs="' + ",".join(video + audio) + '"'
 
 
@@ -103,11 +103,11 @@ async def _read_box(reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
             header += extension
         limit = MAX_INIT if kind in {b"ftyp", b"moov"} else MAX_FRAGMENT
         if size < len(header) or size > limit:
-            raise LiveError("Segmento della diretta troppo grande o non valido. Ridurre l'intervallo dei keyframe.")
+            raise LiveError("Live segment too large or invalid. Reduce the keyframe interval.")
         payload = await asyncio.wait_for(reader.readexactly(size - len(header)), READ_TIMEOUT)
         return kind, header + payload
     except (asyncio.IncompleteReadError, asyncio.TimeoutError):
-        raise LiveError("Flusso della diretta interrotto. Riconnessione necessaria.") from None
+        raise LiveError("Live stream interrupted. Reconnection required.") from None
 
 
 @dataclass(eq=False)
@@ -154,7 +154,7 @@ class LiveSubscription:
 
     async def stream(self) -> AsyncIterator[bytes]:
         if self._streaming:
-            raise LiveError("Questa sottoscrizione è già in uso.")
+            raise LiveError("This subscription is already in use.")
         self._streaming = True
         try:
             if self._closed or self._ended or self._initialization is None:
@@ -211,20 +211,20 @@ class LiveManager:
         try:
             _input_args(camera.get("preview_url") or camera["url"])
         except (MediaError, KeyError, TypeError):
-            raise LiveError("Indirizzo della diretta non valido.", 422) from None
+            raise LiveError("Invalid live stream address.", 422) from None
         mode = "compatible" if compatible else "copy"
         key = (str(camera["id"]), mode)
         async with self._lock:
             if self._stopping:
-                raise LiveError("Diretta in arresto.")
+                raise LiveError("Live view is stopping.")
             hub = self._hubs.get(key)
             if hub and hub.stopping:
-                raise LiveError("Diretta in arresto. Riprovare tra pochi secondi.")
+                raise LiveError("Live view is stopping. Try again in a few seconds.")
             if hub and self._signature(hub.camera) != self._signature(camera):
                 await self._retire(hub)
                 hub = None
             if sum(len(item.subscribers) for (camera_id, _), item in self._hubs.items() if camera_id == key[0]) >= MAX_VIEWERS:
-                raise LiveError("Limite di spettatori per questa telecamera raggiunto.", 429)
+                raise LiveError("The viewer limit for this camera has been reached.", 429)
             if hub is None:
                 # Idle producers may be reclaimed before refusing an active view.
                 for idle in list(self._hubs.values()):
@@ -233,9 +233,9 @@ class LiveManager:
                     if not idle.subscribers and (over_total or (over_transcode and idle.mode == "compatible")):
                         await self._retire(idle)
                 if len(self._hubs) >= self.max_streams:
-                    raise LiveError("Limite di dirette simultanee raggiunto. Chiudere un riquadro.", 429)
+                    raise LiveError("The simultaneous live stream limit has been reached. Close a tile.", 429)
                 if compatible and sum(h.mode == "compatible" for h in self._hubs.values()) >= self.max_transcodes:
-                    raise LiveError("Limite di conversioni live raggiunto. Usare un sottostream H.264 o chiudere una conversione.", 429)
+                    raise LiveError("The live transcoding limit has been reached. Use an H.264 substream or close a transcoded view.", 429)
                 hub = _Hub(dict(camera), mode)
                 self._hubs[key] = hub
                 hub.task = asyncio.create_task(self._run(hub), name=f"live-{key[0]}-{mode}")
@@ -255,7 +255,7 @@ class LiveManager:
             return subscription
         except asyncio.TimeoutError:
             await subscription.close()
-            raise LiveError("La telecamera non ha inizializzato la diretta entro 20 secondi.") from None
+            raise LiveError("The camera did not initialize live view within 20 seconds.") from None
         except BaseException:
             await subscription.close()
             raise
@@ -288,7 +288,7 @@ class LiveManager:
         hub.state = "stopping"
         if hub.idle_task and hub.idle_task is not asyncio.current_task():
             hub.idle_task.cancel()
-        self._end_subscribers(hub, LiveError("Diretta chiusa o configurazione modificata."))
+        self._end_subscribers(hub, LiveError("Live view closed or configuration changed."))
         hub.retire_task = asyncio.create_task(self._finish_retire(hub), name="live-retire")
         return hub.retire_task
 
@@ -312,7 +312,7 @@ class LiveManager:
         hub.state = "live"
         for subscription in tuple(hub.subscribers):
             if subscription._queue.full():
-                subscription._finish(LiveError("Spettatore troppo lento: riconnettere la diretta."))
+                subscription._finish(LiveError("Viewer too slow: reconnect live view."))
                 hub.subscribers.discard(subscription)
             else:
                 subscription._queue.put_nowait(fragment)
@@ -386,27 +386,27 @@ class LiveManager:
                     kind, box = await _read_box(process.stdout)
                     if kind == b"ftyp":
                         if ftyp is not None or hub.initialization:
-                            raise LiveError("Contenitore della diretta non valido.")
+                            raise LiveError("Invalid live stream container.")
                         ftyp = box
                     elif kind == b"moov":
                         if ftyp is None or hub.initialization or len(ftyp) + len(box) > MAX_INIT:
-                            raise LiveError("Inizializzazione della diretta non valida.")
+                            raise LiveError("Invalid live stream initialization.")
                         hub.initialization = ftyp + box
                         hub.mime = _mime_from_init(hub.initialization)
                         for subscription in tuple(hub.subscribers):
                             subscription._initialize(hub.initialization, hub.mime)
                     elif kind == b"moof":
                         if not hub.initialization or pending is not None:
-                            raise LiveError("Sequenza della diretta non valida.")
+                            raise LiveError("Invalid live stream sequence.")
                         pending = box
                     elif kind == b"mdat":
                         if pending is None or len(pending) + len(box) > MAX_FRAGMENT:
-                            raise LiveError("Frammento della diretta non valido o troppo grande.")
+                            raise LiveError("Live fragment invalid or too large.")
                         self._publish(hub, pending + box)
                         pending = None
                         produced = True
                     elif kind not in {b"free", b"skip", b"sidx", b"styp", b"mfra", b"prft"}:
-                        raise LiveError("Contenitore della diretta non supportato.")
+                        raise LiveError("Unsupported live stream container.")
             except asyncio.CancelledError:
                 raise
             except (RuntimeError, MediaError, OSError, ValueError, AssertionError) as error:

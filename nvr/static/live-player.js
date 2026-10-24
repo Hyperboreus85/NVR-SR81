@@ -3,6 +3,7 @@
 // Each camera has its own WebSocket and serial SourceBuffer operations. The
 // bounded binary queue includes the fragment currently being appended.
 (() => {
+  const t = (...args) => window.NvrI18n.t(...args);
   class NvrLivePlayer {
     constructor(video, options) {
       this.video = video;
@@ -31,14 +32,21 @@
       this.onVideoError = () => {
         if (!this.controller || this.controller.signal.aborted) return;
         this.fallbackRequested = !this.compatible;
-        this.failureReason = this.compatible ? "Le immagini non possono essere decodificate." : "Codec non decodificabile: provo H.264 compatibile.";
+        this.failureReason = this.compatible ? "The images cannot be decoded." : "Cannot decode this codec: trying compatible H.264.";
         this.controller.abort();
       };
       this.video.addEventListener("error", this.onVideoError);
     }
 
-    status(state, message) {
-      if (!this.destroyed) this.onStatus({state, message, mode: this.mode, audio: this.audio});
+    status(state, message, params) {
+      this.lastStatus = {state, message, params};
+      const values = params ? {...params} : undefined;
+      if (values && typeof values.message === "string") values.message = t(values.message);
+      if (!this.destroyed) this.onStatus({state, message: t(message, values), mode: this.mode, audio: this.audio});
+    }
+
+    relabel() {
+      if (this.lastStatus) this.status(this.lastStatus.state, this.lastStatus.message, this.lastStatus.params);
     }
 
     start() {
@@ -47,7 +55,7 @@
       this.wanted = true;
       if (!window.MediaSource) {
         this.wanted = false;
-        this.terminalMessage = "Questo browser non supporta il lettore live MediaSource. Usa un browser aggiornato con supporto MSE.";
+        this.terminalMessage = "This browser does not support the MediaSource live player. Use an up-to-date browser with MSE support.";
         this.status("unsupported", this.terminalMessage);
         return;
       }
@@ -60,7 +68,7 @@
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
       this.cleanup();
-      this.status("paused", "Diretta sospesa");
+      this.status("paused", "Live video paused");
     }
 
     destroy() {
@@ -100,7 +108,7 @@
       this.serverErrorCode = null;
       this.mode = this.compatible ? "compatible" : "copy";
       this.audio = false;
-      this.status("connecting", this.attempts ? "Riconnessione al flusso…" : "Collegamento al flusso…");
+      this.status("connecting", this.attempts ? "Reconnecting to the stream…" : "Connecting to the stream…");
       this.lastReceived = Date.now();
       this.lastAdvanced = Date.now();
       this.lastFrameAt = Date.now();
@@ -110,7 +118,7 @@
       this.watchdog = setInterval(() => {
         if (!this.current(generation)) return;
         if (Date.now() - this.lastReceived > 25000) {
-          this.failureReason = "Nessun dato dal flusso. Riprovo a collegarmi.";
+          this.failureReason = "No stream data received. Trying to reconnect.";
           controller.abort();
           return;
         }
@@ -119,7 +127,7 @@
           this.lastAdvanced = Date.now();
           if (!this.usesFrameCallbacks) this.freezeRecoveries = 0;
           if (this.video.readyState >= 2 && this.video.videoWidth > 0 && (this.attempts || this.lastState !== "playing")) {
-            this.attempts = 0; this.lastState = "playing"; this.status("playing", "Video live");
+            this.attempts = 0; this.lastState = "playing"; this.status("playing", "Live video");
           }
         }
         const clockFrozen = this.video.readyState >= 2 && Date.now() - this.lastAdvanced > 12000;
@@ -128,7 +136,7 @@
           if (!this.freezeRecoveries) {
             this.stayLive(true); this.tryPlay(); this.freezeRecoveries += 1; this.lastAdvanced = Date.now(); this.lastFrameAt = Date.now();
           } else {
-            this.failureReason = "Riproduzione bloccata. Riconnessione in corso.";
+            this.failureReason = "Playback stalled. Reconnecting.";
             controller.abort();
           }
         }
@@ -141,11 +149,11 @@
         const mime = typeof info.mime === "string" ? info.mime : "";
         this.mode = info.mode || this.mode;
         this.audio = /(?:mp4a|ac-3|ec-3|opus)/i.test(mime);
-        if (!/^video\/mp4(?:\s*;|$)/i.test(mime) || !/codecs\s*=/i.test(mime)) throw new Error("Il server non ha indicato i codec del flusso live.");
+        if (!/^video\/mp4(?:\s*;|$)/i.test(mime) || !/codecs\s*=/i.test(mime)) throw new Error("The server did not provide the live stream codecs.");
         if (!MediaSource.isTypeSupported(mime)) {
-          if (!this.compatible) { this.fallbackRequested = true; throw new Error("Codec non supportato: provo H.264 compatibile."); }
+          if (!this.compatible) { this.fallbackRequested = true; throw new Error("Unsupported codec: trying compatible H.264."); }
           this.wanted = false;
-          this.terminalMessage = "Il browser non supporta neppure il flusso H.264 compatibile. Aggiorna il browser o verifica il supporto ai codec.";
+          this.terminalMessage = "The browser does not support the compatible H.264 stream either. Update the browser or check codec support.";
           this.status("unsupported", this.terminalMessage);
           return;
         }
@@ -160,13 +168,13 @@
           const frame = () => {
             if (!this.current(generation)) return;
             this.lastFrameAt = Date.now(); this.freezeRecoveries = 0;
-            if (this.attempts || this.lastState !== "playing") { this.attempts = 0; this.lastState = "playing"; this.status("playing", "Video live"); }
+            if (this.attempts || this.lastState !== "playing") { this.attempts = 0; this.lastState = "playing"; this.status("playing", "Live video"); }
             this.frameCallback = this.video.requestVideoFrameCallback(frame);
           };
           this.frameCallback = this.video.requestVideoFrameCallback(frame);
         }
         this.lastState = "buffering";
-        this.status("buffering", "Preparazione delle prime immagini…");
+        this.status("buffering", "Preparing the first frames…");
         while (this.current(generation)) {
           const value = await channel.read();
           try {
@@ -190,14 +198,14 @@
         if (!this.compatible && ["NotSupportedError", "EncodingError"].includes(error.name)) this.fallbackRequested = true;
         if (this.fallbackRequested && !this.compatible) {
           this.compatible = true;
-          this.status("connecting", "Codec del browser non compatibile: richiesta conversione H.264…");
+          this.status("connecting", "Browser codec unsupported: requesting H.264 conversion…");
           retryDelay = 0;
         } else {
           this.attempts += 1;
           retryDelay = [409, 429, 503].includes(this.serverErrorCode) ? 30000 : Math.min(30000, 1500 * 2 ** Math.min(this.attempts - 1, 5));
           this.lastState = "reconnecting";
-          const message = this.failureReason || (error.name === "AbortError" ? "Collegamento interrotto." : error.message);
-          this.status("reconnecting", `${message} Nuovo tentativo tra ${Math.ceil(retryDelay / 1000)} s.`);
+          const message = this.failureReason || (error.name === "AbortError" ? "Connection interrupted." : error.message);
+          this.status("reconnecting", "{message} Retrying in {seconds} s.", {message, seconds: Math.ceil(retryDelay / 1000)});
         }
       } finally {
         if (generation === this.generation) this.cleanup();
@@ -227,28 +235,28 @@
         controller.abort();
         if (socket.readyState < WebSocket.CLOSING) { try { socket.close(1000, "Viewer reconnecting"); } catch (_) { /* Handshake can still be in progress. */ } }
       };
-      controller.signal.addEventListener("abort", () => fail(new DOMException("Diretta interrotta", "AbortError")), {once: true});
+      controller.signal.addEventListener("abort", () => fail(new DOMException("Live stream interrupted", "AbortError")), {once: true});
       socket.addEventListener("open", () => { this.lastReceived = Date.now(); });
       socket.addEventListener("message", (event) => {
         if (failure || !this.current(generation)) return;
         this.lastReceived = Date.now();
         if (typeof event.data === "string") {
           let info;
-          try { info = JSON.parse(event.data); } catch (_) { fail(new Error("Risposta del servizio live non valida.")); return; }
+          try { info = JSON.parse(event.data); } catch (_) { fail(new Error("Invalid live service response.")); return; }
           if (info.type === "error") {
             this.serverErrorCode = Number(info.code);
             if (this.serverErrorCode === 401) this.onUnauthorized();
-            fail(new Error(typeof info.message === "string" ? info.message : "Flusso live non disponibile."));
+            fail(new Error(typeof info.message === "string" ? info.message : "Live stream unavailable."));
           } else if (info.type === "init" && !initialized) {
             initialized = true; resolveReady(info);
-          } else fail(new Error("Sequenza del flusso live non valida."));
+          } else fail(new Error("Invalid live stream sequence."));
           return;
         }
-        if (!initialized || !(event.data instanceof ArrayBuffer)) { fail(new Error("Frammento live non valido.")); return; }
+        if (!initialized || !(event.data instanceof ArrayBuffer)) { fail(new Error("Invalid live fragment.")); return; }
         const value = new Uint8Array(event.data);
         if (!value.byteLength) return;
         if (retainedMessages + 1 > 4 || retainedBytes + value.byteLength > 16 * 1024 * 1024) {
-          fail(new Error("Il lettore non riesce a seguire il flusso. Riconnessione per liberare il buffer; prova un flusso secondario più leggero.")); return;
+          fail(new Error("The player cannot keep up with the stream. Reconnecting to clear the buffer; try a lighter substream.")); return;
         }
         retainedMessages += 1; retainedBytes += value.byteLength;
         if (waiter) { const waiting = waiter; waiter = null; waiting.resolve(value); }
@@ -256,10 +264,10 @@
       });
       socket.addEventListener("close", (event) => {
         if (controller.signal.aborted || !this.current(generation)) return;
-        if (event.code === 4401) { this.onUnauthorized(); fail(new Error("Accesso richiesto.")); }
-        else fail(new Error(event.code === 1012 ? "Flusso riavviato dal server." : "Collegamento live terminato."));
+        if (event.code === 4401) { this.onUnauthorized(); fail(new Error("Sign-in required.")); }
+        else fail(new Error(event.code === 1012 ? "Stream restarted by the server." : "Live connection ended."));
       });
-      socket.addEventListener("error", () => { if (!controller.signal.aborted) fail(new Error("Collegamento WebSocket non disponibile. Verifica la rete e il supporto WebSocket del server o del proxy.")); });
+      socket.addEventListener("error", () => { if (!controller.signal.aborted) fail(new Error("WebSocket connection unavailable. Check the network and WebSocket support on the server or proxy.")); });
       return {
         ready,
         read: () => {
@@ -275,7 +283,7 @@
       return new Promise((resolve, reject) => {
         const finish = (error) => { source.removeEventListener("sourceopen", open); signal.removeEventListener("abort", abort); error ? reject(error) : resolve(); };
         const open = () => finish();
-        const abort = () => finish(new DOMException("Diretta interrotta", "AbortError"));
+        const abort = () => finish(new DOMException("Live stream interrupted", "AbortError"));
         source.addEventListener("sourceopen", open, {once: true});
         signal.addEventListener("abort", abort, {once: true});
         if (signal.aborted) abort();
@@ -285,15 +293,15 @@
 
     bufferOperation(operation, signal) {
       const buffer = this.sourceBuffer;
-      if (!buffer || signal.aborted) return Promise.reject(new DOMException("Diretta interrotta", "AbortError"));
+      if (!buffer || signal.aborted) return Promise.reject(new DOMException("Live stream interrupted", "AbortError"));
       return new Promise((resolve, reject) => {
         const finish = (error) => {
           buffer.removeEventListener("updateend", end); buffer.removeEventListener("error", fail); signal.removeEventListener("abort", abort);
           error ? reject(error) : resolve();
         };
         const end = () => finish();
-        const fail = () => { this.fallbackRequested = !this.compatible; finish(new Error("Errore nella decodifica del video live.")); };
-        const abort = () => finish(new DOMException("Diretta interrotta", "AbortError"));
+        const fail = () => { this.fallbackRequested = !this.compatible; finish(new Error("Error decoding the live video.")); };
+        const abort = () => finish(new DOMException("Live stream interrupted", "AbortError"));
         buffer.addEventListener("updateend", end, {once: true}); buffer.addEventListener("error", fail, {once: true}); signal.addEventListener("abort", abort, {once: true});
         try { operation(); } catch (error) { finish(error); }
       });

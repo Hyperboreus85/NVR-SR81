@@ -73,7 +73,7 @@ def _url(value: str, schemes: tuple[str, ...], *, allow_credentials: bool = Fals
             raise ValueError
         return parsed
     except (ValueError, TypeError):
-        raise OnvifError("Indirizzo ONVIF o URI RTSP non valido.") from None
+        raise OnvifError("Invalid ONVIF address or RTSP URI.") from None
 
 
 def _replace_unspecified(value: str, camera_endpoint: str) -> str:
@@ -176,8 +176,8 @@ def _profile_metadata(profile: ET.Element, namespace: str) -> dict:
         "service": service,
         "services": [service],
         "role": "other",
-        "role_basis": "Metadati insufficienti per distinguere il ruolo del profilo.",
-        "error": "Richiesta URI non completata.",
+        "role_basis": "Insufficient metadata to determine the profile role.",
+        "error": "URI request not completed.",
     }
 
 
@@ -223,7 +223,7 @@ def _infer_roles(profiles: list[dict]) -> None:
     for profile in profiles:
         source = profile["video_source"]
         if source is None:
-            profile["role_basis"] = "Sorgente video non dichiarata: ruolo non determinabile."
+            profile["role_basis"] = "Video source not declared: role cannot be determined."
         else:
             groups.setdefault(source, []).append(profile)
     for group in groups.values():
@@ -233,29 +233,34 @@ def _infer_roles(profiles: list[dict]) -> None:
         bitrates = {rate for _, rate in rated}
         if len(group) == 1 and (sized or rated):
             group[0]["role"] = "main"
-            group[0]["role_basis"] = "Unico profilo con risoluzione o bitrate dichiarato per questa sorgente; ruolo indicativo."
+            group[0]["role_basis"] = "Only profile with a declared resolution or bitrate for this source; role is advisory."
             continue
         if len(areas) > 1:
             ranked = sized
-            basis = "risoluzione"
+            role_messages = {
+                "main": "Highest resolution among the profiles declared for this source; role is advisory.",
+                "sub": "Lowest resolution among the profiles declared for this source; role is advisory.",
+                "other": "Intermediate resolution for this source; role is advisory.",
+            }
         elif len(bitrates) > 1 and (not sized or len(sized) == len(group)):
             ranked = rated
-            basis = "bitrate dichiarato"
+            role_messages = {
+                "main": "Highest declared bitrate among the profiles declared for this source; role is advisory.",
+                "sub": "Lowest declared bitrate among the profiles declared for this source; role is advisory.",
+                "other": "Intermediate declared bitrate for this source; role is advisory.",
+            }
         else:
             for profile in group:
-                profile["role_basis"] = "Metadati equivalenti o incompleti per questa sorgente: ruolo non distinguibile."
+                profile["role_basis"] = "Equivalent or incomplete metadata for this source: role cannot be distinguished."
             continue
         largest = max(value for _, value in ranked)
         smallest = min(value for _, value in ranked)
         for profile, value in ranked:
             if value == largest:
                 profile["role"] = "main"
-                profile["role_basis"] = f"Valore massimo di {basis} tra i profili dichiarati per questa sorgente; ruolo indicativo."
             elif value == smallest:
                 profile["role"] = "sub"
-                profile["role_basis"] = f"Valore minimo di {basis} tra i profili dichiarati per questa sorgente; ruolo indicativo."
-            else:
-                profile["role_basis"] = f"{basis.capitalize()} intermedio per questa sorgente; ruolo indicativo."
+            profile["role_basis"] = role_messages[profile["role"]]
 
 
 def _envelope(namespace: str, operation: str, endpoint: str, username: str, password: str,
@@ -301,11 +306,11 @@ async def _soap(client: httpx.AsyncClient, endpoint: str, namespace: str, operat
             "SOAPAction": f'"{namespace}/{operation}"',
         }) as response:
             if response.status_code in (401, 403):
-                raise OnvifError("Autenticazione ONVIF rifiutata: controllare utente, password e orologio della telecamera.")
+                raise OnvifError("ONVIF authentication rejected: check the username, password and camera clock.")
             xml = bytearray()
             async for chunk in response.aiter_bytes(65536):
                 if len(xml) + len(chunk) > 2 * 1024 * 1024:
-                    raise OnvifError("Risposta ONVIF troppo grande.")
+                    raise OnvifError("ONVIF response too large.")
                 xml.extend(chunk)
         root = SafeET.fromstring(xml, forbid_dtd=True)
         fault = root.find(".//{*}Fault")
@@ -313,18 +318,18 @@ async def _soap(client: httpx.AsyncClient, endpoint: str, namespace: str, operat
             codes = [(node.text or "").strip().rsplit(":", 1)[-1] for node in fault.iter()
                      if node.tag.rsplit("}", 1)[-1] in ("Value", "faultcode")]
             if any(code in ("NotAuthorized", "FailedAuthentication", "InvalidSecurity", "MessageExpired") for code in codes):
-                raise OnvifError("Autenticazione ONVIF rifiutata: controllare utente, password e orologio della telecamera.")
-            raise OnvifError("Operazione ONVIF non disponibile o rifiutata dalla telecamera.")
+                raise OnvifError("ONVIF authentication rejected: check the username, password and camera clock.")
+            raise OnvifError("ONVIF operation unavailable or rejected by the camera.")
         response.raise_for_status()
         body = root.find(f"{{{SOAP}}}Body")
         # A few older devices respond using SOAP 1.1 envelopes.
         if body is None:
             body = root.find("{http://schemas.xmlsoap.org/soap/envelope/}Body")
         if body is None or body.find(f"{{*}}{operation}Response") is None:
-            raise OnvifError("La telecamera ha restituito una risposta ONVIF inattesa.")
+            raise OnvifError("The camera returned an unexpected ONVIF response.")
         return body
     except (httpx.HTTPError, ET.ParseError, DefusedXmlException):
-        raise OnvifError("Connessione ONVIF fallita o risposta XML non valida.") from None
+        raise OnvifError("ONVIF connection failed or invalid XML response.") from None
 
 
 async def get_profiles(endpoint: str, username: str = "", password: str = "") -> dict:
@@ -341,7 +346,7 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
     profiles: list[dict] = []
     warnings: list[str] = []
     device = {name: None for name in ("manufacturer", "model", "firmware", "serial_number", "hardware_id")}
-    last_error = OnvifError("Nessun profilo disponibile: verificare endpoint, credenziali e servizi ONVIF.")
+    last_error = OnvifError("No profiles available: check the endpoint, credentials and ONVIF services.")
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     resolved_hosts: dict[str, frozenset[str]] = {}
 
@@ -365,19 +370,19 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
             address = _replace_unspecified(address, endpoint)
             advertised = _url(address, ("http", "https"))
         except (OnvifError, ValueError):
-            warn("Un indirizzo di servizio Media dichiarato dalla telecamera non è valido ed è stato ignorato.")
+            warn("A Media service address declared by the camera is invalid and was ignored.")
             return
         if (namespace, address) in candidates:
             return
         if len(candidates) >= MAX_SERVICES:
-            warn(f"La telecamera dichiara più di {MAX_SERVICES} servizi Media: elenco limitato.")
+            warn(f"The camera reports more than {MAX_SERVICES} Media services: list truncated.")
             return
         advertised_host = advertised.hostname.lower()
         if advertised_host != endpoint_host:
             original_ips = await host_ips(endpoint_host)
             alternate_ips = await host_ips(advertised_host) if original_ips else frozenset()
             if not original_ips.intersection(alternate_ips):
-                warn("Un servizio Media indica un host diverso dal dispositivo che non è stato possibile verificare: indirizzo ignorato.")
+                warn("A Media service points to a different host that could not be verified: address ignored.")
                 return
         candidates.append((namespace, address))
 
@@ -408,15 +413,15 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
                 result = await request(address, namespace, "GetProfiles", arguments)
             except OnvifError as error:
                 last_error = error
-                warn(f"Impossibile leggere i profili {service}. {error}")
+                warn(f"Unable to read {service} profiles. {error}")
                 return
             nodes = result.findall(".//{*}Profiles")
             if len(nodes) > MAX_PROFILES_PER_SERVICE:
-                warn(f"Il servizio {service} dichiara più di {MAX_PROFILES_PER_SERVICE} profili: elenco limitato.")
+                warn(f"The {service} service reports more than {MAX_PROFILES_PER_SERVICE} profiles: list truncated.")
             service_profiles = []
             for node in nodes[:MAX_PROFILES_PER_SERVICE]:
                 if not node.get("token"):
-                    warn(f"Un profilo {service} senza token è stato ignorato.")
+                    warn(f"A {service} profile without a token was ignored.")
                     continue
                 profile = _profile_metadata(node, namespace)
                 profiles.append(profile)
@@ -445,7 +450,7 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
                 for media in capabilities.findall(".//{*}Media"):
                     await add(MEDIA1, _text(media, "XAddr"))
             if isinstance(information, OnvifError):
-                warn("Informazioni del dispositivo non disponibili; i profili possono comunque essere consultati.")
+                warn("Device information unavailable; profiles can still be viewed.")
             else:
                 if isinstance(information, BaseException):
                     raise information
@@ -468,14 +473,14 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
             async with asyncio.timeout(IMPORT_TIMEOUT_SECONDS):
                 await collect()
         except TimeoutError:
-            warn("Tempo massimo di consultazione ONVIF raggiunto: il risultato può essere incompleto.")
-            last_error = OnvifError("Tempo massimo di consultazione ONVIF raggiunto; controllare connessione e servizi della telecamera.")
+            warn("ONVIF query time limit reached: the result may be incomplete.")
+            last_error = OnvifError("ONVIF query time limit reached; check the connection and camera services.")
     if not profiles:
         raise last_error
     profiles = _merge_profiles(profiles)
     _infer_roles(profiles)
     failed = sum(profile["url"] is None for profile in profiles)
     if failed:
-        warn(f"URI RTSP non disponibile per {failed} profili: gli altri indirizzi restano utilizzabili.")
+        warn(f"RTSP URI unavailable for {failed} profiles: other addresses remain usable.")
     return {"device": device, "profiles": profiles, "warnings": warnings,
             "success": any(profile["url"] is not None for profile in profiles)}

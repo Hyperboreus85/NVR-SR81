@@ -183,7 +183,7 @@ def test_direct_media_endpoint_preserves_unavailable_profile(monkeypatch):
     assert len(result["profiles"]) == 2
     broken, main = result["profiles"]
     assert broken["token"] == "broken" and broken["url"] is None and broken["clean_url"] is None
-    assert "non valido" in broken["error"]
+    assert "Invalid" in broken["error"]
     assert main["token"] == "main" and main["name"] == ""
     assert main["url"] == "rtsps://user:pass@[fd00::42]:322/main"
     assert result["success"] and result["warnings"]
@@ -210,7 +210,7 @@ def test_rejects_xml_entities_and_does_not_expose_secrets(monkeypatch):
 
 def test_authentication_error_is_actionable_and_redacted(monkeypatch):
     use_transport(monkeypatch, lambda request: httpx.Response(403, text="password=secret"))
-    with pytest.raises(onvif.OnvifError, match="Autenticazione") as error:
+    with pytest.raises(onvif.OnvifError, match="authentication") as error:
         asyncio.run(onvif.get_profiles("http://camera/onvif", "admin", "secret"))
     assert "secret" not in str(error.value)
 
@@ -235,7 +235,7 @@ def test_response_size_limit_stops_reading_and_closes_stream():
         async with httpx.AsyncClient(transport=transport) as client:
             await onvif._soap(client, "http://camera/onvif", onvif.DEVICE, "GetServices", "", "")
 
-    with pytest.raises(onvif.OnvifError, match="troppo grande"):
+    with pytest.raises(onvif.OnvifError, match="too large"):
         asyncio.run(request())
     assert stream.chunks_read == 33
     assert stream.closed
@@ -276,7 +276,7 @@ def test_all_profiles_metadata_device_information_and_advisory_roles(monkeypatch
     assert high["name"] == "  SUB streaming  "
     assert (high["width"], high["height"], high["fps"], high["bitrate"], high["audio_encoding"]) == (3840, 2160, 25, 8192, "AAC")
     assert high["encoding"] == "H265" and high["service"] == "Media2"
-    assert high["role"] == "main" and "indicativo" in high["role_basis"]
+    assert high["role"] == "main" and "advisory" in high["role_basis"]
     assert profiles_by_token["token-low"]["role"] == "sub"
     assert profiles_by_token["third-not-sub"]["role"] == "other"
     assert profiles_by_token["second-camera"]["role"] == "main"
@@ -333,7 +333,7 @@ def test_missing_source_prevents_cross_service_merge_and_role_guessing(monkeypat
     result = asyncio.run(onvif.get_profiles("http://camera/device"))
     assert len(result["profiles"]) == 2
     assert all(profile["role"] == "other" for profile in result["profiles"])
-    assert all("non dichiarata" in profile["role_basis"] for profile in result["profiles"])
+    assert all("not declared" in profile["role_basis"] for profile in result["profiles"])
 
 
 def test_one_failed_uri_does_not_discard_other_profiles(monkeypatch):
@@ -422,8 +422,8 @@ def test_limits_large_profile_and_service_lists_with_explicit_warnings(monkeypat
     result = asyncio.run(onvif.get_profiles("http://camera/device"))
     assert len(enumerated_services) == 8 and stream_calls == 8 * 64
     assert len(result["profiles"]) == 8 * 64
-    assert any("8 servizi" in warning for warning in result["warnings"])
-    assert any("64 profili" in warning for warning in result["warnings"])
+    assert any("8 Media services" in warning for warning in result["warnings"])
+    assert any("64 profiles" in warning for warning in result["warnings"])
 
 
 def test_import_deadline_returns_partial_results(monkeypatch):
@@ -445,9 +445,9 @@ def test_import_deadline_returns_partial_results(monkeypatch):
     use_transport(monkeypatch, handler)
     result = asyncio.run(onvif.get_profiles("http://camera/device"))
     assert result["success"] and len(result["profiles"]) == 2
-    assert any("incompleto" in warning for warning in result["warnings"])
+    assert any("incomplete" in warning for warning in result["warnings"])
     slow = next(profile for profile in result["profiles"] if profile["token"] == "slow")
-    assert slow["url"] is None and slow["error"] == "Richiesta URI non completata."
+    assert slow["url"] is None and slow["error"] == "URI request not completed."
 
 
 def test_invalid_numeric_metadata_and_equal_profiles_do_not_invent_roles(monkeypatch):
@@ -484,7 +484,7 @@ def test_bitrate_distinguishes_equal_resolution_profiles_without_name_heuristics
     result = asyncio.run(onvif.get_profiles("http://camera/device"))
     roles = {profile["token"]: profile["role"] for profile in result["profiles"]}
     assert roles == {"a": "sub", "b": "main", "c": "other"}
-    assert all("bitrate dichiarato" in profile["role_basis"].lower() for profile in result["profiles"])
+    assert all("declared bitrate" in profile["role_basis"].lower() for profile in result["profiles"])
 
 
 def test_soap_auth_fault_is_actionable_even_with_http_500_and_redacted(monkeypatch):
@@ -493,9 +493,9 @@ def test_soap_auth_fault_is_actionable_even_with_http_500_and_redacted(monkeypat
         <s:Reason><s:Text>operator password=do-not-repeat-this</s:Text></s:Reason>
         </s:Fault></s:Body></s:Envelope>'''
     use_transport(monkeypatch, lambda request: httpx.Response(500, content=content))
-    with pytest.raises(onvif.OnvifError, match="Autenticazione") as error:
+    with pytest.raises(onvif.OnvifError, match="authentication") as error:
         asyncio.run(onvif.get_profiles("http://camera/device", "operator", "do-not-repeat-this"))
-    assert "orologio" in str(error.value) and "do-not-repeat-this" not in str(error.value)
+    assert "clock" in str(error.value) and "do-not-repeat-this" not in str(error.value)
 
 
 def test_same_uri_and_token_with_different_returned_credentials_remain_separate(monkeypatch):
@@ -544,7 +544,7 @@ def test_external_advertised_service_never_receives_credentials(monkeypatch):
     assert result["success"]
     assert set(contacted_hosts) == {"192.0.2.10"}
     assert resolved_hosts == ["192.0.2.10", "external.invalid"]
-    assert any("host diverso" in warning for warning in result["warnings"])
+    assert any("different host" in warning for warning in result["warnings"])
     assert all("never-repeat-url-secret" not in warning and "camera-password-secret" not in warning
                and "external.invalid" not in warning for warning in result["warnings"])
 
@@ -576,7 +576,7 @@ def test_advertised_same_ip_alias_is_accepted_and_dns_is_cached(monkeypatch):
     assert result["success"] and len(result["profiles"]) == 1
     assert resolved_hosts == ["camera.local", "192.0.2.10"]
     assert set(contacted_media) == {"http://192.0.2.10:8080/media1", "http://192.0.2.10:8080/media2"}
-    assert not any("host diverso" in warning for warning in result["warnings"])
+    assert not any("different host" in warning for warning in result["warnings"])
 
 
 def test_dns_failure_rejects_advertised_host_but_keeps_original_endpoint_fallback(monkeypatch):
@@ -601,7 +601,7 @@ def test_dns_failure_rejects_advertised_host_but_keeps_original_endpoint_fallbac
     use_transport(monkeypatch, handler)
     result = asyncio.run(onvif.get_profiles("http://192.0.2.10/device", "user", "secret-password"))
     assert result["success"] and set(contacted_hosts) == {"192.0.2.10"}
-    assert any("host diverso" in warning for warning in result["warnings"])
+    assert any("different host" in warning for warning in result["warnings"])
     assert all("secret-query" not in warning and "secret-password" not in warning for warning in result["warnings"])
 
 

@@ -23,13 +23,13 @@ class Settings:
         self.recordings_dir = self.recordings_dir.resolve()
         self.cache_dir = self.data_dir / "cache"
         if not 5 <= self.segment_seconds <= 600:
-            raise ValueError("NVR_SEGMENT_SECONDS deve essere fra 5 e 600")
+            raise ValueError("NVR_SEGMENT_SECONDS must be between 5 and 600")
         if self.min_free_bytes < 0:
-            raise ValueError("NVR_MIN_FREE_GB non può essere negativo")
+            raise ValueError("NVR_MIN_FREE_GB cannot be negative")
         if not 1 <= self.live_max_streams <= 32:
-            raise ValueError("NVR_LIVE_MAX_STREAMS deve essere fra 1 e 32")
+            raise ValueError("NVR_LIVE_MAX_STREAMS must be between 1 and 32")
         if not 0 <= self.live_max_transcodes <= 4:
-            raise ValueError("NVR_LIVE_MAX_TRANSCODES deve essere fra 0 e 4")
+            raise ValueError("NVR_LIVE_MAX_TRANSCODES must be between 0 and 4")
         for path in (self.data_dir, self.recordings_dir, self.cache_dir):
             path.mkdir(parents=True, exist_ok=True)
 
