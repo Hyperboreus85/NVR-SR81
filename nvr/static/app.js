@@ -529,6 +529,10 @@ function clearPlayer() {
   if ($("record-loading")) $("record-loading").hidden = true;
   $("download").hidden = true;
   $("download").removeAttribute("href");
+  if ($("download-compatible")) {
+    $("download-compatible").hidden = true;
+    $("download-compatible").removeAttribute("href");
+  }
   setText("playing-label", t("No recording selected"));
   setText("playing-codec", "");
   setText("waveform-label", t("Select a recording"));
@@ -542,8 +546,13 @@ function selectRecording(recording, offset = 0, autoplay = true) {
   state.recording = recording;
   if (!same) {
     state.motionSeek = null;
-    if (motionTrack) motionTrack.select(recording);
-    else setText("motion-status", t("Motion analysis unavailable."));
+    motionTrack?.clear();
+    state.waveformRequest += 1;
+    state.waveformController?.abort(); state.waveformController = null;
+    state.waveform = null;
+    setText("motion-status", t("Waiting for playback…"));
+    setText("waveform-label", t(recording.audio_codec ? "Waiting for playback…" : "No audio track"));
+    drawWaveform();
   }
   archiveError();
   if (same && player.src && !player.error) {
@@ -569,12 +578,22 @@ function selectRecording(recording, offset = 0, autoplay = true) {
     seekPlayer(requested);
     if (recordControls) recordControls.startIfWanted();
     else if (autoplay) player.play().catch(() => {});
+    // Start the video request before background analysis can occupy the
+    // browser's connection pool or the server's decoder workers.
+    if (state.recording?.id === recording.id) {
+      if (motionTrack) motionTrack.select(recording);
+      else setText("motion-status", t("Motion analysis unavailable."));
+      if (!same || !state.waveform) loadWaveform(recording);
+    }
   };
   renderPlayingLabels();
   $("download").href = `/api/recordings/${encodeURIComponent(recording.id)}/download`;
   $("download").hidden = false;
+  if ($("download-compatible")) {
+    $("download-compatible").href = `/api/recordings/${encodeURIComponent(recording.id)}/download.mp4`;
+    $("download-compatible").hidden = false;
+  }
   renderRecordings();
-  if (!same || !state.waveform) loadWaveform(recording);
 }
 
 function renderPlayingLabels() {

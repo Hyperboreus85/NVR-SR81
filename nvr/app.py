@@ -21,6 +21,7 @@ from .discovery import DiscoveryError, discover, list_interfaces, scan_network
 from .live import LiveError, LiveManager
 from .languages import LanguageError, LanguageManager, MAX_PACK_BYTES
 from .media import MediaError, MediaManager
+from .maintenance import MaintenanceError, MaintenanceManager
 from .onvif import get_profiles
 from .preferences import SEGMENT_PREFERENCE_KEY, recording_preferences, restore_recording_preferences
 from .security import Auth, redact_url, validate_stream_url
@@ -46,6 +47,12 @@ class LeasedFileResponse(FileResponse):
 class RecordingPreferencesInput(BaseModel):
     model_config = {"extra": "forbid"}
     segment_minutes: int = Field(strict=True, ge=1, le=120)
+
+
+class MaintenanceActionInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    action: Literal["restart-service", "reboot-system"]
+    confirmation: Literal["RESTART", "REBOOT"]
 
 
 class CameraInput(BaseModel):
@@ -78,7 +85,8 @@ class NetworkScanInput(BaseModel):
         default_factory=lambda: [80, 8000, 8080, 8899], min_length=1, max_length=8)
 
 
-def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager):
+def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager,
+               maintenance_factory=MaintenanceManager):
     settings = settings or Settings()
     if settings.password and len(settings.password) < 12:
         raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
@@ -89,6 +97,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     languages.migrate_legacy(store)
     media = media_factory(settings, store)
     realtime = live_factory(settings)
+    maintenance = maintenance_factory()
     media_jobs = asyncio.Semaphore(2)
     onvif_jobs = asyncio.Semaphore(2)
     discovery_lock = asyncio.Lock()
@@ -129,6 +138,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     app.state.store, app.state.media = store, media
     app.state.settings, app.state.auth = settings, auth
     app.state.realtime = realtime
+    app.state.maintenance = maintenance
     app.state.languages = languages
 
     @app.middleware("http")
@@ -194,14 +204,20 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             "status": media.camera_status(camera["id"]),
         }
 
-    async def media_result(operation):
+    async def media_result(operation, *, archive=False):
         try:
+            # Archive workers already limit their own CPU jobs. Holding this
+            # admission slot while waiting for a background analysis could
+            # otherwise block even cached video Range requests indefinitely.
+            if archive:
+                return await operation()
             async with media_jobs:
                 return await operation()
         except MediaError as error:
             safe_errors = {
                 "Insufficient cache storage for playback. Free space or configure NVR_CACHE_DIR on a larger disk.",
                 "Playback cache storage is unavailable.",
+                "Media server is busy. Try again shortly.",
             }
             detail = str(error) if str(error) in safe_errors else "Media operation failed. Check the stream and FFmpeg."
             raise HTTPException(503, detail) from None
@@ -455,9 +471,22 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     async def playback(recording_id: str, compatible: bool = False):
         recording, _ = recording_or_404(recording_id)
         lease = media.playback_lease(recording, compatible)
-        path = await media_result(lease.__aenter__)
+        path = await media_result(lease.__aenter__, archive=True)
         try:
             return LeasedFileResponse(path, lease=lease, media_type="video/mp4")
+        except BaseException:
+            await lease.__aexit__(None, None, None)
+            raise
+
+    @app.get("/api/recordings/{recording_id}/download.mp4")
+    async def compatible_download(recording_id: str):
+        recording, _ = recording_or_404(recording_id)
+        lease = media.download_lease(recording)
+        path = await media_result(lease.__aenter__, archive=True)
+        try:
+            # Use a server-generated name, never a user-provided path or label.
+            return LeasedFileResponse(path, lease=lease, media_type="video/mp4",
+                                      filename=f"recording-{recording_id}-compatible.mp4")
         except BaseException:
             await lease.__aexit__(None, None, None)
             raise
@@ -466,18 +495,18 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     async def thumbnail(recording_id: str):
         from fastapi.responses import Response
         recording, _ = recording_or_404(recording_id)
-        data = await media_result(lambda: media.thumbnail(recording))
+        data = await media_result(lambda: media.thumbnail(recording), archive=True)
         return Response(data, media_type="image/jpeg")
 
     @app.get("/api/recordings/{recording_id}/waveform")
     async def waveform(recording_id: str):
         recording, _ = recording_or_404(recording_id)
-        return await media_result(lambda: media.waveform(recording))
+        return await media_result(lambda: media.waveform(recording), archive=True)
 
     @app.get("/api/recordings/{recording_id}/motion")
     async def motion(recording_id: str, sensitivity: Literal["low", "medium", "high"] = "medium"):
         recording, _ = recording_or_404(recording_id)
-        return await media_result(lambda: media.motion(recording, sensitivity))
+        return await media_result(lambda: media.motion(recording, sensitivity), archive=True)
 
     @app.get("/api/onvif/interfaces")
     async def onvif_interfaces():
@@ -592,6 +621,20 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 task.exception()
         operation.add_done_callback(finished)
         return await asyncio.shield(operation)
+
+    @app.get("/api/settings/system")
+    async def maintenance_status():
+        return await maintenance.status()
+
+    @app.post("/api/settings/system/action")
+    async def maintenance_action(data: MaintenanceActionInput, request: Request):
+        async with mutation_lock:
+            if not auth.valid(request.cookies.get("nvr_session")):
+                raise HTTPException(401, "Authentication required")
+            try:
+                return await maintenance.schedule(data.action, data.confirmation)
+            except MaintenanceError as error:
+                raise HTTPException(error.status_code, str(error)) from None
 
     @app.get("/api/system")
     def system():

@@ -52,7 +52,7 @@
       });
       this._listen(video, "loadedmetadata", () => {
         if (!this.recording || this.destroyed) return;
-        this._applyPreferences();
+        this._applyPreferences(); this._applyAspect();
         if (this.pendingSeek !== null) {
           // The source owner also initializes its requested offset in this
           // event. Apply a later custom seek after those synchronous handlers.
@@ -165,6 +165,12 @@
     _applyPreferences() {
       try { this.video.playbackRate = this.rate; } catch (_) { /* The speed picker reports unsupported changes. */ }
       try { this.video.volume = this.volume; this.video.muted = this.muted; } catch (_) { /* Muting remains available on native mobile players. */ }
+    }
+    _applyAspect() {
+      const width = Number(this.video.videoWidth), height = Number(this.video.videoHeight);
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+      const frame = this.video.closest?.(".player-frame") || this.video.parentElement;
+      frame?.style?.setProperty?.("--record-video-aspect", `${width} / ${height}`);
     }
     setSpeed(value) {
       if (this.destroyed || !RATES.includes(value)) { this.update(); return; }

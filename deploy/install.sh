@@ -102,6 +102,7 @@ $MOUNT_SANDBOX
 [Install]
 WantedBy=multi-user.target
 EOF
+bash "$NVR_ROOT/deploy/setup-maintenance.sh"
 systemctl daemon-reload
 systemctl enable nvr-sr81
 systemctl restart nvr-sr81

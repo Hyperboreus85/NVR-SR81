@@ -14,6 +14,10 @@ La preferenza viene salvata nel browser. Ogni dispositivo può usare una lingua 
 
 **Settings → General** mostra versione, spazio libero, limiti delle dirette e durata effettiva dei file di registrazione. Il layout del monitor può essere scelto tra 1, 4, 9 e 16 riquadri e viene ricordato dal browser.
 
+## Manutenzione del sistema
+
+Per riavviare il recorder aprire **Settings → System**. Il riavvio del servizio richiede una conferma esplicita; il riavvio del sistema operativo locale è disponibile solo se abilitato dall'amministratore Linux. Entrambi interrompono temporaneamente la registrazione. [Disponibilità e conferme della manutenzione](maintenance.md).
+
 ## Durata dei file di registrazione
 
 Accedere come amministratore e, in **Settings → Recording**, scegliere **1, 2, 3, 4, 5 minuti**, oppure da **10 a 120 minuti a passi di 5**. Il valore predefinito e consigliato dal progetto è **30 minuti**. La durata vale per tutte le telecamere registrate da questo NVR.

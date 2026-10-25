@@ -13,6 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from starlette.responses import FileResponse
+
 from nvr.media import INPUT_PROTOCOLS, MediaError, MediaManager, _input_args, validate_url
 
 
@@ -189,6 +191,156 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         complete.set()
         self.assertEqual(await second, output)
         self.assertEqual(calls, 1)
+
+    async def test_cache_hit_refreshes_lru_access_without_changing_range_etag(self):
+        cached = self.settings.cache_dir / ("a" * 64 + ".mp4")
+        cached.write_bytes(b"stable cached recording")
+        old_access = time.time_ns() - 90_000 * 1_000_000_000
+        os.utime(cached, ns=(old_access, old_access))
+        before = cached.stat()
+        first = FileResponse(cached, stat_result=before)
+        factory = AsyncMock(side_effect=AssertionError("A cache hit must not convert again"))
+        for _ in range(3):
+            self.assertEqual(await self.media._cached_job(cached, factory), cached)
+            current = cached.stat()
+            self.assertEqual(current.st_mtime_ns, before.st_mtime_ns)
+            self.assertEqual(FileResponse(cached, stat_result=current).headers["etag"], first.headers["etag"])
+        self.assertGreater(cached.stat().st_atime_ns, before.st_atime_ns)
+        self.media._prune_cache()
+        self.assertTrue(cached.is_file())  # recently accessed, despite its old mtime
+        factory.assert_not_called()
+
+    async def test_media_queue_reserves_foreground_capacity_without_blocking_hits_or_dedup(self):
+        release = asyncio.Event()
+        entered = []
+
+        def factory_for(path):
+            async def factory():
+                entered.append(path)
+                await release.wait()
+                path.write_bytes(b"completed artifact")
+                return path
+            return factory
+
+        background_paths = [self.cache_path_for_test(f"background-{index}.json") for index in range(12)]
+        foreground_paths = [self.cache_path_for_test(f"foreground-{index}.mp4") for index in range(4)]
+        pending = [asyncio.create_task(self.media._cached_job(path, factory_for(path), background=True))
+                   for path in background_paths]
+        extra_factory = AsyncMock(side_effect=AssertionError("Rejected factories must not run"))
+        try:
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(len(self.media._background_jobs), 12)
+            with self.assertRaisesRegex(MediaError, "Media server is busy"):
+                await self.media._cached_job(self.cache_path_for_test("extra-background.json"), extra_factory, background=True)
+            pending += [asyncio.create_task(self.media._cached_job(path, factory_for(path))) for path in foreground_paths]
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(len(self.media._jobs), 16)
+            self.assertEqual(len(entered), 16)
+            with self.assertRaisesRegex(MediaError, "Media server is busy"):
+                await self.media._cached_job(self.cache_path_for_test("extra-foreground.mp4"), extra_factory)
+            cached = self.cache_path_for_test("already-cached.mp4")
+            cached.write_bytes(b"cache hit")
+            self.assertEqual(await self.media._cached_job(cached, extra_factory, background=True), cached)
+            pending.append(asyncio.create_task(self.media._cached_job(background_paths[0], extra_factory, background=True)))
+            pending.append(asyncio.create_task(self.media._cached_job(foreground_paths[0], extra_factory)))
+            for _ in range(3):
+                await asyncio.sleep(0)
+            self.assertEqual(len(self.media._jobs), 16)
+            recording, _ = self.add_file("unadmitted.mkv")
+            with patch.object(self.media, "_spawn", AsyncMock(side_effect=AssertionError("No capacity"))) as spawn:
+                for operation in [self.media.motion(recording), self.media.waveform(recording),
+                                  self.media.thumbnail(recording), self.media.playback(recording)]:
+                    with self.assertRaisesRegex(MediaError, "Media server is busy"):
+                        await operation
+                spawn.assert_not_called()
+            self.assertFalse(self.media._in_use)
+            self.assertFalse(self.media._cache_reservations)
+            self.assertFalse(list(self.settings.cache_dir.glob("*.part.*")))
+            extra_factory.assert_not_called()
+        finally:
+            release.set()
+            await asyncio.gather(*pending, return_exceptions=True)
+        self.assertFalse(self.media._jobs)
+        self.assertFalse(self.media._background_jobs)
+        self.assertEqual(len(entered), 16)
+
+    def cache_path_for_test(self, name):
+        return self.settings.cache_dir / name
+
+    async def test_queued_background_jobs_leave_playback_and_cache_hits_available(self):
+        recording, _ = self.add_file("background.mkv")
+        cached = self.media._cache_path(recording, "copy-v1", "mp4")
+        cached.write_bytes(b"cached playback")
+        await self.media._background_slots.acquire()
+        background = [asyncio.create_task(self.media.waveform(recording)),
+                      asyncio.create_task(self.media.motion(recording)),
+                      asyncio.create_task(self.media.thumbnail(recording))]
+
+        async def spawn(*args, **kwargs):
+            Path(args[-1]).write_bytes(b"new selected playback")
+            return SimpleNamespace(returncode=0, stdin=None)
+
+        try:
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(self.media._transcode_slots._value, 2)
+            with patch.object(self.media, "_spawn", spawn):
+                lease = self.media.playback_lease(recording)
+                self.assertEqual(await asyncio.wait_for(lease.__aenter__(), 1), cached)
+                await lease.__aexit__(None, None, None)
+                selected = await asyncio.wait_for(self.media.playback({**recording, "id": "selected"}), 1)
+                self.assertEqual(selected.read_bytes(), b"new selected playback")
+            self.assertTrue(all(not task.done() for task in background))
+        finally:
+            await self.media.stop()
+            await asyncio.gather(*background, return_exceptions=True)
+            self.media._background_slots.release()
+        self.assertFalse(self.media._in_use)
+
+    async def test_compatible_download_shares_conversion_cache_and_response_leases(self):
+        recording, _ = self.add_file("download.mkv", audio_codec="pcm_mulaw")
+        started, finish = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def spawn(*args, **kwargs):
+            calls.append(args)
+            process = SimpleNamespace(returncode=None, stdin=None)
+
+            async def wait():
+                await finish.wait()
+                Path(args[-1]).write_bytes(b"compatible h264 aac mp4")
+                process.returncode = 0
+                return 0
+
+            process.wait = wait
+            started.set()
+            return process
+
+        download = self.media.download_lease(recording)
+        playback = self.media.playback_lease(recording, compatible=True)
+        with patch.object(self.media, "_spawn", spawn):
+            first = asyncio.create_task(download.__aenter__())
+            await started.wait()
+            second = asyncio.create_task(playback.__aenter__())
+            await asyncio.sleep(0)
+            finish.set()
+            paths = await asyncio.gather(first, second)
+            self.assertEqual(paths[0], paths[1])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(self.media._cache_leases[paths[0]], 2)
+            await download.__aexit__(None, None, None)
+            await playback.__aexit__(None, None, None)
+            async with self.media.download_lease(recording) as cached:
+                self.assertEqual(cached, paths[0])
+            self.assertEqual(len(calls), 1)
+        args = calls[0]
+        for flag, value in [("-c:v", "libx264"), ("-profile:v", "main"), ("-pix_fmt", "yuv420p"),
+                            ("-c:a", "aac"), ("-profile:a", "aac_low"), ("-ar", "48000"), ("-ac", "2")]:
+            self.assertEqual(args[args.index(flag) + 1], value)
+        self.assertFalse(self.media._cache_leases)
+        self.assertFalse(self.media._in_use)
 
     async def test_playback_preflight_rejects_insufficient_cache_space_before_spawning(self):
         recording, source = self.add_file("source.mkv")
@@ -483,6 +635,39 @@ class RealMediaTests(MediaTests):
         self.assertEqual((await self.media._probe_file(native))["video_codec"], "hevc")
         compatible = await self.media.playback(record, compatible=True)
         self.assertEqual((await self.media._probe_file(compatible))["video_codec"], "h264")
+
+    async def test_real_4k_h264_mulaw_is_remuxed_and_compatible_mp4_is_standard_h264_aac(self):
+        self.settings.ffmpeg, self.settings.ffprobe = FFMPEG, FFPROBE
+        recording, source = self.add_file("4k-mulaw.mkv", duration=3, audio_codec="pcm_mulaw")
+        fixture = await asyncio.create_subprocess_exec(
+            FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "color=c=gray:size=3840x2160:rate=2", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=8000",
+            "-t", "3", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuvj420p",
+            "-profile:v", "main", "-level:v", "5.1", "-x264-params", "cabac=1", "-threads", "1",
+            "-c:a", "pcm_mulaw", str(source), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, error = await asyncio.wait_for(fixture.communicate(), 30)
+        self.assertEqual(fixture.returncode, 0, error.decode(errors="replace"))
+        native = await self.media.playback(recording)
+        native_info = await self.media._probe_file(native)
+        self.assertEqual(native_info["video_codec"], "h264")
+        self.assertEqual((native_info["width"], native_info["height"]), (3840, 2160))
+        self.assertEqual(native_info["audio_codec"], "aac")
+        async with self.media.download_lease(recording) as path:
+            info = await self.media._probe_file(path)
+            self.assertEqual((info["width"], info["height"]), (1920, 1080))
+            self.assertEqual(info["video_codec"], "h264")
+            video = next(stream for stream in info["streams"] if stream["codec_type"] == "video")
+            audio = next(stream for stream in info["streams"] if stream["codec_type"] == "audio")
+            self.assertEqual(video["pix_fmt"], "yuv420p")
+            self.assertEqual(video["profile"], "Main")
+            self.assertEqual((audio["codec_name"], audio["profile"], int(audio["sample_rate"]), audio["channels"]), ("aac", "LC", 48000, 2))
+            self.assertLess(path.read_bytes().find(b"moov"), path.read_bytes().find(b"mdat"))
+            decoded = await asyncio.create_subprocess_exec(
+                FFMPEG, "-v", "error", "-threads", "1", "-i", str(path), "-frames:v", "2", "-f", "null", "-",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            _, error = await asyncio.wait_for(decoded.communicate(), 20)
+            self.assertEqual(decoded.returncode, 0, error.decode(errors="replace"))
+        self.assertFalse(self.media._cache_leases)
 
     async def test_real_two_hour_waveform_has_bounded_bins_and_detects_alarm_tone(self):
         self.settings.ffmpeg, self.settings.ffprobe = FFMPEG, FFPROBE

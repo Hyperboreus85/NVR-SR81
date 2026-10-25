@@ -217,6 +217,19 @@ test("missing timestamps do not fabricate an absolute recording time or axis", (
   env.player.destroy();
 });
 
+test("valid video metadata applies the real aspect ratio without inventing missing dimensions", async () => {
+  const env = environment(), values = new Map();
+  env.video.parentElement = {style: {setProperty: (name, value) => values.set(name, value)}};
+  env.player.setRecording(env.recording);
+  env.video.videoWidth = 3840; env.video.videoHeight = 2160;
+  await env.video.fire("loadedmetadata");
+  assert.equal(values.get("--record-video-aspect"), "3840 / 2160");
+  env.video.videoWidth = 0; env.video.videoHeight = 0;
+  await env.video.fire("loadedmetadata");
+  assert.equal(values.get("--record-video-aspect"), "3840 / 2160");
+  env.player.destroy();
+});
+
 test("the playback header date changes across midnight while axis ticks remain clock labels", () => {
   const env = environment();
   const started = new Date(2026, 9, 25, 23, 59, 50).getTime() / 1000;

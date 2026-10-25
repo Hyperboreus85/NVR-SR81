@@ -39,6 +39,7 @@
       button.tabIndex = active ? 0 : -1;
     });
     document.querySelectorAll("[data-settings-panel]").forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== tab; });
+    window.dispatchEvent(new CustomEvent("nvr-settings-tabchange", {detail: {tab}}));
   }
 
   function updateActions() {
@@ -55,6 +56,7 @@
     byId("settings-recording-save").textContent = t(recordingSaving ? "Saving…" : "Save recording settings");
     byId("settings-recording-retry").disabled = !authenticated || busy || recordingLoading;
     byId("settings-recording-form").setAttribute("aria-busy", String(recordingLoading || recordingSaving));
+    window.dispatchEvent(new CustomEvent("nvr-settings-busychange", {detail: {busy}}));
   }
 
   function validRecordingChoice() {

@@ -1,0 +1,18 @@
+[Unit]
+Description=NVR-SR81 restricted maintenance request
+CollectMode=inactive-or-failed
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/libexec/nvr-sr81-maintenance.py --helper
+StandardInput=socket
+StandardOutput=inherit
+StandardError=journal
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+RuntimeMaxSec=15
+TimeoutStopSec=2

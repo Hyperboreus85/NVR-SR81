@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
 import shutil
 import struct
@@ -107,11 +108,15 @@ class MediaManager:
         self._hub_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
         self._transcode_slots = asyncio.Semaphore(2)
+        # Background decoding must leave one shared conversion slot available
+        # for the selected recording, including when older analyses are queued.
+        self._background_slots = asyncio.Semaphore(1)
         self._motion_slots = asyncio.Semaphore(1)
         self._thumbnail_slots = asyncio.Semaphore(1)
         # Four shared live streams plus two one-shot snapshots.
         self._decode_slots = asyncio.Semaphore(6)
         self._jobs: dict[str, asyncio.Task] = {}
+        self._background_jobs: set[str] = set()
         self._in_use: dict[Path, int] = {}
         self._cache_leases: dict[Path, int] = {}
         self._cache_reservations: dict[Path, int] = {}
@@ -231,7 +236,7 @@ class MediaManager:
     async def _probe_args(self, source: list[str]) -> dict[str, Any]:
         raw = await self._capture([
             self.settings.ffprobe, "-v", "error", *source,
-            "-show_entries", "stream=codec_name,codec_type,width,height,duration:format=duration",
+            "-show_entries", "stream=codec_name,codec_type,width,height,duration,profile,pix_fmt,sample_rate,channels:format=duration",
             "-of", "json",
         ], timeout=25, max_bytes=128 * 1024)
         try:
@@ -614,16 +619,27 @@ class MediaManager:
         key = hashlib.sha256(identity.encode()).hexdigest()
         return self.cache_dir / f"{key}.{extension}"
 
-    async def _cached_job(self, path: Path, factory: Any) -> Path:
+    async def _cached_job(self, path: Path, factory: Any, *, background: bool = False) -> Path:
         if path.is_file():
-            path.touch()
+            # Access time drives cache LRU. Keep modification time unchanged:
+            # FileResponse derives its ETag/If-Range identity from mtime+size.
+            # Changing it for each Range request makes Firefox restart the file.
+            stat = path.stat()
+            os.utime(path, ns=(time.time_ns(), stat.st_mtime_ns))
             return path
         key = str(path)
         if key not in self._jobs:
+            # Keep cache hits and shared jobs available at capacity. Only new
+            # distinct work consumes admission, before any source is pinned.
+            if len(self._jobs) >= 16 or (background and len(self._background_jobs) >= 12):
+                raise MediaError("Media server is busy. Try again shortly.")
             task = asyncio.create_task(factory(), name="media-artifact")
             self._jobs[key] = task
+            if background:
+                self._background_jobs.add(key)
             def finished(done: asyncio.Task) -> None:
                 self._jobs.pop(key, None)
+                self._background_jobs.discard(key)
                 if not done.cancelled():
                     done.exception()  # retrieve a failure even after every viewer disconnected
             task.add_done_callback(finished)
@@ -632,7 +648,7 @@ class MediaManager:
 
     async def playback(self, recording: dict[str, Any], compatible: bool = False) -> Path:
         source = self.recording_path(recording)
-        destination = self._cache_path(recording, "h264-v1" if compatible else "copy-v1", "mp4")
+        destination = self._cache_path(recording, "h264-v2" if compatible else "copy-v1", "mp4")
         async def convert() -> Path:
             temporary = destination.with_suffix(".part.mp4")
             process = None
@@ -642,16 +658,22 @@ class MediaManager:
                     estimate = math.ceil(source.stat().st_size * (2 if compatible else 1.05))
                     self._ensure_cache_space(estimate)
                     self._cache_reservations[temporary] = estimate
-                    args = [self.settings.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                    args = [self.settings.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                            "-threads", "2", "-filter_threads", "1", "-i", str(source),
                             "-map", "0:v:0", "-map", "0:a:0?", "-sn"]
                     if compatible:
                         args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
-                                 "-vf", "scale=w='trunc(min(1920,iw)/2)*2':h=-2", "-threads", "2"]
+                                 "-color_range", "tv", "-profile:v", "main", "-tag:v", "avc1",
+                                 "-vf", "scale=w='trunc(min(1920,iw)/2)*2':h='trunc(min(1080,ih)/2)*2':force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,format=yuv420p",
+                                 "-threads", "2"]
                     else:
                         args += ["-c:v", "copy"]
                         if recording.get("video_codec") in {"hevc", "h265"}:
                             args += ["-tag:v", "hvc1"]
-                    args += ["-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(temporary)]
+                    args += ["-c:a", "aac", "-profile:a", "aac_low", "-b:a", "128k" if compatible else "96k"]
+                    if compatible:
+                        args += ["-ar", "48000", "-ac", "2"]
+                    args += ["-movflags", "+faststart", str(temporary)]
                     process = await self._spawn(*args)
                     timeout = max(120, min(float(recording["duration"]) * 10, 21600))
 
@@ -685,7 +707,7 @@ class MediaManager:
 
     @contextlib.asynccontextmanager
     async def playback_lease(self, recording: dict[str, Any], compatible: bool = False) -> AsyncIterator[Path]:
-        destination = self._cache_path(recording, "h264-v1" if compatible else "copy-v1", "mp4")
+        destination = self._cache_path(recording, "h264-v2" if compatible else "copy-v1", "mp4")
         self._cache_leases[destination] = self._cache_leases.get(destination, 0) + 1
         try:
             yield await self.playback(recording, compatible)
@@ -695,10 +717,16 @@ class MediaManager:
                 del self._cache_leases[destination]
 
     @contextlib.asynccontextmanager
+    async def download_lease(self, recording: dict[str, Any]) -> AsyncIterator[Path]:
+        """The browser-compatible H.264/AAC MP4, shared with compatible playback."""
+        async with self.playback_lease(recording, compatible=True) as path:
+            yield path
+
+    @contextlib.asynccontextmanager
     async def _source_slot(self, source: Path) -> AsyncIterator[None]:
         self._in_use[source] = self._in_use.get(source, 0) + 1
         try:
-            async with self._transcode_slots:
+            async with self._background_slots, self._transcode_slots:
                 yield
         finally:
             self._in_use[source] -= 1
@@ -716,7 +744,7 @@ class MediaManager:
             temporary = destination.with_suffix(".part.jpg")
             self._in_use[source] = self._in_use.get(source, 0) + 1
             try:
-                async with self._thumbnail_slots, self._transcode_slots:
+                async with self._thumbnail_slots, self._background_slots, self._transcode_slots:
                     self._ensure_cache_space(MAX_THUMBNAIL_BYTES)
                     result = await self._capture([
                         self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
@@ -738,7 +766,7 @@ class MediaManager:
                     temporary.unlink(missing_ok=True)
 
         try:
-            path = await self._cached_job(destination, extract)
+            path = await self._cached_job(destination, extract, background=True)
             if not self._owned_cache_file(path) or path.stat().st_size > MAX_THUMBNAIL_BYTES:
                 raise MediaError("Preview unavailable.")
             result = path.read_bytes()
@@ -807,7 +835,7 @@ class MediaManager:
                     await _stop_process(process)
                     with contextlib.suppress(OSError):
                         temporary.unlink(missing_ok=True)
-        path = await self._cached_job(destination, extract)
+        path = await self._cached_job(destination, extract, background=True)
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -830,7 +858,7 @@ class MediaManager:
             # Pin even while queued: retention must not delete the selected source.
             self._in_use[source] = self._in_use.get(source, 0) + 1
             try:
-                async with self._motion_slots, self._transcode_slots:
+                async with self._motion_slots, self._background_slots, self._transcode_slots:
                     process = await self._spawn(self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
                         "-threads", "1", "-filter_threads", "1", "-i", str(source),
                         "-map", "0:v:0", "-an", "-sn", "-dn",
@@ -877,7 +905,7 @@ class MediaManager:
                 with contextlib.suppress(OSError):
                     temporary.unlink(missing_ok=True)
 
-        path = await self._cached_job(destination, extract)
+        path = await self._cached_job(destination, extract, background=True)
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

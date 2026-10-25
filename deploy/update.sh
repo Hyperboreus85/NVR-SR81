@@ -187,6 +187,9 @@ nvr_update_main() {
     # dependencies and install only what the new application's metadata needs.
     "$APP_ROOT/.venv/bin/python" -m pip install --no-index --find-links "$UPDATE_TMP/new" -r "$UPDATE_TMP/runtime-requirements.txt"
     "$APP_ROOT/.venv/bin/python" -m pip install --no-index --no-deps --force-reinstall "$NEW_WHEEL"
+    if [[ -f "$APP_ROOT/deploy/setup-maintenance.sh" ]]; then
+        bash "$APP_ROOT/deploy/setup-maintenance.sh"
+    fi
     systemctl start nvr-sr81
     health_check "$NEW_VERSION"
     trap - ERR INT TERM HUP

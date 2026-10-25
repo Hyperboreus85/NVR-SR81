@@ -34,7 +34,7 @@ function environment() {
   const nodes = new Map(), calls = [], events = new Map(), emitted = [], blobs = new Map(), revoked = [], timers = [], downloads = [], storage = new Map();
   const byId = (id) => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   byId("app").hidden = true;
-  const tabs = ["general", "languages", "recording"].map((name) => Object.assign(new Element("button"), {dataset: {settingsTab: name}}));
+  const tabs = ["general", "languages", "recording", "system"].map((name) => Object.assign(new Element("button"), {dataset: {settingsTab: name}}));
   const panels = tabs.map((item) => Object.assign(new Element(), {dataset: {settingsPanel: item.dataset.settingsTab}}));
   const keys = ["Hello", "Device {number}", "Empty"];
   const pack = (locale = "fr", translations = {Hello: "Bonjour"}, extra = {}) => ({format: "nvr-sr81.language-pack", version: 1, locale, name: "French", native_name: "Français", translations, ...extra});
@@ -374,7 +374,7 @@ test("the recorder updates its duration immediately and ignores an older in-flig
   assert.equal(state.system.segment_seconds, 3600);
 });
 
-test("Settings has exactly General, Languages and Recording, with JSON controls confined to Languages", () => {
+test("Settings has exactly General, Languages, Recording and System, with JSON controls confined to Languages", () => {
   const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8");
   const stack = [], elements = [], ids = new Map();
   const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
@@ -395,8 +395,8 @@ test("Settings has exactly General, Languages and Recording, with JSON controls 
     if (!voidTags.has(tag) && !/\/\s*$/.test(token[3])) stack.push(entry);
   }
   assert.equal(stack.length, 0);
-  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-tab"]).map((item) => item.attributes["data-settings-tab"]), ["general", "languages", "recording"]);
-  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-panel"]).map((item) => item.attributes["data-settings-panel"]), ["general", "languages", "recording"]);
+  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-tab"]).map((item) => item.attributes["data-settings-tab"]), ["general", "languages", "recording", "system"]);
+  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-panel"]).map((item) => item.attributes["data-settings-panel"]), ["general", "languages", "recording", "system"]);
   for (const id of ["settings-language", "settings-language-list", "settings-pack-file", "settings-pack-preview", "settings-pack-name", "settings-pack-locale", "settings-pack-coverage", "settings-pack-install", "settings-pack-selection", "settings-pack-template", "settings-pack-list"]) {
     assert.ok(ids.get(id)?.ancestors.includes("settings-languages-panel"), id + " must belong to the Languages page");
   }

@@ -229,6 +229,8 @@ test("actual short-file duration drives video controls, file axis, audio and mot
   assert.equal(env.node("record-seek").max, "90");
   assert.equal(env.node("record-time-axis").children.at(-1).dataset.offset, "90");
   assert.match(env.node("download").href, /\/short\/download$/);
+  assert.match(env.node("download-compatible").href, /\/short\/download\.mp4$/);
+  assert.equal(env.node("download-compatible").hidden, false);
   await env.node("waveform").fire("click", {clientX: 320});
   await env.node("player").fire("seeked");
   assert.equal(env.node("player").currentTime, 45);
@@ -281,6 +283,7 @@ test("a no-audio selection remains explicit when older waveform and motion reque
   const env = environment({recordings: rows, handler: (path, options, fallback) => path.endsWith("/audio/waveform") ? oldWave.promise : path.includes("/audio/motion?") ? oldMotion.promise : fallback(path)});
   await env.boot(); await search(env);
   await env.node("recordings-list").children[0].fire("click");
+  await metadata(env, 90);
   const waveCall = env.calls.find((call) => call.path.endsWith("/audio/waveform"));
   await env.node("recordings-list").children[1].fire("click"); await metadata(env, 45);
   assert.equal(waveCall.options.signal.aborted, true);
@@ -315,9 +318,24 @@ test("logout clears video, download, motion and axes while ignoring late archive
   assert.equal(env.node("player").src, "");
   assert.equal(env.node("download").hidden, true);
   assert.equal(env.node("download").href, "");
+  assert.equal(env.node("download-compatible").hidden, true);
+  assert.equal(env.node("download-compatible").href, "");
   assert.equal(env.node("record-time-axis").children.length, 0);
   assert.equal(env.node("motion-markers").children.length, 0);
   assert.equal(env.node("record-play").disabled, true);
   assert.equal(env.node("record-loading").hidden, true);
   assert.equal(env.node("app").hidden, true);
+});
+
+test("new video preparation starts before any audio or motion request and switching a pending file cancels old analyses", async () => {
+  const rows = [recording("pending"), recording("newer", startAt(12, 2))];
+  const env = environment({recordings: rows}); await env.boot(); await search(env);
+  await env.node("recordings-list").children[0].fire("click"); await settle();
+  assert.match(env.node("player").src, /\/pending\/playback\?compatible=false$/);
+  assert.equal(env.calls.some((call) => /\/pending\/(waveform|motion)/.test(call.path)), false);
+  assert.equal(env.node("record-loading").hidden, false);
+  await env.node("recordings-list").children[1].fire("click"); await metadata(env, 90);
+  assert.equal(env.calls.some((call) => /\/pending\/(waveform|motion)/.test(call.path)), false);
+  assert.equal(env.calls.some((call) => call.path.endsWith("/newer/waveform")), true);
+  assert.equal(env.calls.some((call) => call.path.includes("/newer/motion?")), true);
 });
