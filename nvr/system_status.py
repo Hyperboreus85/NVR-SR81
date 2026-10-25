@@ -31,6 +31,12 @@ class RecordingCapacity:
     def _finite(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
+    def invalidate(self):
+        """Discard rates after explicit archive deletion."""
+        with self._lock:
+            self._rates = {}
+            self._active_ids = self._sample_time = self._sample_wall = None
+
     def _rate(self, db, camera_id, now):
         rows = db.execute("""SELECT size,duration,started_at FROM recordings
             WHERE camera_id=? AND started_at>=? AND started_at<=?

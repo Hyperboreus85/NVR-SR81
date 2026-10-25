@@ -79,7 +79,10 @@ async def test_long_recording_copies_media_and_reports_recording_before_file_clo
             assert captured[captured.index("-segment_time") + 1] == str(duration)
             assert captured[captured.index("-c") + 1] == "copy"
             assert "-break_non_keyframes" not in captured
-            assert worker.state == "recording"
+            async def recording_started():
+                while worker.state != "recording":
+                    await asyncio.sleep(0)
+            await asyncio.wait_for(recording_started(), 1)
             assert worker.last_segment_at is None
             assert records == []
         finally:

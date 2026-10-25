@@ -33,6 +33,7 @@ function environment() {
   let handler = defaultApi;
   const translations = {"Restart the NVR service?": "Riavviare il servizio NVR?", "Reboot the recorder system?": "Riavviare il sistema del registratore?", "Type {word} to confirm.": "Digita {word} per confermare.", "Local recorder machine": "Macchina locale del registratore"};
   const context = vm.createContext({console, AbortController, Promise,
+    CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     setTimeout(callback) { scheduled.push(callback); }, clearTimeout() {},
     api(path, options = {}) { calls.push({path, options}); return handler(path, options); },
   });
@@ -41,6 +42,7 @@ function environment() {
   context.NvrI18n = {ready: Promise.resolve(), t(key, params = {}) { return (language === "it" ? translations[key] || key : key).replace(/\{(\w+)\}/g, (token, name) => Object.hasOwn(params, name) ? params[name] : token); }};
   context.addEventListener = (type, listener) => { if (!events.has(type)) events.set(type, []); events.get(type).push(listener); };
   const emit = (type, detail = {}) => { for (const listener of events.get(type) || []) listener({type, detail}); };
+  context.dispatchEvent = (event) => { emit(event.type, event.detail); return true; };
   vm.runInContext(source, context, {filename: "system-settings.js"});
   return {byId, calls, context, scheduled, status, defaultApi, emit, reloads: () => reloads,
     handler(value) { handler = value; }, setStatus(value) { current = value; },
@@ -52,6 +54,21 @@ function environment() {
   };
 }
 const posts = (env) => env.calls.filter((call) => call.options.method === "POST");
+
+test("archive and settings busy signals keep independent locks on maintenance actions", async () => {
+  const env = environment(); await env.auth(true); await env.open();
+  env.emit("nvr-archive-busychange", {busy: true});
+  env.emit("nvr-settings-busychange", {busy: false});
+  assert.equal(env.byId("system-restart-service").disabled, true);
+  await env.byId("system-restart-service").fire("click");
+  assert.equal(env.byId("system-confirm-dialog").open, false);
+  env.emit("nvr-settings-busychange", {busy: true});
+  env.emit("nvr-archive-busychange", {busy: false});
+  assert.equal(env.byId("system-restart-service").disabled, true);
+  env.emit("nvr-settings-busychange", {busy: false});
+  assert.equal(env.byId("system-restart-service").disabled, false);
+  assert.equal(posts(env).length, 0);
+});
 
 test("System loads availability only in an authenticated visible tab; unavailable capabilities cannot issue actions", async () => {
   const env = environment(); await flush(); assert.equal(env.calls.length, 0);

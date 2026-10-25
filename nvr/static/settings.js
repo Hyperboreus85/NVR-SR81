@@ -13,6 +13,8 @@
   let recordingEpoch = 0, recordingLoadFailed = false;
   let languageActions = [], packActions = [];
   let resources = null, resourcesKnown = false;
+  let archiveBusy = false, maintenanceBusy = false;
+  function blocked() { return busy || archiveBusy || maintenanceBusy; }
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -44,18 +46,19 @@
   }
 
   function updateActions() {
-    byId("settings-pack-file").disabled = !authenticated || busy;
-    byId("settings-pack-install").disabled = !authenticated || busy || reading || !selection;
-    byId("settings-pack-template").disabled = !authenticated || busy;
+    const locked = blocked();
+    byId("settings-pack-file").disabled = !authenticated || locked;
+    byId("settings-pack-install").disabled = !authenticated || locked || reading || !selection;
+    byId("settings-pack-template").disabled = !authenticated || locked;
     byId("settings-pack-install").textContent = t(busy ? "Please wait…" : "Install language pack");
-    for (const button of [...languageActions, ...packActions]) button.disabled = busy || !authenticated || button.dataset.active === "true";
-    byId("settings-language").disabled = busy;
-    byId("login-language").disabled = busy;
+    for (const button of [...languageActions, ...packActions]) button.disabled = locked || !authenticated || button.dataset.active === "true";
+    byId("settings-language").disabled = locked;
+    byId("login-language").disabled = locked;
     byId("settings-pack-preview").setAttribute("aria-busy", String(reading || busy));
-    byId("settings-recording-minutes").disabled = !authenticated || busy || recordingLoading || !recording;
-    byId("settings-recording-save").disabled = !authenticated || busy || recordingLoading || !validRecordingChoice();
+    byId("settings-recording-minutes").disabled = !authenticated || locked || recordingLoading || !recording;
+    byId("settings-recording-save").disabled = !authenticated || locked || recordingLoading || !validRecordingChoice();
     byId("settings-recording-save").textContent = t(recordingSaving ? "Saving…" : "Save recording settings");
-    byId("settings-recording-retry").disabled = !authenticated || busy || recordingLoading;
+    byId("settings-recording-retry").disabled = !authenticated || locked || recordingLoading;
     byId("settings-recording-form").setAttribute("aria-busy", String(recordingLoading || recordingSaving));
     window.dispatchEvent(new CustomEvent("nvr-settings-busychange", {detail: {busy}}));
   }
@@ -112,7 +115,7 @@
   }
 
   async function saveRecording() {
-    if (!authenticated || busy || recordingLoading || !recording) return;
+    if (!authenticated || blocked() || recordingLoading || !recording) return;
     if (!validRecordingChoice()) { message("settings-recording-error", "Choose one of the available recording durations."); return; }
     const ticket = authEpoch, operation = ++operationEpoch, minutes = Number(recordingDraft);
     recordingEpoch += 1; openEpoch += 1; busy = recordingSaving = true;
@@ -257,7 +260,7 @@
   }
 
   async function chooseFile(event) {
-    if (!authenticated || busy) return;
+    if (!authenticated || blocked()) return;
     const file = event.target.files?.[0]; event.target.value = "";
     const ticket = authEpoch, request = ++fileEpoch;
     selection = null; reading = !!file; message("settings-error"); message("settings-notice"); renderSelection();
@@ -278,7 +281,7 @@
   }
 
   async function installPack() {
-    if (!authenticated || busy || reading || !selection) return;
+    if (!authenticated || blocked() || reading || !selection) return;
     const ticket = authEpoch, operation = ++operationEpoch, chosen = selection;
     openEpoch += 1; busy = true; message("settings-error"); message("settings-notice"); updateActions();
     try {
@@ -293,7 +296,7 @@
   }
 
   async function chooseLanguage(locale) {
-    if (busy) return;
+    if (blocked()) return;
     const request = ++languageEpoch, ticket = authEpoch, operation = ++operationEpoch;
     busy = true; updateActions();
     try {
@@ -304,7 +307,7 @@
   }
 
   async function downloadPack(locale = null) {
-    if (!authenticated || busy) return;
+    if (!authenticated || blocked()) return;
     const ticket = authEpoch, operation = ++operationEpoch;
     busy = true; updateActions(); message("settings-error");
     let objectUrl;
@@ -324,7 +327,7 @@
   }
 
   async function removePack(language) {
-    if (!authenticated || busy || language.source !== "installed" || language.locale === "en") return;
+    if (!authenticated || blocked() || language.source !== "installed" || language.locale === "en") return;
     if (!window.confirm(t(language.locale === "it" ? "Restore the included Italian language pack?" : "Remove the installed language pack {name}?", {name: language.native_name}))) return;
     const ticket = authEpoch, operation = ++operationEpoch;
     openEpoch += 1; busy = true; updateActions(); message("settings-error"); message("settings-notice");
@@ -368,11 +371,14 @@
   byId("settings-monitor-layout").value = "4";
   try { const value = localStorage.getItem("nvr.monitor.layout"); if (["1", "4", "9", "16"].includes(value)) byId("settings-monitor-layout").value = value; } catch (_) { /* Four-camera default. */ }
   window.addEventListener("nvr-languagechange", relabel);
+  window.addEventListener("nvr-archive-busychange", (event) => { archiveBusy = !!event.detail.busy; updateActions(); });
+  window.addEventListener("nvr-system-busychange", (event) => { maintenanceBusy = !!event.detail.busy; updateActions(); });
   window.addEventListener("nvr-languageschange", renderLanguages);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated;
     authEpoch += 1; fileEpoch += 1; operationEpoch += 1; openEpoch += 1; languageEpoch += 1; recordingEpoch += 1;
     selection = null; reading = busy = false; system = live = null;
+    archiveBusy = maintenanceBusy = false;
     resources = null; resourcesKnown = false;
     recording = null; recordingDraft = ""; recordingLoading = recordingSaving = recordingLoadFailed = false;
     message("settings-error"); message("settings-notice"); message("settings-recording-error"); relabel();

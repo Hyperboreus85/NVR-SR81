@@ -30,6 +30,19 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const walk = (node) => [node, ...node.children.flatMap(walk)];
 
+test("archive and maintenance operations block settings writes without feeding their own busy state back", async () => {
+  const env = environment();
+  await env.auth(true);
+  const emit = (type, busy) => env.context.dispatchEvent(new env.context.CustomEvent(type, {detail: {busy}}));
+  emit("nvr-archive-busychange", true);
+  assert.equal(env.byId("settings-pack-template").disabled, true);
+  emit("nvr-system-busychange", true);
+  emit("nvr-archive-busychange", false);
+  assert.equal(env.byId("settings-pack-template").disabled, true);
+  emit("nvr-system-busychange", false);
+  assert.equal(env.byId("settings-pack-template").disabled, false);
+});
+
 function environment() {
   const nodes = new Map(), calls = [], events = new Map(), emitted = [], blobs = new Map(), revoked = [], timers = [], downloads = [], storage = new Map();
   const byId = (id) => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };

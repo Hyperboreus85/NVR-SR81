@@ -24,6 +24,8 @@ Per l'archivio compare un avviso con meno del **10% libero**. Sotto il **5%**, l
 
 Per riavviare il recorder aprire **Settings → System**. Il riavvio del servizio richiede una conferma esplicita; il riavvio del sistema operativo locale è disponibile solo se abilitato dall'amministratore Linux. Entrambi interrompono temporaneamente la registrazione. [Disponibilità e conferme della manutenzione](maintenance.md).
 
+Nella stessa pagina, **Delete all recordings / Elimina tutte le registrazioni** mostra il riepilogo dell'archivio e richiede di digitare `DELETE`. È una cancellazione dei filmati locali, non una formattazione del disco: telecamere, impostazioni e file estranei vengono conservati. Se sono in corso riproduzioni, download o analisi, non viene avviata: chiuderli o attendere che terminino, poi riprovare. Durante l'operazione l'acquisizione si interrompe temporaneamente e viene ripristinata al termine. Salvare prima una copia dei video da conservare e controllare l'esito mostrato. [Dettagli e protezioni della cancellazione](recordings.md#eliminare-tutte-le-registrazioni).
+
 ## Durata dei file di registrazione
 
 Accedere come amministratore e, in **Settings → Recording**, scegliere **1, 2, 3, 4, 5 minuti**, oppure da **10 a 120 minuti a passi di 5**. Il valore predefinito e consigliato dal progetto è **30 minuti**. La durata vale per tutte le telecamere registrate da questo NVR.

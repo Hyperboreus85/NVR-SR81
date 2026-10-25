@@ -61,3 +61,11 @@ Le soglie sono percentuali della capacità del filesystem, calcolate sullo spazi
 Sono esclusi i segmenti ancora aperti e i file protetti da una richiesta di lettura, download o analisi in corso. La pulizia riguarda gli originali NVR riconosciuti nell'archivio: file estranei, collegamenti simbolici e file del sistema operativo non sono candidati. La cache di consultazione ha una propria pulizia e non costituisce un backup dell'originale.
 
 I filmati eliminati non sono più consultabili. Scaricare e conservare separatamente quelli che devono rimanere disponibili oltre la normale rotazione dell'archivio. [Indicatori di spazio e stima prima della pulizia](telemetry.md#spazio-libero-e-stima-prima-della-pulizia).
+
+## Eliminare tutte le registrazioni
+
+In **Settings → System**, **Delete all recordings / Elimina tutte le registrazioni** permette di svuotare l'archivio locale. Controllare il numero di registrazioni e lo spazio indicati, quindi digitare esattamente `DELETE` nella conferma. I filmati eliminati non sono recuperabili dall'NVR: scaricare prima quelli da conservare.
+
+Se ci sono riproduzioni, download o analisi in corso, l'operazione viene rifiutata prima di fermare la registrazione o eliminare file. Chiuderli o attendere che terminino, poi riprovare.
+
+Il recorder sospende temporaneamente l'acquisizione e chiude regolarmente i file correnti, poi ripristina la registrazione delle telecamere abilitate, anche se la cancellazione incontra un errore. La diretta Live rimane indipendente. La cancellazione riguarda soltanto i file riconosciuti dell'archivio NVR, senza formattare il volume o eliminare file del sistema, file estranei o collegamenti simbolici. I file non eliminabili vengono saltati e segnalati: controllare sempre l'esito mostrato. Configurazioni delle telecamere, credenziali, lingue e impostazioni rimangono disponibili.

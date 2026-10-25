@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.14.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.15.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -28,6 +28,7 @@ Il flusso originale viene copiato in file **Matroska/MKV con durata da 1 a 120 m
 - Forma d'onda da campioni audio reali, calcolata su richiesta e conservata in cache; clic per spostarsi nel video. L'assenza di audio è indicata, senza inventare dati.
 - Traccia di movimento senza AI sotto l'audio: analizza automaticamente la registrazione completata selezionata, con intervalli cliccabili, precedente/successivo e sensibilità bassa/media/alta. Risultati in cache locale; luce, pioggia e vegetazione possono generare indicazioni. Il primo calcolo usa CPU, senza modificare la registrazione continua. [Guida agli indizi di movimento](docs/motion.md).
 - Conservazione per giorni e avviso sotto il **10% libero** nell'archivio. Sotto il **5%**, la rotazione automatica elimina i filmati completati idonei più vecchi fino a recuperare almeno il 5%, saltando originali aperti o protetti da operazioni in corso. Se lo spazio resta insufficiente, la registrazione si sospende e riprende quando torna disponibile. [Regole di conservazione e spazio](docs/recordings.md#conservazione-e-spazio-libero).
+- **Settings → System → Delete all recordings** svuota le registrazioni locali dopo conferma digitata `DELETE`, senza formattare il disco. Se ci sono file in uso, l'operazione non parte; altrimenti l'acquisizione viene temporaneamente sospesa e poi ripristinata. Telecamere e impostazioni rimangono configurate. [Cancellazione dell'archivio](docs/recordings.md#eliminare-tutte-le-registrazioni).
 - Recupero all'avvio dell'indice dei segmenti chiusi, credenziali dei flussi cifrate su disco con chiave locale.
 
 ## Avvio rapido con Docker Compose

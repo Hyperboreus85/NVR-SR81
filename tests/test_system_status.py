@@ -119,6 +119,17 @@ def test_no_active_recordings_has_no_infinite_or_zero_time_promise(capacity):
     assert result["reason"] == "no_active_recordings"
 
 
+def test_archive_deletion_discards_cached_consumption_immediately(capacity):
+    collector, store, _, _, camera, recording = capacity
+    camera("a"); recording("a", 6000)
+    assert collector.snapshot(disk(7000))["bytes_per_second"] == 100
+    store.write("DELETE FROM recordings")
+    collector.invalidate()
+    result = collector.snapshot(disk(7000))
+    assert result["bytes_per_second"] is None
+    assert result["remaining_seconds"] is None and result["reason"] == "insufficient_data"
+
+
 @pytest.mark.parametrize("free", [None, -1, float("inf"), float("nan"), "9999", True])
 def test_missing_or_invalid_disk_keeps_eta_unknown(capacity, free):
     collector, _, _, _, camera, recording = capacity

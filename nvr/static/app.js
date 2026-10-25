@@ -251,7 +251,9 @@ async function api(path, options = {}) {
     const detail = typeof data?.detail === "string" ? data.detail
       : Array.isArray(data?.detail) ? data.detail.map((item) => item.msg || t("Invalid value")).join(" · ")
       : t("Request failed ({status}).", {status: response.status});
-    throw uiError(detail);
+    const error = uiError(detail);
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -335,6 +337,7 @@ function cameraStatus(camera) {
   if (!camera.enabled) return {label: t("Paused"), color: "", badge: "neutral", message: t("Recording is disabled for this camera.")};
   const status = camera.status || {};
   const raw = String(status.state || "unknown").toLowerCase();
+  if (raw === "clearing") return {label: t("Paused"), color: "", badge: "neutral", message: t("Recording paused for archive cleanup.")};
   if (["recording", "running", "connected"].includes(raw)) return {label: t("Recording"), color: "green", badge: "", message: status.message ? t(status.message) : t("The recorder is receiving and saving the stream.")};
   if (["error", "failed", "offline", "backoff", "retrying", "reconnecting", "storage_full"].includes(raw)) return {label: ["retrying", "backoff", "reconnecting"].includes(raw) ? t("Reconnecting") : raw === "storage_full" ? t("Disk full") : t("Unavailable"), color: "orange", badge: "error", message: status.message ? t(status.message) : t("The stream is unavailable. The recorder will try to reconnect.")};
   return {label: ["starting", "connecting"].includes(raw) ? t("Connecting") : t("Waiting"), color: "yellow", badge: "waiting", message: status.message ? t(status.message) : t("Waiting for the first stream segment.")};
@@ -2002,6 +2005,19 @@ $("search-end").value = localInput(new Date(now.getTime() + 60000));
 syncArchiveFilters();
 
 window.addEventListener("nvr-settings-tabchange", renderSystemDashboard);
+
+window.addEventListener("nvr-archive-beforeclear", () => {
+  if (state.authenticated) clearPlayer();
+});
+
+window.addEventListener("nvr-archive-cleared", () => {
+  if (!state.authenticated) return;
+  state.archiveRequest += 1;
+  state.archiveController?.abort(); state.archiveController = null;
+  clearPlayer(); state.recordings = [];
+  renderRecordings(); drawTimeline();
+  refresh(true, true).catch((error) => { if (state.authenticated) toast(errorText(error)); });
+});
 
 window.addEventListener("nvr-recording-settingschange", (event) => {
   const duration = event.detail?.segment_seconds;

@@ -11,6 +11,7 @@ import math
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import struct
 import time
@@ -34,10 +35,18 @@ RECORDING_NAME = re.compile(r"[0-9]{10,}-[0-9]{6,}\.mkv\Z")
 RETENTION_PAGE_SIZE = 256
 RETENTION_DELETE_LIMIT = 64
 RETENTION_CAMERA_LIMIT = 16
+MANIFEST_NAME = re.compile(r"[0-9]{10,}\.csv\Z")
+CAMERA_DIRECTORY_NAME = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
 class MediaError(RuntimeError):
     """Safe to display: never contains a stream URL or FFmpeg stderr."""
+
+
+class ArchiveClearError(MediaError):
+    def __init__(self, message: str, status_code: int = 409):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def validate_url(url: str) -> str:
@@ -135,6 +144,7 @@ class MediaManager:
         self._cache_reservations: dict[Path, int] = {}
         self._janitor: asyncio.Task | None = None
         self._stopping = False
+        self._clearing = False
 
     async def start(self) -> None:
         self.recordings_dir.mkdir(parents=True, exist_ok=True)
@@ -164,6 +174,8 @@ class MediaManager:
         self._hubs.clear()
 
     async def reconcile(self) -> None:
+        if self._clearing:
+            return
         async with self._reconcile_lock:
             await self._reconcile_locked()
 
@@ -177,6 +189,8 @@ class MediaManager:
             await self._reconcile_locked()
 
     async def _reconcile_locked(self) -> None:
+        if self._clearing:
+            return
         cameras = {str(c["id"]): c for c in self.store.list_cameras() if c.get("enabled", True)}
         for camera_id, worker in list(self.workers.items()):
             desired = cameras.get(camera_id)
@@ -203,6 +217,8 @@ class MediaManager:
                     self._hubs.pop(camera_id, None)
 
     def camera_status(self, camera_id: str) -> dict[str, Any]:
+        if self._clearing:
+            return {"state": "clearing", "message": "Recording paused for archive cleanup.", "last_segment_at": None}
         worker = self.workers.get(str(camera_id))
         if not worker:
             return {"state": "stopped", "message": "Recording disabled", "last_segment_at": None}
@@ -295,7 +311,7 @@ class MediaManager:
         if worker.segment_seconds is None:
             worker.segment_seconds = self.settings.segment_seconds
         backoff = 1.0
-        while not self._stopping and not worker.stopping:
+        while not self._stopping and not worker.stopping and not self._clearing:
             process = None
             manifest = None
             seen: set[str] = set()
@@ -324,7 +340,17 @@ class MediaManager:
                 args += ["-c", "copy", "-f", "segment", "-segment_time", str(worker.segment_seconds),
                          "-segment_format", "matroska", "-reset_timestamps", "1",
                          "-segment_list", str(manifest), "-segment_list_type", "csv", str(output)]
-                process = worker.process = await self._spawn(*args)
+                if worker.stopping or self._stopping or self._clearing:
+                    break
+                pending_spawn = asyncio.create_task(self._spawn(*args), name="record-spawn")
+                try:
+                    process = worker.process = await asyncio.shield(pending_spawn)
+                except asyncio.CancelledError:
+                    # A clear/shutdown during process creation must still obtain
+                    # the process handle so finally can close its output safely.
+                    with contextlib.suppress(Exception):
+                        process = worker.process = await pending_spawn
+                    raise
                 worker.state, worker.message = "connecting", "Connecting to camera"
                 while process.returncode is None:
                     # Long segments remain open for up to two hours. Report
@@ -415,6 +441,13 @@ class MediaManager:
                 continue
 
     async def _recover(self) -> None:
+        if self._clearing:
+            return
+        async with self._retention_lock:
+            if not self._clearing:
+                await self._recover_locked()
+
+    async def _recover_locked(self) -> None:
         # SQLite's UNIQUE(path) makes recovery idempotent across crashes/restarts.
         known = {str(r["path"]) for r in self.store.list_recordings(limit=1_000_000)}
         cameras = {str(c["id"]): c for c in self.store.list_cameras()}
@@ -483,7 +516,11 @@ class MediaManager:
             await asyncio.sleep(30)
 
     async def _retention(self) -> None:
+        if self._clearing:
+            return
         async with self._retention_lock:
+            if self._clearing:
+                return
             cameras = {str(c["id"]): c for c in self.store.list_cameras()}
             now, status = time.time(), self._archive_status()
             pressure_at_start = bool(status["overwrite_required"])
@@ -517,6 +554,8 @@ class MediaManager:
             for index, recording in enumerate(ordered):
                 if index % 16 == 0:
                     await asyncio.sleep(0)
+                if self._clearing:
+                    break
                 if str(recording["id"]) in page_ids:
                     self._retention_cursor = (float(recording["started_at"]), str(recording["id"]))
                 try:
@@ -596,6 +635,8 @@ class MediaManager:
         return path
 
     def _prune_cache(self) -> None:
+        if self._clearing:
+            return
         active_parts = {Path(key).with_suffix(".part" + Path(key).suffix) for key in self._jobs}
         for path in self.cache_dir.glob("*.part.*"):
             if (self._owned_cache_file(path, partial=True) and path not in active_parts
@@ -733,6 +774,7 @@ class MediaManager:
             queue.put_nowait(frame)
 
     def _cache_path(self, recording: dict[str, Any], variant: str, extension: str) -> Path:
+        self._require_archive_available()
         source = self.recording_path(recording)
         try:
             stat = source.stat()
@@ -743,6 +785,7 @@ class MediaManager:
         return self.cache_dir / f"{key}.{extension}"
 
     async def _cached_job(self, path: Path, factory: Any, *, background: bool = False, source: Path | None = None) -> Path:
+        self._require_archive_available()
         if path.is_file():
             # Access time drives cache LRU. Keep modification time unchanged:
             # FileResponse derives its ETag/If-Range identity from mtime+size.
@@ -851,6 +894,7 @@ class MediaManager:
     @contextlib.asynccontextmanager
     async def source_lease(self, recording: dict[str, Any]) -> AsyncIterator[Path]:
         """Pin an original archive file for the complete HTTP response lifetime."""
+        self._require_archive_available()
         source = self.recording_path(recording)
         self._in_use[source] = self._in_use.get(source, 0) + 1
         try:
@@ -862,6 +906,190 @@ class MediaManager:
         self._in_use[source] -= 1
         if self._in_use[source] == 0:
             del self._in_use[source]
+
+    def _require_archive_available(self) -> None:
+        if self._clearing:
+            raise ArchiveClearError("Archive cleanup is in progress. Try again shortly.")
+
+    def archive_status(self) -> dict[str, Any]:
+        try:
+            with self.store.connect() as db:
+                row = db.execute("""SELECT COUNT(*) AS count, TOTAL(CASE WHEN typeof(size) IN ('integer','real')
+                    AND size>0 AND size<=9223372036854775807 THEN size ELSE 0 END) AS bytes FROM recordings""").fetchone()
+            return {"recordings_count": int(row["count"]), "recordings_bytes": int(row["bytes"]), "clearing": self._clearing}
+        except (OSError, sqlite3.Error, OverflowError, ValueError):
+            raise ArchiveClearError("Archive cleanup failed. Check storage permissions and try again.", 503) from None
+
+    @staticmethod
+    def _clear_directory_identity(path: Path) -> tuple[int, int]:
+        info = path.lstat()
+        if path.is_symlink() or not stat.S_ISDIR(info.st_mode) or path.resolve() != path:
+            raise ArchiveClearError("Archive cleanup is unavailable for this storage configuration.")
+        return info.st_dev, info.st_ino
+
+    def _clear_roots(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        data = Path(self.settings.data_dir).resolve()
+        archive, cache = self.recordings_dir, self.cache_dir
+        if (archive == Path(archive.anchor) or archive == data or data.is_relative_to(archive)
+                or Path(self.settings.recordings_dir).absolute() != archive
+                or cache in {Path(cache.anchor), data, archive} or archive.is_relative_to(cache)
+                or Path(self.settings.cache_dir).absolute() != cache
+                or cache.is_relative_to(archive) and not cache.is_relative_to(archive / ".cache")):
+            raise ArchiveClearError("Archive cleanup is unavailable for this storage configuration.")
+        return self._clear_directory_identity(archive), self._clear_directory_identity(cache)
+
+    async def _pause_archive_recorders(self) -> None:
+        tasks = []
+        for worker in self.workers.values():
+            worker.stopping = True
+            if worker.task is not None and not worker.task.done():
+                worker.task.cancel()  # _record.finally sends q, waits, then imports its final CSV entry
+                tasks.append(worker.task)
+            elif worker.process is not None:
+                tasks.append(asyncio.create_task(_stop_process(worker.process)))
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if any(worker.process is not None and worker.process.returncode is None for worker in self.workers.values()):
+            raise ArchiveClearError("Archive cleanup failed. Check storage permissions and try again.", 503)
+        self.workers.clear()
+
+    def _clear_index_path(self, path: Path) -> int:
+        relative = path.relative_to(self.recordings_dir).as_posix()
+        with self.store.connect() as db:
+            return db.execute("DELETE FROM recordings WHERE path=?", (relative,)).rowcount
+
+    def _clear_is_indexed(self, path: Path) -> bool:
+        try:
+            relative = path.relative_to(self.recordings_dir).as_posix()
+        except ValueError:
+            return False
+        with self.store.connect() as db:
+            return db.execute("SELECT 1 FROM recordings WHERE path=?", (relative,)).fetchone() is not None
+
+    async def _clear_files(self, result: dict[str, int], archive_identity, cache_identity) -> None:
+        steps = 0
+
+        async def checkpoint():
+            nonlocal steps
+            steps += 1
+            if steps % 16 == 0:
+                await asyncio.sleep(0)
+            if self._clear_directory_identity(self.recordings_dir) != archive_identity:
+                raise ArchiveClearError("Archive cleanup is unavailable for this storage configuration.")
+
+        def remove(path, parent_identity, pattern, *, original=False):
+            if self._clear_directory_identity(path.parent) != parent_identity:
+                raise ArchiveClearError("Archive cleanup is unavailable for this storage configuration.")
+            try:
+                info = path.lstat()
+                eligible = pattern.fullmatch(path.name) and stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                if not eligible:
+                    if not original or not self._clear_is_indexed(path):
+                        result["skipped_files"] += 1
+                    return
+                path.unlink()
+            except FileNotFoundError:
+                return
+            except OSError:
+                if not original or not self._clear_is_indexed(path):
+                    result["skipped_files"] += 1
+                return
+            result["deleted_files"] += 1
+            result["deleted_bytes"] += info.st_size
+            if original and RECORDING_NAME.fullmatch(path.name):
+                result["deleted_recordings"] += self._clear_index_path(path)
+
+        with os.scandir(self.recordings_dir) as directories:
+            for directory in directories:
+                await checkpoint()
+                if directory.name == ".cache":
+                    continue
+                path = Path(directory.path)
+                if not CAMERA_DIRECTORY_NAME.fullmatch(directory.name) or not directory.is_dir(follow_symlinks=False):
+                    result["skipped_files"] += 1
+                    continue
+                identity = self._clear_directory_identity(path)
+                if identity[0] != archive_identity[0]:
+                    result["skipped_files"] += 1
+                    continue
+                with os.scandir(path) as files:
+                    for entry in files:
+                        await checkpoint()
+                        item = Path(entry.path)
+                        pattern = RECORDING_NAME if item.suffix == ".mkv" else MANIFEST_NAME
+                        remove(item, identity, pattern, original=True)
+
+        # Clear the configured cache and any artifacts in the reserved archive
+        # cache root. Neither traversal descends into arbitrary subdirectories.
+        roots = [(self.cache_dir, cache_identity)]
+        reserved = self.recordings_dir / ".cache"
+        if reserved != self.cache_dir and reserved.exists():
+            try:
+                roots.append((reserved, self._clear_directory_identity(reserved)))
+            except ArchiveClearError:
+                result["skipped_files"] += 1
+        for root, identity in roots:
+            with os.scandir(root) as files:
+                for entry in files:
+                    await checkpoint()
+                    path = Path(entry.path)
+                    if path == self.cache_dir:
+                        continue
+                    pattern = CACHE_PART_NAME if CACHE_PART_NAME.fullmatch(path.name) else CACHE_ARTIFACT_NAME
+                    remove(path, identity, pattern)
+
+        # Missing owned originals also need their stale index rows removed.
+        # Retain unsafe/foreign/failed-unlink rows rather than hiding failures.
+        cursor = ""
+        while True:
+            with self.store.connect() as db:
+                rows = db.execute("SELECT id,camera_id,path FROM recordings WHERE id>? ORDER BY id LIMIT 256", (cursor,)).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                await checkpoint()
+                cursor = row["id"]
+                try:
+                    path = self._retention_file(dict(row))
+                except (MediaError, TypeError, ValueError):
+                    path = None
+                if path is not None and not path.exists():
+                    with self.store.connect() as db:
+                        result["deleted_recordings"] += db.execute("DELETE FROM recordings WHERE id=?", (row["id"],)).rowcount
+                else:
+                    result["skipped_files"] += 1
+
+    async def clear_archive(self) -> dict[str, int]:
+        self._require_archive_available()
+        self._clearing = True
+        paused = False
+        try:
+            if self._jobs or self._in_use or self._cache_leases or self._cache_reservations:
+                raise ArchiveClearError("Stop playback and wait for media processing to finish before clearing recordings.")
+            archive_identity, cache_identity = self._clear_roots()
+            async with self._reconcile_lock, self._retention_lock:
+                paused = True
+                pause = asyncio.create_task(self._pause_archive_recorders(), name="archive-pause-recorders")
+                try:
+                    await asyncio.shield(pause)
+                except asyncio.CancelledError:
+                    await pause
+                    raise
+                result = {"deleted_files": 0, "deleted_recordings": 0, "deleted_bytes": 0, "skipped_files": 0}
+                await self._clear_files(result, archive_identity, cache_identity)
+                return result
+        except ArchiveClearError:
+            raise
+        except (OSError, sqlite3.Error, ValueError, KeyError):
+            raise ArchiveClearError("Archive cleanup failed. Check storage permissions and try again.", 503) from None
+        finally:
+            self._retention_cursor = None
+            self._retention_pressure = False
+            self._clearing = False
+            if paused:
+                try:
+                    await self.reconcile()
+                except (OSError, sqlite3.Error, MediaError, ValueError):
+                    raise ArchiveClearError("Archive cleanup failed. Check storage permissions and try again.", 503) from None
 
     @contextlib.asynccontextmanager
     async def download_lease(self, recording: dict[str, Any]) -> AsyncIterator[Path]:

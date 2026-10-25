@@ -59,6 +59,11 @@ class MaintenanceActionInput(BaseModel):
     confirmation: Literal["RESTART", "REBOOT"]
 
 
+class ArchiveClearInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    confirmation: Literal["DELETE"]
+
+
 class CameraConnectionInput(BaseModel):
     model_config = {"extra": "forbid"}
     protocol: Literal["rtsp", "rtsps", "http", "https"] | None = None
@@ -134,6 +139,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     login_jobs = asyncio.Semaphore(2)
     mutation_lock = asyncio.Lock()
     recording_updates: set[asyncio.Task] = set()
+    archive_clear_task: asyncio.Task | None = None
 
     @asynccontextmanager
     async def lifespan(app):
@@ -663,6 +669,53 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     @app.get("/api/settings/system")
     async def maintenance_status():
         return await maintenance.status()
+
+    @app.get("/api/settings/archive")
+    def archive_status():
+        try:
+            result = media.archive_status()
+        except (MediaError, OSError, sqlite3.Error, ValueError):
+            raise HTTPException(503, "Archive details are unavailable. Check the connection and try again.") from None
+        return result | {"clearing": result["clearing"] or bool(
+            archive_clear_task is not None and not archive_clear_task.done())}
+
+    @app.post("/api/settings/archive/clear")
+    async def clear_archive(data: ArchiveClearInput, request: Request):
+        nonlocal archive_clear_task
+        if archive_clear_task is not None and not archive_clear_task.done():
+            raise HTTPException(409, "Archive cleanup is already running.")
+
+        async def apply():
+            async with mutation_lock:
+                if not auth.valid(request.cookies.get("nvr_session")):
+                    raise HTTPException(401, "Authentication required")
+                status = await maintenance.status()
+                if status.get("pending_action"):
+                    raise HTTPException(409, "A maintenance action is already scheduled. Please wait before trying again.")
+                if not auth.valid(request.cookies.get("nvr_session")):
+                    raise HTTPException(401, "Authentication required")
+                try:
+                    return await media.clear_archive()
+                except MediaError as error:
+                    code = getattr(error, "status_code", 503)
+                    raise HTTPException(code if code in {409, 503} else 503, str(error)) from None
+                except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                    raise HTTPException(503, "Archive cleanup could not finish. Check the archive status before trying again.") from None
+                finally:
+                    invalidate = getattr(capacity, "invalidate", None)
+                    if invalidate is not None:
+                        invalidate()
+
+        # A disconnected browser must not leave recording suspended midway.
+        # Keep the operation alive and wait for it during application shutdown.
+        archive_clear_task = asyncio.create_task(apply(), name="nvr-archive-clear")
+        recording_updates.add(archive_clear_task)
+        def finished(task):
+            recording_updates.discard(task)
+            if not task.cancelled():
+                task.exception()
+        archive_clear_task.add_done_callback(finished)
+        return await asyncio.shield(archive_clear_task)
 
     @app.post("/api/settings/system/action")
     async def maintenance_action(data: MaintenanceActionInput, request: Request):
