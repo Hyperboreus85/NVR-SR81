@@ -14,7 +14,7 @@ I comandi di zoom della timeline ingrandiscono o riducono la parte visibile dell
 
 Se l'orario **A** è precedente o uguale a **Da**, la fine riguarda il giorno successivo. Per esempio, dalle 22:00 alle 02:00 attraversa mezzanotte; dalle 00:00 alle 00:00 cerca l'intera giornata locale. Il passaggio usa la data del calendario del browser, tenendo conto degli eventuali cambi di ora solare e legale.
 
-L'elenco contiene i risultati reali della ricerca. Se è vuoto, provare un'altra telecamera o un altro intervallo, oppure attendere la chiusura del file in registrazione. Se viene raggiunto il limite dei risultati, l'interfaccia chiede di restringere l'intervallo.
+L'elenco contiene i risultati reali della ricerca, in un riquadro con scorrimento verticale interno e un massimo di dieci segmenti visibili. Su schermi piccoli sono visibili meno righe; tutti i risultati rimangono raggiungibili scorrendo il riquadro, anche con la tastiera. Il numero di segmenti non allunga la pagina né il lettore video. Se è vuoto, provare un'altra telecamera o un altro intervallo, oppure attendere la chiusura del file in registrazione. Se viene raggiunto il limite dei risultati, l'interfaccia chiede di restringere l'intervallo.
 
 Le miniature vengono ricavate dal primo fotogramma del file archiviato e conservate in cache. Servono a riconoscere l'inquadratura: non sono immagini in diretta né identificano automaticamente un evento. Se una miniatura non è disponibile, il file può essere scelto comunque dall'elenco.
 

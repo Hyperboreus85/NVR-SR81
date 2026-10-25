@@ -6,18 +6,18 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#202020">
   <title>SR81 NVR System</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.13.0">
-  <script defer src="/static/i18n.js?v=0.13.0"></script>
-  <script defer src="/static/live-player.js?v=0.13.0"></script>
-  <script defer src="/static/motion-track.js?v=0.13.0"></script>
-  <script defer src="/static/live-layout.js?v=0.13.0"></script>
-  <script defer src="/static/record-player.js?v=0.13.0"></script>
-  <script defer src="/static/camera-editor.js?v=0.13.0"></script>
-  <script defer src="/static/system-telemetry.js?v=0.13.0"></script>
-  <script defer src="/static/system-dashboard.js?v=0.13.0"></script>
-  <script defer src="/static/app.js?v=0.13.0"></script>
-  <script defer src="/static/system-settings.js?v=0.13.0"></script>
-  <script defer src="/static/settings.js?v=0.13.0"></script>
+  <link rel="stylesheet" href="/static/style.css?v=0.13.1">
+  <script defer src="/static/i18n.js?v=0.13.1"></script>
+  <script defer src="/static/live-player.js?v=0.13.1"></script>
+  <script defer src="/static/motion-track.js?v=0.13.1"></script>
+  <script defer src="/static/live-layout.js?v=0.13.1"></script>
+  <script defer src="/static/record-player.js?v=0.13.1"></script>
+  <script defer src="/static/camera-editor.js?v=0.13.1"></script>
+  <script defer src="/static/system-telemetry.js?v=0.13.1"></script>
+  <script defer src="/static/system-dashboard.js?v=0.13.1"></script>
+  <script defer src="/static/app.js?v=0.13.1"></script>
+  <script defer src="/static/system-settings.js?v=0.13.1"></script>
+  <script defer src="/static/settings.js?v=0.13.1"></script>
 </head>
 <body>
   <div id="loading-screen" class="loading-screen" role="status"><span class="loading-spinner"></span><span data-i18n="Connecting to recorder…">Connecting to recorder…</span></div>
@@ -56,7 +56,7 @@
 
   <div id="app" class="app-shell sr81-shell" hidden>
     <aside class="sidebar app-rail">
-      <a class="brand rail-brand" href="#" aria-label="SR81 NVR System"><img class="sr81-wordmark" src="/static/sr81-logo.svg?v=0.13.0" width="56" height="24" alt="SR81 NVR System"><span id="version" class="rail-version" aria-label="Application version" data-i18n-aria-label="Application version">—</span></a>
+      <a class="brand rail-brand" href="#" aria-label="SR81 NVR System"><img class="sr81-wordmark" src="/static/sr81-logo.svg?v=0.13.1" width="56" height="24" alt="SR81 NVR System"><span id="version" class="rail-version" aria-label="Application version" data-i18n-aria-label="Application version">—</span></a>
       <nav class="workspace-nav" aria-label="Main navigation" data-i18n-aria-label="Main navigation"><button id="nav-monitor" class="workspace-nav-item active" aria-current="page" data-i18n-title="Live" title="Live"><svg><use href="#i-monitor"/></svg><span data-i18n="Live">Live</span></button><button id="nav-recorder" class="workspace-nav-item" data-i18n-title="Record" title="Record"><svg><use href="#i-record"/></svg><span data-i18n="Record">Record</span></button><button id="nav-cameras" class="workspace-nav-item" data-i18n-title="Cameras" title="Cameras"><svg><use href="#i-camera"/></svg><span data-i18n="Cameras">Cameras</span></button><button id="nav-network" class="workspace-nav-item" data-i18n-title="Network" title="Network"><svg><use href="#i-network"/></svg><span data-i18n="Network">Network</span></button><button id="nav-settings" class="workspace-nav-item" data-i18n-title="Settings" title="Settings"><svg><use href="#i-settings"/></svg><span data-i18n="Settings">Settings</span></button></nav>
       <div class="rail-bottom"><button id="logout" class="workspace-nav-item rail-logout" title="Sign out" data-i18n-title="Sign out"><svg><use href="#i-exit"/></svg><span data-i18n="Sign out">Sign out</span></button></div>
     </aside>
@@ -75,7 +75,7 @@
               </section>
               <section class="recording-tracks panel" aria-label="Audio and motion" data-i18n-aria-label="Audio and motion"><div class="record-track-plots"><div class="waveform-box"><div class="record-track-label"><svg><use href="#i-wave"/></svg><span data-i18n="Audio">Audio</span></div><div class="waveform-canvas-wrap"><canvas id="waveform" aria-label="Audio waveform: click to seek within the recording" tabindex="0" data-i18n-aria-label="Audio waveform: click to seek within the recording"></canvas><div id="waveform-cursor" hidden></div></div></div><section class="motion-box" aria-label="Recorded image changes" data-i18n-aria-label="Recorded image changes"><div class="motion-heading"><h4 class="record-track-label"><svg><use href="#i-signal"/></svg><span data-i18n="Motion">Motion</span></h4></div><div id="motion-track" class="motion-track" role="group" tabindex="0" aria-label="Image-change track. Use arrow keys to move between events." data-i18n-aria-label="Image-change track. Use arrow keys to move between events."><div id="motion-markers" class="motion-markers"></div><span id="motion-cursor" class="motion-cursor" hidden></span></div></section><div id="record-time-axis" class="record-time-axis" aria-label="Recording time" data-i18n-aria-label="Recording time"></div><div class="record-track-overlay" aria-hidden="true"><div id="recording-tracks-cursor" hidden><span id="recording-tracks-cursor-label"></span></div></div></div><div class="record-track-toolbar"><div class="record-track-status"><span id="waveform-label" role="status"><span data-i18n="Select a recording">Select a recording</span></span><div class="motion-status-row"><span id="motion-status" role="status" aria-live="polite"><span data-i18n="Select a recording">Select a recording</span></span><button id="motion-retry" class="text-button" type="button" hidden><span data-i18n="Retry analysis">Retry analysis</span></button></div></div><div class="motion-controls"><label for="motion-sensitivity" data-i18n="Sensitivity">Sensitivity</label><select id="motion-sensitivity"><option value="low" data-i18n="Low">Low</option><option value="medium" selected data-i18n="Medium">Medium</option><option value="high" data-i18n="High">High</option></select><button id="motion-previous" class="icon-button" type="button" aria-label="Previous motion event" title="Previous motion event" data-i18n-aria-label="Previous motion event" data-i18n-title="Previous motion event" disabled>←</button><span id="motion-event-position" aria-live="polite" aria-atomic="true">—</span><button id="motion-next" class="icon-button" type="button" aria-label="Next motion event" title="Next motion event" data-i18n-aria-label="Next motion event" data-i18n-title="Next motion event" disabled>→</button></div></div><p id="motion-error" class="motion-error" role="alert" hidden></p><p class="motion-help" data-i18n="Image changes only; no object labels. Results appear after local analysis. Recording continues.">Image changes only; no object labels. Results appear after local analysis. Recording continues.</p></section>
             </div>
-            <aside class="recordings-column panel"><header class="recordings-heading"><h2 data-i18n="Segments">Segments</h2><span id="recording-count" class="recording-count">—</span></header><div id="recordings-list" class="recordings-list" aria-label="Available recordings" data-i18n-aria-label="Available recordings"></div><footer class="record-segment-metadata"><span id="playing-codec" class="small muted"></span></footer></aside>
+            <aside class="recordings-column panel"><header class="recordings-heading"><h2 data-i18n="Segments">Segments</h2><span id="recording-count" class="recording-count">—</span></header><div id="recordings-list" class="recordings-list" tabindex="0" aria-label="Available recordings" data-i18n-aria-label="Available recordings"></div><footer class="record-segment-metadata"><span id="playing-codec" class="small muted"></span></footer></aside>
           </div>
           <section class="timeline-section panel"><div class="timeline-heading"><h2 data-i18n="Timeline">Timeline</h2><div class="timeline-tools"><span class="timeline-legend"><i></i><span data-i18n="Recording">Recording</span><em></em><span data-i18n="No segment">No segment</span></span><div class="timeline-zoom-controls"><button id="timeline-zoom-out" type="button" class="icon-button" title="Zoom out timeline" aria-label="Zoom out timeline" data-i18n-title="Zoom out timeline" data-i18n-aria-label="Zoom out timeline">−</button><button id="timeline-zoom-in" type="button" class="icon-button" title="Zoom in timeline" aria-label="Zoom in timeline" data-i18n-title="Zoom in timeline" data-i18n-aria-label="Zoom in timeline">+</button></div></div></div><div class="timeline-canvas-wrap"><canvas id="timeline" tabindex="0" aria-label="Timeline: colored sections show available recordings" data-i18n-aria-label="Timeline: colored sections show available recordings"></canvas><div id="timeline-cursor" hidden><span id="timeline-cursor-label"></span></div></div><div id="timeline-ruler" class="timeline-ruler" aria-hidden="true"></div><div class="timeline-times visually-hidden" aria-label="Search time range" data-i18n-aria-label="Search time range"><span id="timeline-start">—</span><span id="timeline-end">—</span></div><p id="timeline-message" class="small muted"><span data-i18n="Gaps mark periods without available recordings.">Gaps mark periods without available recordings.</span></p></section>
           <div id="recorder-legacy" hidden aria-hidden="true">
