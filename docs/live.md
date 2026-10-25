@@ -12,6 +12,8 @@ All'accesso l'NVR apre **Live → Monitor**, la vista delle telecamere configura
 
 Il Monitor mostra le telecamere assegnate ai riquadri visibili, comprese quelle con registrazione sospesa. Una telecamera offline mostra il proprio stato e viene ritentata senza bloccare le altre. REC/pausa riguarda la registrazione; lo stato della diretta riguarda il lettore. L'audio si attiva per una telecamera alla volta e non fa parte del layout salvato.
 
+Sopra la griglia, tre indicatori raccolgono **CPU e temperatura**, **RAM e swap**, **archivio e disco del sistema**. Le percentuali del container si riferiscono alle risorse assegnate; la RAM include la cache dei file. La temperatura può non essere disponibile: un eventuale sensore fisico visibile è identificato come temperatura host. Quando archivio e sistema sono su dischi distinti, vengono mostrati entrambi. I controlli **Layout**, pausa/ripresa e schermo intero sono sulla destra. [Come leggere gli indicatori](telemetry.md).
+
 ## Preparare e salvare il layout
 
 In **Live → Layout** si trovano tutte le telecamere configurate, anche quelle non presenti nel Monitor. La parete può mostrarne fino a **16 contemporaneamente**; non passa automaticamente ad altre pagine. Le telecamere lasciate fuori dalla parete continuano a registrare secondo la loro configurazione.
@@ -29,7 +31,7 @@ Alla prima apertura, senza una disposizione valida salvata, la griglia viene pre
 
 ## Flusso principale e sottostream
 
-Il monitor legge prima il **flusso secondario per anteprima**, se salvato nella configurazione della telecamera, altrimenti il principale. La registrazione mantiene la propria sorgente originale.
+Il monitor usa il **flusso live scelto per la telecamera** tra principale, secondario e terzo. La scelta predefinita è il secondario per anteprima, con ripiego sul principale se non configurato. La preferenza viene salvata sul server ed è comune ai browser; la registrazione mantiene sempre la sorgente principale originale. [Configurare i flussi della telecamera](cameras.md).
 
 Per il container con 2 core e **4 GB RAM**, usare preferibilmente un sottostream **H.264 a risoluzione e bitrate contenuti**. Si può conservare il main H.265 per registrare e scegliere il sub H.264 della stessa sorgente in **Telecamere in rete**. La capacità effettiva dipende da telecamere, bitrate, browser e hardware; il layout da quattro riquadri è un punto di partenza per il collaudo. Più RAM aiuta i buffer e i processi, ma non sostituisce la CPU necessaria a ricodificare.
 

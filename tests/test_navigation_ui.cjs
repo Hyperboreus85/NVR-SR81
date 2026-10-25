@@ -63,7 +63,7 @@ function camera(id) {
 const snapshot = (size = 4, ids = ["a", "b", "c", "d"]) => ({version: 1, size, slots: Array.from({length: 16}, (_, index) => ids[index] || null)});
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
-function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), legacySize = null, handler} = {}) {
+function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), legacySize = null, handler, telemetry = false} = {}) {
   const nodes = new Map(), windowEvents = new Map(), documentEvents = new Map(), calls = [], players = [], layouts = [], timers = new Map();
   const storage = new Map(legacySize === null ? [] : [["nvr.monitor.layout", String(legacySize)]]);
   const ready = deferred(); let timer = 0, language = "en", settingsOpens = 0;
@@ -119,18 +119,26 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
   });
   context.window = context; context.devicePixelRatio = 1; context.scrollTo = () => {};
   context.NvrLivePlayer = LivePlayer; context.NvrLiveLayout = LiveLayout;
+  const telemetryViews = [];
+  if (telemetry) context.NvrSystemTelemetry = class {
+    constructor(options) { this.options=options; this.data=null; this.renders=0; this.clears=0; this.relabels=0; telemetryViews.push(this); }
+    render(value) { this.data=value; this.renders+=1; }
+    clear() { this.data=null; this.clears+=1; }
+    relabel() { this.relabels+=1; }
+  };
   context.NvrSettings = {open() { settingsOpens += 1; }};
   context.NvrI18n = {ready: ready.promise, locale: () => language, getLanguage: () => language,
     t: (key, params = {}) => (language === "en" ? String(key) : "IT: " + key).replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (token, name) => Object.hasOwn(params, name) ? String(params[name]) : token)};
   context.addEventListener = (type, listener) => { if (!windowEvents.has(type)) windowEvents.set(type, []); windowEvents.get(type).push(listener); };
   context.dispatchEvent = (event) => { for (const listener of windowEvents.get(event.type) || []) listener(event); return true; };
   vm.runInContext(source, context, {filename: "app.js"});
-  return {node, calls, players, layouts, layoutButtons, context, ready, document, storage,
+  return {node, calls, players, layouts, layoutButtons, context, ready, document, storage, telemetryViews, timers,
     async boot() { ready.resolve(); await flush(); await flush(); },
     evaluate: (expression) => vm.runInContext(expression, context),
     async documentEvent(type, details = {}) { for (const listener of documentEvents.get(type) || []) await listener({type, ...details}); },
     async windowEvent(type, details = {}) { for (const listener of windowEvents.get(type) || []) await listener({type, ...details}); },
     language(value) { language = value; }, settingsOpens: () => settingsOpens,
+    async runTimer(id) { const callback=timers.get(id); assert.equal(typeof callback,'function'); await callback(); await flush(); },
   };
 }
 
@@ -391,4 +399,76 @@ test("a late Main probe cannot overwrite the selected Third probe or unlock its 
   assert.match(env.node("probe-result").textContent, /hevc/);
   assert.equal(env.node("probe-camera").disabled, false);
   assert.equal(env.node("camera-probe-stream").disabled, false);
+});
+
+const telemetrySample = (usage=25) => ({sampled_at:1000,scope:'container',cpu:{percent:usage},memory:{},swap:{},disk:{}});
+const telemetryCalls = (env) => env.calls.filter((call)=>call.path==='/api/system/telemetry');
+
+test("OS polling runs only in visible Live Monitor, remains single-flight and continues while videos are paused", async()=>{
+  const pending=deferred(); let first=true;
+  const env=environment({telemetry:true,handler(path,options,fallback){
+    if(path==='/api/system/telemetry'){if(first){first=false;return pending.promise;} return telemetrySample(42);}
+    return fallback(path);
+  }});
+  await env.boot();
+  assert.equal(telemetryCalls(env).length,1);
+  await env.evaluate('loadMonitorTelemetry()');
+  assert.equal(telemetryCalls(env).length,1);
+  const oldTimer=env.evaluate('monitorTelemetry.timer');
+  env.document.hidden=true; await env.documentEvent('visibilitychange');
+  assert.equal(telemetryCalls(env)[0].options.signal.aborted,true);
+  assert.equal(env.timers.has(oldTimer),false);
+  pending.resolve(telemetrySample(99)); await flush(); await flush();
+  assert.equal(env.telemetryViews[0].data,null);
+  env.document.hidden=false; await env.documentEvent('visibilitychange'); await flush(); await flush();
+  assert.equal(env.telemetryViews[0].data.cpu.percent,42);
+  await env.node('monitor-toggle').fire('click');
+  assert.equal(env.evaluate('monitor.playing'),false);
+  await env.runTimer(env.evaluate('monitorTelemetry.timer'));
+  assert.equal(telemetryCalls(env).length,3);
+  await env.node('live-tab-layout').fire('click');
+  const count=telemetryCalls(env).length;
+  await env.evaluate('loadMonitorTelemetry()');
+  assert.equal(telemetryCalls(env).length,count);
+  assert.equal(env.telemetryViews[0].data,null);
+});
+
+test("a timed-out telemetry response clears stale values and cannot replace a newer sample",async()=>{
+  const old=deferred(); let count=0;
+  const env=environment({telemetry:true,handler(path,options,fallback){
+    if(path==='/api/system/telemetry')return ++count===1?old.promise:telemetrySample(17);
+    return fallback(path);
+  }});
+  await env.boot();
+  const request=telemetryCalls(env)[0];
+  await env.runTimer(env.evaluate('monitorTelemetry.timeout'));
+  assert.equal(request.options.signal.aborted,true);
+  assert.equal(env.telemetryViews[0].data,null);
+  await env.evaluate('loadMonitorTelemetry()');
+  assert.equal(env.telemetryViews[0].data.cpu.percent,17);
+  old.resolve(telemetrySample(99)); await flush(); await flush();
+  assert.equal(env.telemetryViews[0].data.cpu.percent,17);
+  assert.equal(env.players.every((player)=>player.active),true);
+});
+
+test("telemetry errors and logout clear metrics; translation only relabels the current snapshot",async()=>{
+  let failing=false;
+  const env=environment({telemetry:true,handler(path,options,fallback){
+    if(path==='/api/system/telemetry')return failing?{}:telemetrySample(31);
+    return fallback(path);
+  }});
+  await env.boot();
+  assert.equal(env.telemetryViews[0].data.cpu.percent,31);
+  const requests=telemetryCalls(env).length;
+  env.language('it'); await env.windowEvent('nvr-languagechange');
+  assert.equal(telemetryCalls(env).length,requests);
+  assert.equal(env.telemetryViews[0].relabels,1);
+  failing=true; await env.evaluate('loadMonitorTelemetry()');
+  assert.equal(env.telemetryViews[0].data,null);
+  assert.equal(env.players.every((player)=>player.active),true);
+  await env.node('logout').fire('click');
+  const count=telemetryCalls(env).length;
+  await env.evaluate('loadMonitorTelemetry()');
+  assert.equal(telemetryCalls(env).length,count);
+  assert.equal(env.evaluate('monitorTelemetry.timer'),null);
 });

@@ -70,6 +70,74 @@ function cameraEditorController() {
   return cameraEditor;
 }
 
+const monitorTelemetry = {display: null, data: null, timer: null, controller: null, timeout: null, epoch: 0};
+
+function telemetryCanUpdate() {
+  return state.authenticated && network.view === "monitor" && !document.hidden;
+}
+
+function telemetryDisplay() {
+  if (!monitorTelemetry.display && window.NvrSystemTelemetry && $("monitor-telemetry")) {
+    try { monitorTelemetry.display = new window.NvrSystemTelemetry({root: $("monitor-telemetry"), t, locale}); }
+    catch (_) { /* The video wall still works if its optional indicators cannot load. */ }
+  }
+  return monitorTelemetry.display;
+}
+
+function stopMonitorTelemetry() {
+  clearInterval(monitorTelemetry.timer); monitorTelemetry.timer = null;
+  clearTimeout(monitorTelemetry.timeout); monitorTelemetry.timeout = null;
+  monitorTelemetry.epoch += 1;
+  monitorTelemetry.controller?.abort(); monitorTelemetry.controller = null;
+  monitorTelemetry.data = null;
+  monitorTelemetry.display?.clear();
+}
+
+function startMonitorTelemetry() {
+  if (!telemetryCanUpdate()) { stopMonitorTelemetry(); return; }
+  if (!telemetryDisplay()) return;
+  if (monitorTelemetry.timer === null) monitorTelemetry.timer = setInterval(loadMonitorTelemetry, 5000);
+  loadMonitorTelemetry();
+}
+
+async function loadMonitorTelemetry() {
+  if (!telemetryCanUpdate() || monitorTelemetry.controller || !telemetryDisplay()) return;
+  const controller = new AbortController(), epoch = ++monitorTelemetry.epoch, authEpoch = state.authEpoch;
+  monitorTelemetry.controller = controller;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    const active = current();
+    controller.abort();
+    if (active) {
+      monitorTelemetry.epoch += 1;
+      if (monitorTelemetry.controller === controller) monitorTelemetry.controller = null;
+      if (monitorTelemetry.timeout === timeout) monitorTelemetry.timeout = null;
+      monitorTelemetry.data = null; monitorTelemetry.display.clear();
+    }
+  }, 8000);
+  monitorTelemetry.timeout = timeout;
+  const current = () => epoch === monitorTelemetry.epoch && authEpoch === state.authEpoch && telemetryCanUpdate();
+  try {
+    const data = await api("/api/system/telemetry", {signal: controller.signal});
+    if (!current() || controller.signal.aborted) return;
+    if (!data || typeof data !== "object" || Array.isArray(data) || !Number.isFinite(data.sampled_at)
+        || !["container", "machine", "unknown"].includes(data.scope)
+        || ["cpu", "memory", "swap", "disk"].some((key) => !data[key] || typeof data[key] !== "object")) throw new Error("Invalid telemetry response");
+    monitorTelemetry.data = data;
+    monitorTelemetry.display.render(data);
+  } catch (error) {
+    if (current() && (error.name !== "AbortError" || timedOut)) {
+      monitorTelemetry.data = null;
+      monitorTelemetry.display.clear();
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (monitorTelemetry.timeout === timeout) monitorTelemetry.timeout = null;
+    if (monitorTelemetry.controller === controller) monitorTelemetry.controller = null;
+  }
+}
+
 function ensureLiveLayout() {
   if (!liveLayout && window.NvrLiveLayout && $("live-layout-root")) {
     liveLayout = new window.NvrLiveLayout({
@@ -990,7 +1058,7 @@ function showView(view) {
     if (network.profileController) clearNetworkProfiles(false);
     drawTimeline(); drawWaveform();
   }
-  if (view === "monitor" && state.authenticated) { renderMonitor(); loadMonitorStatus(); }
+  if (view === "monitor" && state.authenticated) { renderMonitor(); loadMonitorStatus(); startMonitorTelemetry(); }
   else releaseMonitor();
   if (view === "layout" && state.authenticated) ensureLiveLayout()?.open();
   else liveLayout?.close();
@@ -1000,6 +1068,7 @@ function showView(view) {
 }
 
 function releaseMonitor() {
+  stopMonitorTelemetry();
   clearTimeout(monitor.statusTimer); monitor.statusTimer = null;
   monitor.observer?.disconnect(); monitor.observer = null;
   monitor.tiles.forEach((tile) => tile.live?.destroy());
@@ -1886,6 +1955,8 @@ $("timeline").addEventListener("keydown", (event) => {
 });
 window.addEventListener("resize", () => { drawWaveform(); drawTimeline(); });
 document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopMonitorTelemetry();
+  else if (network.view === "monitor") startMonitorTelemetry();
   if (document.hidden) stopLive();
   if (network.view === "monitor") { syncMonitorPlayers(); if (!document.hidden) loadMonitorStatus(); }
   if (network.view === "layout") { if (document.hidden) liveLayout?.close(); else if (state.authenticated) liveLayout?.open(); }
@@ -1893,7 +1964,7 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", () => { stopLive(); player.pause(); releaseMonitor(); liveLayout?.close(); });
 window.addEventListener("pageshow", (event) => {
   if (!event.persisted || !state.authenticated) return;
-  if (network.view === "monitor") renderMonitor();
+  if (network.view === "monitor") { renderMonitor(); startMonitorTelemetry(); }
   else if (network.view === "layout") liveLayout?.open();
 });
 
@@ -1924,6 +1995,7 @@ window.addEventListener("nvr-languagechange", () => {
   motionTrack?.relabel();
   liveLayout?.relabel();
   cameraEditor?.relabel();
+  monitorTelemetry.display?.relabel();
   setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings"})[network.view] || "Monitor"));
   $("toggle-live").replaceChildren(icon(state.live ? "close" : "play"), document.createTextNode(t(state.live ? "Close preview" : "Open preview")));
   $("onvif-form").querySelector("button[type=submit]").textContent = t(network.modalController ? "Reading profiles…" : "Find profiles");

@@ -27,6 +27,7 @@ from .onvif import get_profiles
 from .preferences import SEGMENT_PREFERENCE_KEY, recording_preferences, restore_recording_preferences
 from .security import Auth, redact_url
 from .store import Store
+from .telemetry import SystemTelemetry
 
 LIVE_AUTH_CHECK_SECONDS = 15
 
@@ -108,7 +109,7 @@ class NetworkScanInput(BaseModel):
 
 
 def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager,
-               maintenance_factory=MaintenanceManager):
+               maintenance_factory=MaintenanceManager, telemetry_factory=SystemTelemetry):
     settings = settings or Settings()
     if settings.password and len(settings.password) < 12:
         raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
@@ -120,6 +121,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     media = media_factory(settings, store)
     realtime = live_factory(settings)
     maintenance = maintenance_factory()
+    telemetry = telemetry_factory(settings.recordings_dir)
     media_jobs = asyncio.Semaphore(2)
     onvif_jobs = asyncio.Semaphore(2)
     discovery_lock = asyncio.Lock()
@@ -161,6 +163,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     app.state.settings, app.state.auth = settings, auth
     app.state.realtime = realtime
     app.state.maintenance = maintenance
+    app.state.telemetry = telemetry
     app.state.languages = languages
 
     @app.middleware("http")
@@ -659,6 +662,12 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 return await maintenance.schedule(data.action, data.confirmation)
             except MaintenanceError as error:
                 raise HTTPException(error.status_code, str(error)) from None
+
+    @app.get("/api/system/telemetry")
+    def system_telemetry():
+        # The synchronous route runs in FastAPI's thread pool. Sampling never
+        # sleeps or blocks the recording/live event loop to calculate CPU use.
+        return telemetry.snapshot()
 
     @app.get("/api/system")
     def system():
