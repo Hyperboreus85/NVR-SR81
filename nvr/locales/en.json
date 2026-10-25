@@ -807,6 +807,7 @@
     "System status is unavailable. Check the connection and try again.": "System status is unavailable. Check the connection and try again.",
     "Recorder is reachable. Reload this page to reconnect.": "Recorder is reachable. Reload this page to reconnect.",
     "The action response could not be confirmed. Check the connection before trying again.": "The action response could not be confirmed. Check the connection before trying again.",
-    "The request will not be sent again automatically. Check the connection before continuing.": "The request will not be sent again automatically. Check the connection before continuing."
+    "The request will not be sent again automatically. Check the connection before continuing.": "The request will not be sent again automatically. Check the connection before continuing.",
+    "Media server is busy. Try again shortly.": "Media server is busy. Try again shortly."
   }
 }

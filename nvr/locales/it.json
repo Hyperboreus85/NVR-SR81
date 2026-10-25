@@ -807,6 +807,7 @@
     "System status is unavailable. Check the connection and try again.": "Lo stato del sistema non è disponibile. Verifica la connessione e riprova.",
     "Recorder is reachable. Reload this page to reconnect.": "Il recorder è raggiungibile. Ricarica questa pagina per riconnetterti.",
     "The action response could not be confirmed. Check the connection before trying again.": "Non è stato possibile confermare la risposta all'azione. Verifica la connessione prima di riprovare.",
-    "The request will not be sent again automatically. Check the connection before continuing.": "La richiesta non verrà inviata di nuovo automaticamente. Verifica la connessione prima di continuare."
+    "The request will not be sent again automatically. Check the connection before continuing.": "La richiesta non verrà inviata di nuovo automaticamente. Verifica la connessione prima di continuare.",
+    "Media server is busy. Try again shortly.": "Il server multimediale è occupato. Riprova tra poco."
   }
 }
