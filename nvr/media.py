@@ -23,8 +23,9 @@ from .motion import FRAME_BYTES, SAMPLE_SECONDS, MotionAnalyzer, motion_timeout
 
 INPUT_PROTOCOLS = "rtsp,rtsps,http,https,tcp,tls,udp,rtp"
 MAX_JPEG_BYTES = 8 * 1024 * 1024
-CACHE_ARTIFACT_NAME = re.compile(r"[0-9a-f]{64}\.(?:mp4|json)\Z")
-CACHE_PART_NAME = re.compile(r"[0-9a-f]{64}\.part\.(?:mp4|json)\Z")
+CACHE_ARTIFACT_NAME = re.compile(r"[0-9a-f]{64}\.(?:mp4|json|jpg)\Z")
+CACHE_PART_NAME = re.compile(r"[0-9a-f]{64}\.part\.(?:mp4|json|jpg)\Z")
+MAX_THUMBNAIL_BYTES = 256 * 1024
 
 
 class MediaError(RuntimeError):
@@ -107,6 +108,7 @@ class MediaManager:
         self._reconcile_lock = asyncio.Lock()
         self._transcode_slots = asyncio.Semaphore(2)
         self._motion_slots = asyncio.Semaphore(1)
+        self._thumbnail_slots = asyncio.Semaphore(1)
         # Four shared live streams plus two one-shot snapshots.
         self._decode_slots = asyncio.Semaphore(6)
         self._jobs: dict[str, asyncio.Task] = {}
@@ -702,6 +704,49 @@ class MediaManager:
             self._in_use[source] -= 1
             if self._in_use[source] == 0:
                 del self._in_use[source]
+
+    async def thumbnail(self, recording: dict[str, Any]) -> bytes:
+        """One small frame from the original file, never from the live camera."""
+        source = self.recording_path(recording)
+        destination = self._cache_path(recording, "thumbnail-v1", "jpg")
+        if destination.is_symlink():
+            raise MediaError("Preview unavailable.")
+
+        async def extract() -> Path:
+            temporary = destination.with_suffix(".part.jpg")
+            self._in_use[source] = self._in_use.get(source, 0) + 1
+            try:
+                async with self._thumbnail_slots, self._transcode_slots:
+                    self._ensure_cache_space(MAX_THUMBNAIL_BYTES)
+                    result = await self._capture([
+                        self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
+                        "-threads", "1", "-filter_threads", "1", "-i", str(source),
+                        "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1",
+                        "-vf", "scale=192:108:force_original_aspect_ratio=decrease,pad=192:108:(ow-iw)/2:(oh-ih)/2",
+                        "-threads", "1", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1",
+                    ], timeout=15, max_bytes=MAX_THUMBNAIL_BYTES)
+                    if not result.startswith(b"\xff\xd8"):
+                        raise MediaError("Preview unavailable.")
+                    temporary.write_bytes(result)
+                    temporary.replace(destination)
+                    return destination
+            finally:
+                self._in_use[source] -= 1
+                if self._in_use[source] == 0:
+                    del self._in_use[source]
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
+
+        try:
+            path = await self._cached_job(destination, extract)
+            if not self._owned_cache_file(path) or path.stat().st_size > MAX_THUMBNAIL_BYTES:
+                raise MediaError("Preview unavailable.")
+            result = path.read_bytes()
+            if not result.startswith(b"\xff\xd8"):
+                raise MediaError("Preview unavailable.")
+            return result
+        except OSError:
+            raise MediaError("Preview unavailable.") from None
 
     async def waveform(self, recording: dict[str, Any]) -> dict[str, Any]:
         duration = max(0.0, float(recording["duration"]))

@@ -1,6 +1,6 @@
 # Monitor live delle telecamere
 
-All'accesso l'NVR apre **Live → Monitor**, la vista delle telecamere configurate. La voce **Live** nella barra laterale raccoglie due pagine: **Monitor**, per guardare le dirette, e **Layout**, per scegliere le telecamere e la loro posizione. Il monitor riproduce video continuo; la piccola anteprima a 2 fps nella sezione delle registrazioni rimane disponibile separatamente.
+All'accesso l'NVR apre **Live → Monitor**, la vista delle telecamere configurate. La voce **Live** nella barra laterale raccoglie due pagine: **Monitor**, per guardare le dirette, e **Layout**, per scegliere le telecamere e la loro posizione. I filmati archiviati si consultano nella pagina **Record / Registrazioni**. [Guida alle registrazioni](recordings.md).
 
 ## Uso della schermata
 

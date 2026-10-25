@@ -5,7 +5,7 @@ const locale = () => window.NvrI18n.locale();
 const translatedMessages = new Map();
 const messageBindings = new Map();
 const warningLists = new Map();
-const rawTextIds = new Set(["selected-name", "live-camera-name", "network-device-name", "network-device-address", "network-device-description"]);
+const rawTextIds = new Set(["selected-name", "live-camera-name", "playing-label", "network-device-name", "network-device-address", "network-device-description"]);
 const t = (key, params) => {
   const prior = translatedMessages.get(key);
   const source = prior && prior.key !== key && !params ? prior : {key, params};
@@ -37,10 +37,13 @@ const state = {
   rangeFollowsNow: true,
   motionSeek: null,
   recordingSettingsRevision: 0, recordingDuration: null,
+  archiveController: null, waveformController: null, archiveFiltersDirty: false,
+  timelineWindow: null,
 };
 const formatDate = dateFormat({day: "2-digit", month: "short"});
-const formatTime = dateFormat({hour: "2-digit", minute: "2-digit", second: "2-digit"});
-const formatShortTime = dateFormat({hour: "2-digit", minute: "2-digit"});
+const formatTime = dateFormat({hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"});
+const formatShortTime = dateFormat({hour: "2-digit", minute: "2-digit", hourCycle: "h23"});
+const formatRecordingDate = dateFormat({day: "2-digit", month: "short", year: "numeric"});
 const player = $("player");
 const network = {
   view: "recorder", devices: [], selected: null, profiles: [], modalProfiles: [],
@@ -82,6 +85,17 @@ const motionTrack = window.NvrMotionTrack ? new window.NvrMotionTrack({
   request: (id, sensitivity, signal) => api(`/api/recordings/${encodeURIComponent(id)}/motion?${new URLSearchParams({sensitivity})}`, {signal}),
   t, seek: seekMotion,
 }) : null;
+let recordControls = null;
+if (window.NvrRecordPlayer) {
+  const ids = {controls: "record-player-controls", previous: "record-previous", play: "record-play", next: "record-next", elapsed: "record-elapsed", total: "record-total", seek: "record-seek", speed: "record-speed", mute: "record-mute", volume: "record-volume", fullscreen: "record-fullscreen", absoluteTime: "record-absolute-time", axis: "record-time-axis"};
+  try {
+    recordControls = new window.NvrRecordPlayer({video: player,
+      elements: {...Object.fromEntries(Object.entries(ids).map(([key, id]) => [key, $(id)])), fullscreenTarget: player.closest(".record-player")},
+      t, onPrevious: () => adjacentRecording(-1), onNext: () => adjacentRecording(1),
+      onError: (error) => archiveError(errorText(error)), onTime: () => updatePlaybackCursors(),
+    });
+  } catch (_) { player.controls = true; }
+}
 
 function icon(name) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -172,6 +186,26 @@ function localInput(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function prepareArchiveSearch() {
+  const date = $("archive-date")?.value, from = $("archive-from")?.value, to = $("archive-to")?.value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "") || !/^\d{2}:\d{2}$/.test(from || "") || !/^\d{2}:\d{2}$/.test(to || "")) return false;
+  const start = new Date(`${date}T${from}`), end = new Date(`${date}T${to}`);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || localInput(start) !== `${date}T${from}` || localInput(end) !== `${date}T${to}`) return false;
+  if (end <= start) end.setDate(end.getDate() + 1);
+  if (localInput(end).slice(11) !== to) return false;
+  $("search-start").value = localInput(start);
+  $("search-end").value = localInput(end);
+  state.archiveFiltersDirty = false;
+  return true;
+}
+
+function syncArchiveFilters() {
+  if (!$("archive-date") || state.archiveFiltersDirty) return;
+  $("archive-date").value = $("search-start").value.slice(0, 10);
+  $("archive-from").value = $("search-start").value.slice(11, 16);
+  $("archive-to").value = $("search-end").value.slice(11, 16);
+}
+
 function setText(id, value) {
   const source = !rawTextIds.has(id) && translatedMessages.get(value);
   if (source) messageBindings.set(id, source); else messageBindings.delete(id);
@@ -220,6 +254,7 @@ function showLogin() {
   state.recordings = [];
   state.range = null;
   state.archiveRequest += 1;
+  state.archiveController?.abort(); state.archiveController = null;
   releaseMonitor();
   liveLayout?.destroy(); liveLayout = null;
   monitor.playing = true;
@@ -273,6 +308,7 @@ async function refreshData(showErrors) {
     renderCameras();
     renderSelected();
     if (previousId !== state.selectedId) {
+      state.archiveRequest += 1; state.archiveController?.abort();
       stopLive();
       clearPlayer();
       state.recordings = [];
@@ -318,6 +354,15 @@ function renderCameras() {
   });
   $("empty-state").hidden = state.cameras.length > 0;
   $("camera-workspace").hidden = !state.selectedId;
+  const selector = $("archive-camera");
+  if (selector) {
+    const selected = selector.value;
+    selector.replaceChildren();
+    state.cameras.forEach((camera) => { const option = el("option", "", camera.name); option.value = camera.id; selector.append(option); });
+    selector.value = state.cameras.some((camera) => camera.id === selected) ? selected : state.selectedId || "";
+    selector.disabled = !state.cameras.length;
+    $("search-form").querySelector("button[type=submit]").disabled = !state.cameras.length || !!state.archiveController;
+  }
 }
 
 function renderSelected() {
@@ -353,6 +398,8 @@ function renderSystem() {
 }
 
 async function selectCamera(id) {
+  if (!state.cameras.some((camera) => camera.id === id)) return;
+  if ($("archive-camera")) $("archive-camera").value = id;
   showView("recorder");
   if (id === state.selectedId) return;
   stopLive();
@@ -360,6 +407,7 @@ async function selectCamera(id) {
   state.selectedId = id;
   state.recordings = [];
   state.range = null;
+  state.archiveRequest += 1; state.archiveController?.abort();
   renderCameras();
   renderSelected();
   renderRecordings();
@@ -390,32 +438,36 @@ function toggleLive() {
 }
 
 async function loadRecordings() {
-  if (!state.selectedId) return;
+  const request = ++state.archiveRequest, authEpoch = state.authEpoch;
+  state.archiveController?.abort(); state.archiveController = null;
+  const searchButton = $("search-form").querySelector("button[type=submit]");
+  if (!state.selectedId) { searchButton.disabled = !state.cameras.length; return; }
   const start = new Date($("search-start").value).getTime() / 1000;
   const end = new Date($("search-end").value).getTime() / 1000;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
     archiveError(t("Choose a valid range: the end must be after the start."));
+    searchButton.disabled = false;
     return;
   }
-  const request = ++state.archiveRequest;
   const cameraId = state.selectedId;
-  const searchButton = $("search-form").querySelector("button");
+  const controller = new AbortController(); state.archiveController = controller;
   searchButton.disabled = true;
   archiveError();
   try {
     const query = new URLSearchParams({camera_id: cameraId, start: String(start), end: String(end), limit: "10000"});
-    const recordings = await api(`/api/recordings?${query}`);
-    if (request !== state.archiveRequest || state.selectedId !== cameraId || !state.authenticated) return;
+    const recordings = await api(`/api/recordings?${query}`, {signal: controller.signal});
+    if (request !== state.archiveRequest || state.selectedId !== cameraId || !state.authenticated || authEpoch !== state.authEpoch) return;
     state.recordings = (Array.isArray(recordings) ? recordings : []).sort((a, b) => a.started_at - b.started_at);
     state.range = {start, end};
+    state.timelineWindow = null;
     if (state.recordings.length >= 10000) archiveError(t("Showing the first 10,000 segments. Narrow the range to view and check the rest of the archive."));
     if (state.recording && !state.recordings.some((recording) => recording.id === state.recording.id)) clearPlayer();
     renderRecordings();
     drawTimeline();
   } catch (error) {
-    if (request === state.archiveRequest) archiveError(errorText(error));
+    if (request === state.archiveRequest && error.name !== "AbortError" && state.authenticated && authEpoch === state.authEpoch) archiveError(errorText(error));
   } finally {
-    if (request === state.archiveRequest) searchButton.disabled = false;
+    if (request === state.archiveRequest) { state.archiveController = null; searchButton.disabled = !state.cameras.length; }
   }
 }
 
@@ -431,15 +483,34 @@ function renderRecordings() {
     row.type = "button";
     row.setAttribute("aria-pressed", String(recording.id === state.recording?.id));
     row.setAttribute("aria-label", t("Play recording from {time}, duration {duration}", {time: timeLabel(recording.started_at, true), duration: seconds(recording.duration)}));
-    const playIcon = el("span", "clip-play");
-    playIcon.append(icon("play"));
-    const copy = el("span", "clip-copy");
-    copy.append(el("strong", "", timeLabel(recording.started_at)), el("small", "", `${formatDate.format(new Date(recording.started_at * 1000))} · ${bytes(recording.size)}`));
-    row.append(playIcon, copy, el("span", "clip-duration", seconds(recording.duration)));
+    const thumbnail = el("span", "recording-thumb"); thumbnail.append(icon("archive"));
+    const image = el("img"); image.alt = ""; image.loading = "lazy"; image.decoding = "async";
+    image.src = `/api/recordings/${encodeURIComponent(recording.id)}/thumbnail`;
+    image.addEventListener("load", () => { thumbnail.dataset.ready = "true"; });
+    image.addEventListener("error", () => { image.hidden = true; });
+    thumbnail.append(image);
+    const copy = el("span", "recording-row-copy");
+    const camera = state.cameras.find((item) => item.id === recording.camera_id) || selectedCamera();
+    copy.append(el("strong", "", camera?.name || t("Camera")), el("span", "recording-row-date", formatRecordingDate.format(new Date(recording.started_at * 1000))),
+      el("span", "recording-row-time", `${timeLabel(recording.started_at)} – ${timeLabel(recording.started_at + Number(recording.duration || 0))}`));
+    row.append(thumbnail, copy, el("span", "recording-duration", seconds(recording.duration)));
     row.addEventListener("click", () => selectRecording(recording));
     list.append(row);
   });
   drawTimeline();
+  updateRecordNavigation();
+}
+
+function updateRecordNavigation() {
+  const index = state.recordings.findIndex((item) => item.id === state.recording?.id);
+  recordControls?.setNavigation({previous: index > 0, next: index >= 0 && index < state.recordings.length - 1});
+}
+
+function adjacentRecording(direction) {
+  const index = state.recordings.findIndex((item) => item.id === state.recording?.id);
+  if (index < 0 || ![-1, 1].includes(direction)) return;
+  const next = state.recordings[index + direction];
+  if (next) selectRecording(next, 0, !player.paused);
 }
 
 function clearPlayer() {
@@ -448,11 +519,14 @@ function clearPlayer() {
   state.recording = null;
   state.waveform = null;
   state.waveformRequest += 1;
+  state.waveformController?.abort(); state.waveformController = null;
+  recordControls?.clear();
   player.pause();
   player.removeAttribute("src");
   player.load();
   player.hidden = true;
   $("player-placeholder").hidden = false;
+  if ($("record-loading")) $("record-loading").hidden = true;
   $("download").hidden = true;
   $("download").removeAttribute("href");
   setText("playing-label", t("No recording selected"));
@@ -460,6 +534,7 @@ function clearPlayer() {
   setText("waveform-label", t("Select a recording"));
   $("waveform-cursor").hidden = true;
   drawWaveform();
+  updatePlaybackCursors();
 }
 
 function selectRecording(recording, offset = 0, autoplay = true) {
@@ -474,21 +549,26 @@ function selectRecording(recording, offset = 0, autoplay = true) {
   if (same && player.src && !player.error) {
     seekPlayer(offset);
     if (autoplay) player.play().catch(() => {});
+    updateRecordNavigation(); updatePlaybackCursors();
     return;
   }
   player.pause();
   player.hidden = false;
   $("player-placeholder").hidden = true;
+  if ($("record-loading")) $("record-loading").hidden = false;
   const compatible = $("compatible").checked;
   player.src = `/api/recordings/${encodeURIComponent(recording.id)}/playback?compatible=${compatible}`;
   player.load();
+  recordControls?.setRecording(recording, {autoplay});
   const source = player.getAttribute("src");
   player.onloadedmetadata = () => {
     if (player.getAttribute("src") !== source) return;
+    if ($("record-loading")) $("record-loading").hidden = true;
     const requested = state.motionSeek?.id === recording.id ? state.motionSeek.offset : offset;
     state.motionSeek = null;
     seekPlayer(requested);
-    if (autoplay) player.play().catch(() => {});
+    if (recordControls) recordControls.startIfWanted();
+    else if (autoplay) player.play().catch(() => {});
   };
   renderPlayingLabels();
   $("download").href = `/api/recordings/${encodeURIComponent(recording.id)}/download`;
@@ -504,16 +584,19 @@ function renderPlayingLabels() {
     setText("playing-codec", "");
     return;
   }
-  setText("playing-label", timeLabel(recording.started_at, true));
+  setText("playing-label", selectedCamera()?.name || t("Camera"));
   const videoCodec = String(recording.video_codec || t("Video")).toUpperCase();
   const audioCodec = recording.audio_codec ? ` · ${String(recording.audio_codec).toUpperCase()}` : t(" · no audio");
   setText("playing-codec", `${videoCodec}${audioCodec} · ${seconds(recording.duration)}${$("compatible").checked ? t(" · Compatibility conversion") : ""}`);
+  recordControls?.relabel();
 }
 
 function seekPlayer(offset) {
   if (!Number.isFinite(offset) || offset < 0 || !state.recording) return;
+  if (player.readyState < 1) { state.motionSeek = {id: state.recording.id, offset}; return; }
   const duration = Number.isFinite(player.duration) ? player.duration : state.recording.duration;
   try { player.currentTime = Math.max(0, Math.min(offset, Math.max(0, duration - .05))); } catch (_) { /* Metadata may still be loading. */ }
+  updatePlaybackCursors();
 }
 
 function seekMotion(offset) {
@@ -524,22 +607,24 @@ function seekMotion(offset) {
 
 async function loadWaveform(recording) {
   const request = ++state.waveformRequest;
+  state.waveformController?.abort();
+  const controller = new AbortController(); state.waveformController = controller;
   state.waveform = null;
   setText("waveform-label", recording.audio_codec ? t("Analysing audio…") : t("No audio track"));
   drawWaveform();
-  if (!recording.audio_codec) return;
+  if (!recording.audio_codec) { state.waveformController = null; return; }
   try {
-    const waveform = await api(`/api/recordings/${encodeURIComponent(recording.id)}/waveform`);
+    const waveform = await api(`/api/recordings/${encodeURIComponent(recording.id)}/waveform`, {signal: controller.signal});
     if (request !== state.waveformRequest || state.recording?.id !== recording.id) return;
     state.waveform = waveform;
     const peaks = Array.isArray(waveform?.peaks) ? waveform.peaks : [];
     setText("waveform-label", peaks.length ? t("{duration} · audio intensity", {duration: seconds(waveform.duration)}) : t("Audio unavailable"));
     drawWaveform();
   } catch (error) {
-    if (request !== state.waveformRequest) return;
+    if (request !== state.waveformRequest || error.name === "AbortError") return;
     setText("waveform-label", t("Waveform unavailable"));
     $("waveform-label").title = errorText(error);
-  }
+  } finally { if (request === state.waveformRequest) state.waveformController = null; }
 }
 
 function canvasContext(id) {
@@ -580,10 +665,47 @@ function drawWaveform() {
 }
 
 function updateWaveformCursor() {
-  const duration = Number(state.waveform?.duration || state.recording?.duration);
+  const duration = Number(state.recording?.duration || state.waveform?.duration);
   const visible = state.recording && state.waveform?.peaks?.length && duration > 0;
   $("waveform-cursor").hidden = !visible;
   if (visible) $("waveform-cursor").style.left = `${Math.min(100, Math.max(0, player.currentTime / duration * 100))}%`;
+}
+
+function updatePlaybackCursors() {
+  updateWaveformCursor();
+  motionTrack?.setTime(player.currentTime);
+  const duration = Number(state.recording?.duration), offset = Number(player.currentTime) || 0;
+  const shared = $("recording-tracks-cursor"), global = $("timeline-cursor");
+  const visible = !!state.recording && duration > 0;
+  if (shared) {
+    shared.hidden = !visible;
+    if (visible) {
+      shared.style.left = `${Math.min(100, Math.max(0, offset / duration * 100))}%`;
+      if ($("recording-tracks-cursor-label")) $("recording-tracks-cursor-label").textContent = timeLabel(Number(state.recording.started_at) + offset);
+    }
+  }
+  const range = state.timelineWindow || state.range;
+  const absolute = Number(state.recording?.started_at) + offset;
+  if (global) {
+    const inRange = visible && range && absolute >= range.start && absolute <= range.end;
+    global.hidden = !inRange;
+    if (inRange) {
+      global.style.left = `${(absolute - range.start) / (range.end - range.start) * 100}%`;
+      if ($("timeline-cursor-label")) $("timeline-cursor-label").textContent = timeLabel(absolute);
+    }
+  }
+}
+
+function zoomTimeline(factor) {
+  if (!state.range || !Number.isFinite(factor) || factor <= 0) return;
+  const range = state.timelineWindow || state.range;
+  const total = state.range.end - state.range.start;
+  const width = Math.min(total, Math.max(Math.min(60, total), (range.end - range.start) * factor));
+  const playhead = state.recording ? Number(state.recording.started_at) + (Number(player.currentTime) || 0) : NaN;
+  const center = Number.isFinite(playhead) && playhead >= range.start && playhead <= range.end ? playhead : (range.start + range.end) / 2;
+  const start = Math.max(state.range.start, Math.min(state.range.end - width, center - width / 2));
+  state.timelineWindow = width >= total ? null : {start, end: start + width};
+  drawTimeline();
 }
 
 function drawTimeline() {
@@ -594,7 +716,7 @@ function drawTimeline() {
   context.fillStyle = colors.getPropertyValue("--panel-deep").trim();
   context.fillRect(0, 0, width, height);
   if (!state.range) return;
-  const {start, end} = state.range;
+  const {start, end} = state.timelineWindow || state.range;
   const duration = end - start;
   context.strokeStyle = colors.getPropertyValue("--line").trim();
   context.lineWidth = 1;
@@ -606,19 +728,28 @@ function drawTimeline() {
     const from = Math.max(start, recording.started_at);
     const to = Math.min(end, recording.started_at + recording.duration);
     if (to <= from) return;
-    context.fillStyle = colors.getPropertyValue(recording.id === state.recording?.id ? "--accent-strong" : "--accent").trim();
+    context.fillStyle = colors.getPropertyValue(recording.id === state.recording?.id ? "--accent" : "--timeline-recording").trim() || colors.getPropertyValue("--accent").trim();
     // Segment width is proportional to its duration; gaps are never filled.
     context.fillRect((from - start) / duration * width, 7, (to - from) / duration * width, height - 14);
   });
   setText("timeline-start", timeLabel(start, true));
   setText("timeline-end", timeLabel(end, true));
+  const ruler = $("timeline-ruler");
+  if (ruler) {
+    ruler.replaceChildren();
+    for (let index = 0; index <= 6; index++) ruler.append(el("span", "", formatShortTime.format(new Date((start + duration * index / 6) * 1000))));
+  }
+  if ($("timeline-zoom-in")) $("timeline-zoom-in").disabled = duration <= 60;
+  if ($("timeline-zoom-out")) $("timeline-zoom-out").disabled = !state.timelineWindow;
+  updatePlaybackCursors();
 }
 
 function timelineSeek(event) {
   if (!state.range) return;
   const rect = $("timeline").getBoundingClientRect();
   const fraction = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-  const time = state.range.start + fraction * (state.range.end - state.range.start);
+  const range = state.timelineWindow || state.range;
+  const time = range.start + fraction * (range.end - range.start);
   const recording = state.recordings.find((item) => time >= item.started_at && time < item.started_at + item.duration);
   if (recording) {
     setText("timeline-message", t("Gaps indicate periods with no recordings."));
@@ -774,8 +905,9 @@ function showView(view) {
   if ($("cameras-view")) $("cameras-view").hidden = view !== "cameras";
   if ($("settings-view")) $("settings-view").hidden = view !== "settings";
   setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings"})[view]));
-  if ($("current-view-label")) $("current-view-label").hidden = isLive;
+  if ($("current-view-label")) $("current-view-label").hidden = isLive || view === "recorder";
   if ($("live-subnav")) $("live-subnav").hidden = !isLive;
+  if ($("record-subnav")) $("record-subnav").hidden = view !== "recorder";
   ["monitor", "layout"].forEach((name) => {
     const button = $(`live-tab-${name}`);
     if (!button) return;
@@ -803,6 +935,7 @@ function showView(view) {
   if (view === "layout" && state.authenticated) ensureLiveLayout()?.open();
   else liveLayout?.close();
   if (view === "cameras") renderConfiguredCameras();
+  if (view === "recorder") { drawWaveform(); drawTimeline(); recordControls?.update(); }
   if (view === "settings") window.NvrSettings?.open();
 }
 
@@ -1474,6 +1607,7 @@ $("refresh").addEventListener("click", async () => {
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   if (state.rangeFollowsNow) $("search-end").value = localInput(new Date(Date.now() + 60000));
+  syncArchiveFilters();
   try {
     await refresh(true, true);
     if (!state.authenticated || state.authEpoch !== authEpoch) return;
@@ -1483,7 +1617,28 @@ $("refresh").addEventListener("click", async () => {
 });
 $("toggle-live").addEventListener("click", toggleLive);
 $("live-image").addEventListener("error", () => { if (state.live) { stopLive(); toast(t("Preview unavailable. Check the stream and FFmpeg on the server.")); } });
-$("search-form").addEventListener("submit", (event) => { event.preventDefault(); state.rangeFollowsNow = false; loadRecordings(); });
+$("search-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  state.archiveRequest += 1; state.archiveController?.abort(); state.archiveController = null;
+  const cameraId = $("archive-camera")?.value || state.selectedId;
+  if (!prepareArchiveSearch() || !state.cameras.some((camera) => camera.id === cameraId)) {
+    archiveError(t("Choose a camera, date and valid start and end times."));
+    $("search-form").querySelector("button[type=submit]").disabled = !state.cameras.length;
+    return;
+  }
+  state.rangeFollowsNow = false;
+  if (cameraId !== state.selectedId) {
+    clearPlayer(); state.selectedId = cameraId; state.recordings = []; state.range = null; state.timelineWindow = null;
+    renderCameras(); renderSelected(); renderRecordings();
+  }
+  loadRecordings();
+});
+["archive-date", "archive-from", "archive-to", "archive-camera"].forEach((id) => $(id)?.addEventListener("input", () => {
+  state.archiveFiltersDirty = true;
+  $("search-form").querySelector("button[type=submit]").disabled = !state.cameras.length;
+}));
+$("timeline-zoom-in")?.addEventListener("click", () => zoomTimeline(.5));
+$("timeline-zoom-out")?.addEventListener("click", () => zoomTimeline(2));
 $("camera-form").addEventListener("submit", saveCamera);
 $("probe-camera").addEventListener("click", probeCamera);
 $("open-onvif").addEventListener("click", () => {
@@ -1495,6 +1650,7 @@ $("open-onvif").addEventListener("click", () => {
 $("onvif-form").addEventListener("submit", findOnvifProfiles);
 $("onvif-dialog").addEventListener("close", resetModalProfiles);
 $("nav-recorder").addEventListener("click", () => showView("recorder"));
+$("record-tab-archive")?.addEventListener("click", () => showView("recorder"));
 $("nav-monitor").addEventListener("click", () => showView("monitor"));
 $("nav-cameras")?.addEventListener("click", () => showView("cameras"));
 $("cameras-add")?.addEventListener("click", () => openCameraDialog());
@@ -1581,10 +1737,13 @@ $("compatible").addEventListener("change", () => {
   selectRecording(recording, offset, autoplay);
 });
 player.addEventListener("timeupdate", updateWaveformCursor);
+player.addEventListener("timeupdate", updatePlaybackCursors);
+player.addEventListener("seeked", updatePlaybackCursors);
 player.addEventListener("timeupdate", () => motionTrack?.setTime(player.currentTime));
 player.addEventListener("seeked", () => motionTrack?.setTime(player.currentTime));
 player.addEventListener("error", () => {
   if (!state.recording) return;
+  if ($("record-loading")) $("record-loading").hidden = true;
   archiveError($("compatible").checked
     ? t("Playback unavailable. Check the file and FFmpeg service on the server; you can download the original recording.")
     : t("Your browser may not support this codec. Try compatible H.264 playback or download the original file."));
@@ -1632,6 +1791,7 @@ const now = new Date();
 const today = new Date(now); today.setHours(0, 0, 0, 0);
 $("search-start").value = localInput(today);
 $("search-end").value = localInput(new Date(now.getTime() + 60000));
+syncArchiveFilters();
 
 window.addEventListener("nvr-recording-settingschange", (event) => {
   const duration = event.detail?.segment_seconds;

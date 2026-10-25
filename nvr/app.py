@@ -462,6 +462,13 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             await lease.__aexit__(None, None, None)
             raise
 
+    @app.get("/api/recordings/{recording_id}/thumbnail")
+    async def thumbnail(recording_id: str):
+        from fastapi.responses import Response
+        recording, _ = recording_or_404(recording_id)
+        data = await media_result(lambda: media.thumbnail(recording))
+        return Response(data, media_type="image/jpeg")
+
     @app.get("/api/recordings/{recording_id}/waveform")
     async def waveform(recording_id: str):
         recording, _ = recording_or_404(recording_id)
