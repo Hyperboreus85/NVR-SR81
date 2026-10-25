@@ -46,6 +46,8 @@ La cache può essere collocata con `NVR_CACHE_DIR`: quando omesso l'applicazione
 
 L'anteprima della scheda Registratore rimane una successione di immagini aggiornate. Dalla versione 0.3.0, **Monitor live** offre invece video continuo con audio facoltativo: un processo FFmpeg condiviso per telecamera/modalità emette MP4 frammentato su WebSocket autenticato e il browser lo riproduce con MSE. Il flusso secondario è preferito per il monitor; la registrazione originale resta indipendente. Le conversioni video H.264 sono limitate separatamente quando il client non supporta il codec originale. Non è richiesto un gateway esterno; WebRTC e accelerazione hardware restano possibili estensioni. [Guida monitor live](live.md)
 
+L'accesso apre **Live → Monitor**. La pagina **Live → Layout** prepara una disposizione di 1, 4, 9 o 16 riquadri, con assegnazione tramite trascinamento o selettori; il salvataggio conserva identificativi e posizioni nella memoria del browser per l'indirizzo dell'NVR. La disposizione non cambia quella degli altri browser e non contiene credenziali dei flussi. Il Monitor apre solo le telecamere assegnate ai riquadri visibili e libera le dirette quando si passa al Layout o a un'altra sezione, mentre la registrazione continua sul server.
+
 ## Ricerca temporale e forma d'onda
 
 Il catalogo conserva i tempi in **UTC** e il browser mostra data e ora nel fuso locale, rendendo più chiari anche i cambi fra ora solare e legale. L'indice usa i tempi dei segmenti rilevati dal server: orologi sincronizzati nella LAN sono necessari per correlare più telecamere, e questa base non promette una sincronizzazione forense al fotogramma.

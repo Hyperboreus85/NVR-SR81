@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.8.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.9.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -21,7 +21,7 @@ Il flusso originale viene copiato in file **Matroska/MKV con durata da 1 a 120 m
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.
 - Scelta dei profili principale e secondario per configurare registrazione e anteprima; nomi originali conservati e suggerimenti basati sui metadati per ciascuna sorgente video.
 - Registrazione continua senza ricodifica, audio opzionale, riconnessione automatica e stato per telecamera.
-- **Monitor live** con video continuo, layout da 1/4/9/16 riquadri, paginazione di tutte le telecamere configurate, schermo intero, audio su una camera per volta e riconnessione indipendente. Usa il sottostream quando disponibile, condividendo il processo video fra gli spettatori. [Guida monitor live](docs/live.md).
+- **Live → Monitor** come pagina iniziale, con video continuo, griglie da 1/4/9/16 riquadri, schermo intero, audio su una camera per volta e riconnessione indipendente. **Live → Layout** dispone le telecamere con trascinamento o selettori, conserva gli spazi vuoti e salva la disposizione nel browser. La nuova navigazione usa sfondo grigio scuro, logo SR81 compatto, icone a sinistra e sottomenu nella barra superiore. La voce **Cameras** raccoglie le configurazioni. Usa il sottostream quando disponibile, condividendo il processo video fra gli spettatori. [Guida monitor live](docs/live.md).
 - Anteprima MJPEG a **2 fps, senza audio** nella scheda Registratore, avviata solo quando richiesta e distinta dal Monitor live. Massimo quattro anteprime MJPEG contemporanee. Consigliato il sottostream H.264 della camera.
 - Ricerca delle registrazioni per telecamera e intervallo, timeline con vuoti reali, riproduzione dei segmenti, download originale.
 - MP4 per il browser: copia video originale e conversione audio in AAC. Se H.265 non è supportato, modalità compatibile su richiesta con conversione H.264, più onerosa per la CPU.

@@ -1,16 +1,31 @@
 # Monitor live delle telecamere
 
-La versione 0.3.0 aggiunge **Monitor live**, una vista a griglia delle telecamere già configurate. Il monitor riproduce video continuo; la piccola anteprima a 2 fps della scheda Registratore rimane disponibile separatamente.
+All'accesso l'NVR apre **Live → Monitor**, la vista delle telecamere configurate. La voce **Live** nella barra laterale raccoglie due pagine: **Monitor**, per guardare le dirette, e **Layout**, per scegliere le telecamere e la loro posizione. Il monitor riproduce video continuo; la piccola anteprima a 2 fps nella sezione delle registrazioni rimane disponibile separatamente.
 
 ## Uso della schermata
 
-1. Aprire **Monitor live** dalla barra laterale dell'NVR.
-2. Scegliere il layout da 1, 4, 9 o 16 riquadri. Con più telecamere, cambiare pagina per vedere le altre.
-3. Aprire una telecamera a schermo intero per controllare un dettaglio, oppure passare alla sua scheda Registratore.
+1. Aprire **Live → Monitor** dalla barra laterale dell'NVR.
+2. Usare **Live → Layout** per preparare una griglia da **1, 4, 9 o 16 riquadri**, poi salvarla e tornare al Monitor.
+3. Il comando schermo intero del Monitor ingrandisce l'intera griglia. Il menu delle azioni di una telecamera permette di ingrandire quel riquadro oppure di aprire le sue registrazioni. Durante lo schermo intero di una singola telecamera le altre dirette si fermano e riprendono tornando alla griglia.
 4. L'audio parte disattivato. Attivarlo sulla telecamera da ascoltare: le altre restano silenziose. Se manca una traccia audio, il monitor lo indica.
-5. Usare pausa/ripresa per chiudere o riaprire le dirette. Cambiando sezione o pagina e lasciando la scheda del browser in secondo piano, le risorse dei riquadri vengono liberate; la registrazione prosegue indipendentemente.
+5. Usare pausa/ripresa per chiudere o riaprire le dirette. Cambiando sezione, aprendo Layout o lasciando la scheda del browser in secondo piano, le risorse delle dirette vengono liberate; la registrazione prosegue indipendentemente.
 
-Sono elencate tutte le telecamere configurate, comprese quelle con registrazione sospesa. Una telecamera offline mostra il proprio stato e viene ritentata senza bloccare le altre. REC/pausa riguarda la registrazione; lo stato della diretta riguarda il lettore.
+Il Monitor mostra le telecamere assegnate ai riquadri visibili, comprese quelle con registrazione sospesa. Una telecamera offline mostra il proprio stato e viene ritentata senza bloccare le altre. REC/pausa riguarda la registrazione; lo stato della diretta riguarda il lettore. L'audio si attiva per una telecamera alla volta e non fa parte del layout salvato.
+
+## Preparare e salvare il layout
+
+In **Live → Layout** si trovano tutte le telecamere configurate, anche quelle non presenti nel Monitor. La parete può mostrarne fino a **16 contemporaneamente**; non passa automaticamente ad altre pagine. Le telecamere lasciate fuori dalla parete continuano a registrare secondo la loro configurazione.
+
+1. Scegliere la dimensione della griglia: **1, 4, 9 o 16**.
+2. Trascinare una telecamera nel riquadro desiderato. In alternativa usare il selettore del riquadro, disponibile anche con tastiera e su dispositivi senza trascinamento.
+3. Per cambiare ordine, trascinare un riquadro sull'altro. Una telecamera compare una sola volta: assegnandola a un'altra posizione, le due posizioni si scambiano. È possibile lasciare riquadri non assegnati.
+4. Premere **Save layout / Salva layout** per applicare e memorizzare la disposizione. **Reset / Ripristina** annulla le modifiche non ancora salvate e torna alla disposizione salvata.
+
+Riducendo la griglia, le assegnazioni dei riquadri nascosti restano conservate: tornano visibili scegliendo una griglia più grande. Aprire e chiudere Layout mantiene le modifiche in preparazione; il Monitor usa la disposizione salvata. Le immagini di riferimento nell'editor sono anteprime singole, non altre dirette video persistenti.
+
+Il salvataggio riguarda **questo browser, per questo indirizzo dell'NVR**. Un altro browser, computer o telefono può avere una disposizione diversa; il layout non viene salvato nella configurazione condivisa del server. Se il browser non permette la memorizzazione, l'interfaccia segnala che il salvataggio non è riuscito. Cancellare i dati del sito può rimuovere anche la disposizione.
+
+Alla prima apertura, senza una disposizione valida salvata, la griglia viene preparata dalle telecamere effettivamente configurate. Dopo un salvataggio, le nuove telecamere restano da assegnare e quelle eliminate lasciano libera la propria posizione: le altre non cambiano posto automaticamente. Nella memoria del browser vengono conservati identificativi e posizioni, senza URL o password dei flussi.
 
 ## Flusso principale e sottostream
 
@@ -39,7 +54,7 @@ Dietro un reverse proxy, consentire l'upgrade WebSocket verso `/api/cameras/.../
 | `NVR_LIVE_MAX_STREAMS` | 16 | Processi live condivisi massimi, tra 1 e 32 |
 | `NVR_LIVE_MAX_TRANSCODES` | 2 | Conversioni video compatibili contemporanee, tra 0 e 4; 0 le disabilita |
 
-Le conversioni sono comprese nel limite totale dei processi live. Una telecamera può avere fino a otto spettatori contemporanei. Sono limiti del software, non una garanzia sulla capacità dell'hardware. Le pagine non visibili non tengono tutte le telecamere aperte in background.
+Le conversioni sono comprese nel limite totale dei processi live. Una telecamera può avere fino a otto spettatori contemporanei. Sono limiti del software, non una garanzia sulla capacità dell'hardware. Le pagine non visibili non tengono tutte le telecamere aperte in background; il Monitor apre soltanto le posizioni assegnate e visibili del layout.
 
 Nell'installazione nativa, eventuali variazioni vanno aggiunte a `/etc/nvr-sr81/environment` e applicate riavviando `nvr-sr81`. Con Docker Compose usare il file `.env`. Osservare CPU, RAM e registrazione prima di aumentare i limiti.
 

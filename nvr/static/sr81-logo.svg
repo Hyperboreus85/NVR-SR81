@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 50" role="img" aria-label="SR81 NVR System">
+  <g fill="none" stroke="#f2f4f5" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M27 6H11C7 6 5 8 5 12s2 6 6 6h10c4 0 6 2 6 6s-2 7-6 7H5"/>
+    <path d="M37 31V6h15c5 0 8 2 8 6s-3 6-8 6H37m14 0 10 13"/>
+    <path d="M76 6h10c5 0 8 2 8 6s-3 6-8 6H76c-5 0-8-2-8-6s3-6 8-6Zm0 12h10c5 0 8 3 8 7s-3 6-8 6H76c-5 0-8-2-8-6s3-7 8-7Z"/>
+    <path d="m103 10 10-4v25"/>
+  </g>
+  <g stroke="#d95d66" fill="none" stroke-width="1.15"><circle cx="50" cy="12" r="2.6"/><path d="M50 8.5v1m0 5v1m-3.5-3.5h1m5 0h1"/></g>
+  <circle cx="50" cy="12" r=".8" fill="#d95d66"/>
+  <text x="60" y="47" text-anchor="middle" fill="#b5b9bd" font-family="Arial,Helvetica,sans-serif" font-size="9.5" letter-spacing=".65">NVR System</text>
+</svg>

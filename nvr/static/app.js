@@ -54,6 +54,24 @@ const monitor = {
   fullscreenId: null, audioCameraId: null, statusEpoch: 0,
   statusTimer: null,
 };
+let liveLayout = null;
+
+function ensureLiveLayout() {
+  if (!liveLayout && window.NvrLiveLayout && $("live-layout-root")) {
+    liveLayout = new window.NvrLiveLayout({
+      root: $("live-layout-root"), cameras: state.cameras, t,
+      onSave(saved) {
+        monitor.layout = saved.size;
+        monitor.page = 0;
+        if ($("settings-monitor-layout")) $("settings-monitor-layout").value = String(saved.size);
+        if (network.view === "monitor") renderMonitor();
+        toast(t("Layout saved."));
+      },
+      onError(error) { toast(errorText(error)); },
+    });
+  }
+  return liveLayout;
+}
 const motionTrack = window.NvrMotionTrack ? new window.NvrMotionTrack({
   elements: {track: $("motion-track"), markers: $("motion-markers"), cursor: $("motion-cursor"), status: $("motion-status"), error: $("motion-error"), sensitivity: $("motion-sensitivity"), previous: $("motion-previous"), next: $("motion-next"), retry: $("motion-retry"), position: $("motion-event-position")},
   request: (id, sensitivity, signal) => api(`/api/recordings/${encodeURIComponent(id)}/motion?${new URLSearchParams({sensitivity})}`, {signal}),
@@ -165,6 +183,7 @@ function toast(message) {
 function globalError(message = "") {
   setText("global-error", message);
   $("global-error").hidden = !message;
+  if (message) toast(message);
 }
 
 function archiveError(message = "") {
@@ -184,6 +203,8 @@ function cameraStatus(camera) {
 function showLogin() {
   state.authEpoch += 1;
   state.authenticated = false;
+  clearTimeout(state.toastTimer);
+  $("toast").hidden = true;
   window.dispatchEvent(new CustomEvent("nvr-authchange", {detail: {authenticated: false}}));
   clearInterval(state.poll);
   state.poll = null;
@@ -195,6 +216,7 @@ function showLogin() {
   state.range = null;
   state.archiveRequest += 1;
   releaseMonitor();
+  liveLayout?.destroy(); liveLayout = null;
   monitor.playing = true;
   monitor.page = 0;
   monitor.statusEpoch += 1;
@@ -207,6 +229,7 @@ function showLogin() {
 
 async function enterApp() {
   state.authEpoch += 1;
+  const authEpoch = state.authEpoch;
   state.authenticated = true;
   window.dispatchEvent(new CustomEvent("nvr-authchange", {detail: {authenticated: true}}));
   $("login-screen").hidden = true;
@@ -214,6 +237,8 @@ async function enterApp() {
   $("password").value = "";
   document.body.classList.remove("loading");
   await refresh(true, true);
+  if (!state.authenticated || authEpoch !== state.authEpoch) return;
+  showView("monitor");
   clearInterval(state.poll);
   state.poll = setInterval(() => {
     if (state.authenticated && !document.hidden) refresh(false);
@@ -238,6 +263,7 @@ async function refreshData(showErrors) {
   if (results[0].status === "fulfilled") {
     const previousId = state.selectedId;
     state.cameras = Array.isArray(results[0].value) ? results[0].value : [];
+    ensureLiveLayout()?.setCameras(state.cameras);
     if (!state.cameras.some((camera) => camera.id === state.selectedId)) state.selectedId = state.cameras[0]?.id || null;
     renderCameras();
     renderSelected();
@@ -256,6 +282,7 @@ async function refreshData(showErrors) {
   }
   else errors.push(errorText(results[1].reason));
   renderStats();
+  if (network.view === "cameras") renderConfiguredCameras();
   if (network.view === "monitor") { renderMonitor(); loadMonitorStatus(); }
   if (showErrors) globalError(errors.join(" "));
 }
@@ -698,20 +725,66 @@ async function findOnvifProfiles(event) {
   }
 }
 
+function renderConfiguredCameras() {
+  const list = $("configured-camera-list");
+  if (!list) return;
+  list.replaceChildren();
+  if (!state.cameras.length) list.append(el("p", "muted", t("No cameras configured. Add a camera or search your network.")));
+  state.cameras.forEach((camera) => {
+    const card = el("article", "configured-camera-card");
+    const copy = el("div", "configured-camera-copy");
+    const status = cameraStatus(camera);
+    copy.append(el("h3", "", camera.name), el("span", "muted small", status.label));
+    const actions = el("div", "configured-camera-actions");
+    const live = el("button", "button secondary", t("Open live"));
+    live.type = "button";
+    live.addEventListener("click", () => {
+      const layout = ensureLiveLayout();
+      const saved = layout?.getSaved();
+      const slot = saved?.slots.indexOf(camera.id) ?? -1;
+      if (slot >= 0 && slot < saved.size) showView("monitor");
+      else { showView("layout"); toast(t("Choose a tile for this camera, then save the layout.")); }
+    });
+    const recordings = el("button", "button quiet", t("Open recordings"));
+    recordings.type = "button";
+    recordings.addEventListener("click", () => selectCamera(camera.id));
+    const configure = el("button", "button quiet", t("Configure"));
+    configure.type = "button";
+    configure.addEventListener("click", () => openCameraDialog(camera));
+    actions.append(live, recordings, configure);
+    card.append(icon("camera"), copy, actions);
+    list.append(card);
+  });
+}
+
 function showView(view) {
-  if (!["recorder", "monitor", "network", "settings"].includes(view)) view = "recorder";
+  if (!["recorder", "monitor", "layout", "cameras", "network", "settings"].includes(view)) view = "monitor";
   network.view = view;
   const isNetwork = view === "network";
+  const isLive = view === "monitor" || view === "layout";
   $("recorder-view").hidden = view !== "recorder";
   $("network-view").hidden = !isNetwork;
   $("monitor-view").hidden = view !== "monitor";
+  if ($("live-layout-view")) $("live-layout-view").hidden = view !== "layout";
+  if ($("cameras-view")) $("cameras-view").hidden = view !== "cameras";
   if ($("settings-view")) $("settings-view").hidden = view !== "settings";
-  setText("current-view-label", isNetwork ? t("Network cameras") : view === "monitor" ? t("Live monitor") : view === "settings" ? t("Settings") : t("Recorder"));
-  ["recorder", "monitor", "network", "settings"].forEach((name) => {
-    const button = $(`nav-${name}`);
+  setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings"})[view]));
+  if ($("current-view-label")) $("current-view-label").hidden = isLive;
+  if ($("live-subnav")) $("live-subnav").hidden = !isLive;
+  ["monitor", "layout"].forEach((name) => {
+    const button = $(`live-tab-${name}`);
     if (!button) return;
     button.classList.toggle("active", name === view);
     if (name === view) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
+  document.body.classList.toggle("live-workspace", isLive);
+  ["recorder", "monitor", "cameras", "network", "settings"].forEach((name) => {
+    const button = $(`nav-${name}`);
+    if (!button) return;
+    const active = name === view || name === "monitor" && isLive;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
   if (view !== "recorder") { stopLive(); player.pause(); }
@@ -720,8 +793,11 @@ function showView(view) {
     if (network.profileController) clearNetworkProfiles(false);
     drawTimeline(); drawWaveform();
   }
-  if (view === "monitor") { renderMonitor(); loadMonitorStatus(); }
+  if (view === "monitor" && state.authenticated) { renderMonitor(); loadMonitorStatus(); }
   else releaseMonitor();
+  if (view === "layout" && state.authenticated) ensureLiveLayout()?.open();
+  else liveLayout?.close();
+  if (view === "cameras") renderConfiguredCameras();
   if (view === "settings") window.NvrSettings?.open();
 }
 
@@ -794,7 +870,6 @@ function makeMonitorTile(camera) {
   const heading = el("div", "monitor-tile-heading");
   tile.title = el("h3", "", camera.name);
   tile.recordingBadge = el("span", "monitor-recording");
-  heading.append(tile.title, tile.recordingBadge);
   const frame = el("div", "monitor-video-frame");
   tile.video = el("video", "monitor-video");
   tile.video.muted = true; tile.video.playsInline = true; tile.video.autoplay = true;
@@ -806,7 +881,8 @@ function makeMonitorTile(camera) {
   tile.connection = el("span", "", t("WAITING"));
   connection.append(el("i"), tile.connection);
   tile.quality = el("span", "monitor-quality", camera.preview_source ? t("SUBSTREAM") : t("MAIN STREAM"));
-  frame.append(tile.video, tile.overlay, connection, tile.quality);
+  heading.append(tile.title, connection);
+  frame.append(tile.video, tile.overlay, tile.quality);
   tile.errorDetail = el("p", "monitor-tile-error"); tile.errorDetail.hidden = true;
   const footer = el("div", "monitor-tile-footer");
   tile.modeLabel = el("span", "monitor-mode", t("Original stream"));
@@ -829,11 +905,30 @@ function makeMonitorTile(camera) {
   fullscreen.addEventListener("click", async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
-      else if (tile.element.requestFullscreen) { await tile.element.requestFullscreen(); monitor.fullscreenId = camera.id; syncMonitorPlayers(); }
+      else if (tile.element.requestFullscreen) {
+        await tile.element.requestFullscreen();
+        if (!state.authenticated || network.view !== "monitor" || monitor.tiles.get(camera.id) !== tile) {
+          if (document.fullscreenElement === tile.element) await document.exitFullscreen();
+          return;
+        }
+        monitor.fullscreenId = camera.id; syncMonitorPlayers();
+      }
       else toast(t("Fullscreen is unavailable in this browser."));
     } catch (_) { toast(t("The browser did not allow fullscreen.")); }
   });
-  controls.append(archive, tile.audioButton, fullscreen); footer.append(tile.modeLabel, controls);
+  const menu = el("details", "monitor-camera-menu");
+  const menuToggle = el("summary", "icon-button", "⋮");
+  menuToggle.setAttribute("aria-label", t("Camera actions"));
+  tile.menuToggle = menuToggle;
+  const menuItems = el("div", "monitor-camera-menu-items");
+  tile.archiveLabel = el("span", "", t("Open recordings"));
+  tile.fullscreenLabel = el("span", "", t("Fullscreen"));
+  archive.append(tile.archiveLabel); fullscreen.append(tile.fullscreenLabel);
+  archive.addEventListener("click", () => { menu.open = false; });
+  fullscreen.addEventListener("click", () => { menu.open = false; });
+  menuItems.append(archive, fullscreen); menu.append(menuToggle, menuItems);
+  controls.append(tile.audioButton, menu); heading.append(controls);
+  footer.append(tile.modeLabel, tile.recordingBadge);
   tile.element.append(heading, frame, tile.errorDetail, footer);
   updateMonitorAudio(tile);
   if (window.NvrLivePlayer) {
@@ -845,10 +940,14 @@ function makeMonitorTile(camera) {
 }
 
 function renderMonitor() {
-  if (network.view !== "monitor") return;
-  const pages = Math.max(1, Math.ceil(state.cameras.length / monitor.layout));
-  monitor.page = Math.min(pages - 1, Math.max(0, monitor.page));
-  const cameras = state.cameras.slice(monitor.page * monitor.layout, (monitor.page + 1) * monitor.layout);
+  if (network.view !== "monitor" || !state.authenticated) return;
+  const layout = ensureLiveLayout();
+  const saved = layout?.getSaved();
+  if (saved) monitor.layout = saved.size;
+  const cameraMap = new Map(state.cameras.map((camera) => [camera.id, camera]));
+  const slots = saved ? saved.slots.slice(0, saved.size) : state.cameras.slice(0, monitor.layout).map((camera) => camera.id);
+  while (slots.length < monitor.layout) slots.push(null);
+  const cameras = slots.map((id) => cameraMap.get(id)).filter(Boolean);
   const ids = new Set(cameras.map((camera) => camera.id));
   monitor.tiles.forEach((tile, id) => {
     if (!ids.has(id)) { monitor.observer?.unobserve(tile.element); tile.live?.destroy(); tile.element.remove(); monitor.tiles.delete(id); if (monitor.audioCameraId === id) monitor.audioCameraId = null; }
@@ -874,6 +973,9 @@ function renderMonitor() {
     tile.video.setAttribute("aria-label", t("Live video from {camera}", {camera: camera.name}));
     tile.archiveButton.title = t("Open recordings");
     tile.archiveButton.setAttribute("aria-label", t("Open recordings from {camera}", {camera: camera.name}));
+    tile.archiveLabel.textContent = t("Open recordings");
+    tile.fullscreenLabel.textContent = t("Fullscreen");
+    tile.menuToggle.setAttribute("aria-label", t("Camera actions"));
     tile.fullscreenButton.title = t("Fullscreen");
     tile.fullscreenButton.setAttribute("aria-label", t("Show {camera} fullscreen", {camera: camera.name}));
     tile.quality.textContent = camera.preview_source ? t("SUBSTREAM") : t("MAIN STREAM");
@@ -883,16 +985,27 @@ function renderMonitor() {
     tile.recordingBadge.classList.toggle("recording", recording);
     tile.recordingBadge.title = !camera.enabled ? t("Recording paused. Live video is still available.") : status.message;
   });
-  cameras.forEach((camera, index) => {
-    const tile = monitor.tiles.get(camera.id), grid = $("monitor-grid");
-    if (grid.children[index] !== tile.element) grid.insertBefore(tile.element, grid.children[index] || null);
+  const grid = $("monitor-grid");
+  grid.querySelectorAll(".monitor-empty-tile").forEach((node) => node.remove());
+  slots.forEach((id, index) => {
+    const tile = monitor.tiles.get(id);
+    const element = tile ? tile.element : el("button", "monitor-empty-tile");
+    if (!tile) {
+      element.type = "button";
+      element.append(icon("plus"), el("span", "", t("Choose a camera")));
+      element.setAttribute("aria-label", t("Configure tile {number}", {number: index + 1}));
+      element.addEventListener("click", () => showView("layout"));
+    }
+    if (grid.children[index] !== element) grid.insertBefore(element, grid.children[index] || null);
   });
   $("monitor-grid").className = `monitor-grid layout-${monitor.layout}`;
   $("monitor-empty").hidden = !!state.cameras.length;
   $("monitor-grid").hidden = !state.cameras.length;
-  setText("monitor-page-label", state.cameras.length ? t("{first}–{last} of {total}", {first: number(monitor.page * monitor.layout + 1), last: number(Math.min(state.cameras.length, (monitor.page + 1) * monitor.layout)), total: number(state.cameras.length)}) : t("0 cameras"));
-  $("monitor-previous").disabled = monitor.page === 0;
-  $("monitor-next").disabled = monitor.page >= pages - 1;
+  setText("monitor-page-label", cameras.length === 1 ? t("1 camera") : t("{count} cameras", {count: number(cameras.length)}));
+  $("monitor-previous").disabled = true;
+  $("monitor-next").disabled = true;
+  $("monitor-previous").hidden = true;
+  $("monitor-next").hidden = true;
   document.querySelectorAll("[data-monitor-layout]").forEach((button) => {
     const active = Number(button.dataset.monitorLayout) === monitor.layout;
     button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active));
@@ -1352,8 +1465,16 @@ $("login-form").addEventListener("submit", async (event) => {
 ["add-camera", "add-camera-small", "add-first-camera"].forEach((id) => $(id).addEventListener("click", () => openCameraDialog()));
 $("edit-camera").addEventListener("click", () => openCameraDialog(selectedCamera()));
 $("refresh").addEventListener("click", async () => {
+  const button = $("refresh"), authEpoch = state.authEpoch;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
   if (state.rangeFollowsNow) $("search-end").value = localInput(new Date(Date.now() + 60000));
-  await refresh(true, true); await loadRecordings();
+  try {
+    await refresh(true, true);
+    if (!state.authenticated || state.authEpoch !== authEpoch) return;
+    if (network.view === "recorder") await loadRecordings();
+    if ($("global-error").hidden) toast(t("View updated."));
+  } finally { button.disabled = false; button.removeAttribute("aria-busy"); }
 });
 $("toggle-live").addEventListener("click", toggleLive);
 $("live-image").addEventListener("error", () => { if (state.live) { stopLive(); toast(t("Preview unavailable. Check the stream and FFmpeg on the server.")); } });
@@ -1370,17 +1491,36 @@ $("onvif-form").addEventListener("submit", findOnvifProfiles);
 $("onvif-dialog").addEventListener("close", resetModalProfiles);
 $("nav-recorder").addEventListener("click", () => showView("recorder"));
 $("nav-monitor").addEventListener("click", () => showView("monitor"));
+$("nav-cameras")?.addEventListener("click", () => showView("cameras"));
+$("cameras-add")?.addEventListener("click", () => openCameraDialog());
+$("live-tab-monitor")?.addEventListener("click", () => showView("monitor"));
+$("live-tab-layout")?.addEventListener("click", () => showView("layout"));
 $("nav-settings")?.addEventListener("click", () => showView("settings"));
 $("monitor-toggle").addEventListener("click", () => { monitor.playing = !monitor.playing; syncMonitorPlayers(); loadMonitorStatus(); });
 $("monitor-find-cameras").addEventListener("click", () => { showView("network"); loadNetworkInterfaces(); });
 document.querySelectorAll("[data-monitor-layout]").forEach((button) => button.addEventListener("click", () => {
-  monitor.layout = Number(button.dataset.monitorLayout); monitor.page = 0; renderMonitor();
+  const size = Number(button.dataset.monitorLayout);
+  if (![1, 4, 9, 16].includes(size)) return;
+  if (ensureLiveLayout()) liveLayout.applySize(size);
+  else { monitor.layout = size; renderMonitor(); }
 }));
 window.addEventListener("nvr-monitor-layoutchange", (event) => {
   const layout = Number(event.detail?.layout);
   if (![1, 4, 9, 16].includes(layout)) return;
-  monitor.layout = layout; monitor.page = 0;
-  if (network.view === "monitor") renderMonitor();
+  if (!state.authenticated) return;
+  if (ensureLiveLayout()) liveLayout.applySize(layout);
+  else { monitor.layout = layout; if (network.view === "monitor") renderMonitor(); }
+});
+$("monitor-fullscreen")?.addEventListener("click", async () => {
+  const grid = $("monitor-grid");
+  const authEpoch = state.authEpoch;
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else if (grid.requestFullscreen) {
+      await grid.requestFullscreen();
+      if ((!state.authenticated || state.authEpoch !== authEpoch || network.view !== "monitor") && document.fullscreenElement === grid) await document.exitFullscreen();
+    } else toast(t("Fullscreen is unavailable in this browser."));
+  } catch (_) { toast(t("The browser did not allow fullscreen.")); }
 });
 $("monitor-previous").addEventListener("click", () => { monitor.page -= 1; renderMonitor(); });
 $("monitor-next").addEventListener("click", () => { monitor.page += 1; renderMonitor(); });
@@ -1474,16 +1614,19 @@ window.addEventListener("resize", () => { drawWaveform(); drawTimeline(); });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopLive();
   if (network.view === "monitor") { syncMonitorPlayers(); if (!document.hidden) loadMonitorStatus(); }
+  if (network.view === "layout") { if (document.hidden) liveLayout?.close(); else if (state.authenticated) liveLayout?.open(); }
 });
-window.addEventListener("pagehide", () => { stopLive(); player.pause(); releaseMonitor(); });
-window.addEventListener("pageshow", (event) => { if (event.persisted && network.view === "monitor") renderMonitor(); });
+window.addEventListener("pagehide", () => { stopLive(); player.pause(); releaseMonitor(); liveLayout?.close(); });
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted || !state.authenticated) return;
+  if (network.view === "monitor") renderMonitor();
+  else if (network.view === "layout") liveLayout?.open();
+});
 
 const now = new Date();
 const today = new Date(now); today.setHours(0, 0, 0, 0);
 $("search-start").value = localInput(today);
 $("search-end").value = localInput(new Date(now.getTime() + 60000));
-function updateClock() { $("wall-clock").textContent = `${formatDate.format(new Date())} · ${formatShortTime.format(new Date())}`; }
-updateClock(); setInterval(updateClock, 30000);
 
 window.addEventListener("nvr-recording-settingschange", (event) => {
   const duration = event.detail?.segment_seconds;
@@ -1503,9 +1646,9 @@ window.addEventListener("nvr-languagechange", () => {
     });
     if ($(id)) $(id).textContent = t(key, values);
   });
-  updateClock();
   motionTrack?.relabel();
-  setText("current-view-label", t(({recorder: "Recorder", monitor: "Live monitor", network: "Network cameras", settings: "Settings"})[network.view] || "Recorder"));
+  liveLayout?.relabel();
+  setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings"})[network.view] || "Monitor"));
   $("toggle-live").replaceChildren(icon(state.live ? "close" : "play"), document.createTextNode(t(state.live ? "Close preview" : "Open preview")));
   $("onvif-form").querySelector("button[type=submit]").textContent = t(network.modalController ? "Reading profiles…" : "Find profiles");
   const automatic = $("network-interface").options[0];
@@ -1517,6 +1660,7 @@ window.addEventListener("nvr-languagechange", () => {
   }
   if (state.authenticated) {
     renderCameras(); renderSelected(); renderStats(); renderSystem();
+    if (network.view === "cameras") renderConfiguredCameras();
     renderRecordings(); renderPlayingLabels(); drawTimeline(); drawWaveform();
     const empty = network.emptyMessage;
     renderNetworkDevices(empty ? t(empty.key, empty.params) : t("Start a search or enter an ONVIF endpoint."));
