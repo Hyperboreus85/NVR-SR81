@@ -47,3 +47,17 @@ Per il browser viene preparata una copia MP4, conservando il video originale qua
 La preparazione del video precede le analisi audio e movimento. Queste ultime condividono un solo lavoro in background, lasciando capacità alla riproduzione. La coda è limitata e l'identità dei file MP4 resta stabile durante le letture parziali, incluse le richieste `If-Range` di Firefox.
 
 Il file ancora aperto diventa disponibile dopo la chiusura. La durata obiettivo si imposta in **Settings → Recording**, da 1 a 120 minuti; il progetto consiglia 30 minuti come punto di partenza. I tagli dipendono dai keyframe della telecamera e possono superare il valore scelto; interruzioni e cambi di configurazione possono produrre file più corti.
+
+## Conservazione e spazio libero
+
+La conservazione impostata per ogni telecamera indica per quanti giorni mantenere i filmati, compatibilmente con lo spazio disponibile. Il recorder controlla anche il filesystem dell'archivio:
+
+- **Meno del 10% libero:** compare un avviso di spazio ridotto.
+- **Meno del 5% libero:** la pulizia automatica elimina gli originali completati idonei, partendo dai più vecchi, finché torna disponibile almeno il 5%.
+- **Spazio ancora insufficiente:** se non ci sono altri file idonei da rimuovere, la registrazione viene sospesa e viene ritentata quando lo spazio torna disponibile.
+
+Le soglie sono percentuali della capacità del filesystem, calcolate sullo spazio disponibile al servizio. La pulizia per spazio può quindi rimuovere un filmato prima dei giorni di conservazione scelti. Il limite per età rimane attivo anche quando il disco ha molto spazio. Dopo il recupero del 5%, l'avviso può restare visibile finché il libero rimane sotto il 10%.
+
+Sono esclusi i segmenti ancora aperti e i file protetti da una richiesta di lettura, download o analisi in corso. La pulizia riguarda gli originali NVR riconosciuti nell'archivio: file estranei, collegamenti simbolici e file del sistema operativo non sono candidati. La cache di consultazione ha una propria pulizia e non costituisce un backup dell'originale.
+
+I filmati eliminati non sono più consultabili. Scaricare e conservare separatamente quelli che devono rimanere disponibili oltre la normale rotazione dell'archivio. [Indicatori di spazio e stima prima della pulizia](telemetry.md#spazio-libero-e-stima-prima-della-pulizia).

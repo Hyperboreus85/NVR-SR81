@@ -6,18 +6,18 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#202020">
   <title>SR81 NVR System</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.13.1">
-  <script defer src="/static/i18n.js?v=0.13.1"></script>
-  <script defer src="/static/live-player.js?v=0.13.1"></script>
-  <script defer src="/static/motion-track.js?v=0.13.1"></script>
-  <script defer src="/static/live-layout.js?v=0.13.1"></script>
-  <script defer src="/static/record-player.js?v=0.13.1"></script>
-  <script defer src="/static/camera-editor.js?v=0.13.1"></script>
-  <script defer src="/static/system-telemetry.js?v=0.13.1"></script>
-  <script defer src="/static/system-dashboard.js?v=0.13.1"></script>
-  <script defer src="/static/app.js?v=0.13.1"></script>
-  <script defer src="/static/system-settings.js?v=0.13.1"></script>
-  <script defer src="/static/settings.js?v=0.13.1"></script>
+  <link rel="stylesheet" href="/static/style.css?v=0.14.0">
+  <script defer src="/static/i18n.js?v=0.14.0"></script>
+  <script defer src="/static/live-player.js?v=0.14.0"></script>
+  <script defer src="/static/motion-track.js?v=0.14.0"></script>
+  <script defer src="/static/live-layout.js?v=0.14.0"></script>
+  <script defer src="/static/record-player.js?v=0.14.0"></script>
+  <script defer src="/static/camera-editor.js?v=0.14.0"></script>
+  <script defer src="/static/system-telemetry.js?v=0.14.0"></script>
+  <script defer src="/static/system-dashboard.js?v=0.14.0"></script>
+  <script defer src="/static/app.js?v=0.14.0"></script>
+  <script defer src="/static/system-settings.js?v=0.14.0"></script>
+  <script defer src="/static/settings.js?v=0.14.0"></script>
 </head>
 <body>
   <div id="loading-screen" class="loading-screen" role="status"><span class="loading-spinner"></span><span data-i18n="Connecting to recorder…">Connecting to recorder…</span></div>
@@ -47,6 +47,7 @@
     <symbol id="i-previous" viewBox="0 0 24 24"><path d="M5 5v14m14-14L8 12l11 7z"/></symbol>
     <symbol id="i-next" viewBox="0 0 24 24"><path d="M19 5v14M5 5l11 7-11 7z"/></symbol>
     <symbol id="i-status-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m7.5 12 3 3 6-6"/></symbol>
+    <symbol id="i-storage-warning" viewBox="0 0 24 24"><path d="m12 3 10 18H2zM12 9v5M12 17v1"/></symbol>
   </defs></svg>
 
   <section id="login-screen" class="login-screen" hidden>
@@ -56,12 +57,13 @@
 
   <div id="app" class="app-shell sr81-shell" hidden>
     <aside class="sidebar app-rail">
-      <a class="brand rail-brand" href="#" aria-label="SR81 NVR System"><img class="sr81-wordmark" src="/static/sr81-logo.svg?v=0.13.1" width="56" height="24" alt="SR81 NVR System"><span id="version" class="rail-version" aria-label="Application version" data-i18n-aria-label="Application version">—</span></a>
+      <a class="brand rail-brand" href="#" aria-label="SR81 NVR System"><img class="sr81-wordmark" src="/static/sr81-logo.svg?v=0.14.0" width="56" height="24" alt="SR81 NVR System"><span id="version" class="rail-version" aria-label="Application version" data-i18n-aria-label="Application version">—</span></a>
       <nav class="workspace-nav" aria-label="Main navigation" data-i18n-aria-label="Main navigation"><button id="nav-monitor" class="workspace-nav-item active" aria-current="page" data-i18n-title="Live" title="Live"><svg><use href="#i-monitor"/></svg><span data-i18n="Live">Live</span></button><button id="nav-recorder" class="workspace-nav-item" data-i18n-title="Record" title="Record"><svg><use href="#i-record"/></svg><span data-i18n="Record">Record</span></button><button id="nav-cameras" class="workspace-nav-item" data-i18n-title="Cameras" title="Cameras"><svg><use href="#i-camera"/></svg><span data-i18n="Cameras">Cameras</span></button><button id="nav-network" class="workspace-nav-item" data-i18n-title="Network" title="Network"><svg><use href="#i-network"/></svg><span data-i18n="Network">Network</span></button><button id="nav-settings" class="workspace-nav-item" data-i18n-title="Settings" title="Settings"><svg><use href="#i-settings"/></svg><span data-i18n="Settings">Settings</span></button></nav>
       <div class="rail-bottom"><button id="logout" class="workspace-nav-item rail-logout" title="Sign out" data-i18n-title="Sign out"><svg><use href="#i-exit"/></svg><span data-i18n="Sign out">Sign out</span></button></div>
     </aside>
     <div class="main-wrap">
       <header class="topbar"><nav id="live-subnav" class="topbar-submenu" aria-label="Live views" data-i18n-aria-label="Live views"><button id="live-tab-monitor" type="button" class="active" aria-current="page"><span data-i18n="Monitor">Monitor</span></button><button id="live-tab-layout" type="button"><span data-i18n="Layout">Layout</span></button></nav><nav id="record-subnav" class="topbar-submenu" aria-label="Record views" data-i18n-aria-label="Record views" hidden><button id="record-tab-archive" type="button" class="active" aria-current="page"><span data-i18n="Archive">Archive</span></button></nav><strong id="current-view-label" class="topbar-context" hidden><span data-i18n="Live">Live</span></strong><div class="header-metrics"><div id="monitor-telemetry" class="monitor-telemetry" role="group" aria-label="System resource usage" data-i18n-aria-label="System resource usage"><div class="telemetry-widget" role="group" aria-label="CPU usage and temperature" data-i18n-aria-label="CPU usage and temperature"><div class="telemetry-metric"><span data-i18n="CPU">CPU</span><strong id="telemetry-cpu-usage">—</strong></div><div class="telemetry-metric"><span id="telemetry-temperature-label" data-i18n="Temp">Temp</span><strong id="telemetry-cpu-temperature">—</strong></div></div><div class="telemetry-widget" role="group" aria-label="RAM and swap usage" data-i18n-aria-label="RAM and swap usage"><div class="telemetry-metric"><span data-i18n="RAM">RAM</span><strong id="telemetry-memory-usage">—</strong></div><div class="telemetry-metric"><span data-i18n="Swap">Swap</span><strong id="telemetry-swap-usage">—</strong></div></div><div class="telemetry-widget" role="group" aria-label="Disk usage" data-i18n-aria-label="Disk usage"><div class="telemetry-metric"><span data-i18n="Archive">Archive</span><strong id="telemetry-disk-usage">—</strong></div><div class="telemetry-metric"><span id="telemetry-disk-secondary-label" data-i18n="Free">Free</span><strong id="telemetry-disk-free">—</strong></div></div></div><div id="header-capacity" class="telemetry-widget header-capacity" role="group" aria-label="Recording capacity" data-i18n-aria-label="Recording capacity"><div class="telemetry-metric"><span data-i18n="Archive free">Archive free</span><strong id="header-archive-free">—</strong></div><div class="telemetry-metric"><span data-i18n="OS free">OS free</span><strong id="header-system-free">—</strong></div><div class="telemetry-metric"><span data-i18n="Before cleanup">Before cleanup</span><strong id="header-recording-remaining">—</strong></div></div></div><div class="topbar-right"><button id="logout-mobile" class="icon-button mobile-logout" title="Sign out" aria-label="Sign out" data-i18n-title="Sign out" data-i18n-aria-label="Sign out"><svg><use href="#i-exit"/></svg></button><div id="header-feedback" class="header-feedback" role="status" aria-live="polite"><span class="header-status-indicator" aria-hidden="true"><svg><use id="header-status-icon" href="#i-status-check"/></svg></span><span id="header-status" class="visually-hidden" data-i18n="View updated">View updated</span><span id="toast" class="toast" hidden></span></div><button id="refresh" type="button" class="icon-button header-refresh" title="Refresh" aria-label="Refresh" data-i18n-title="Refresh" data-i18n-aria-label="Refresh"><svg><use href="#i-refresh"/></svg></button></div></header>
+      <aside id="storage-alert" class="storage-alert" role="status" aria-live="polite" aria-atomic="true" hidden><svg aria-hidden="true"><use href="#i-storage-warning"/></svg><div><p id="storage-alert-archive" hidden></p><p id="storage-alert-system" hidden></p></div></aside>
       <main>
         <section id="recorder-view" class="record-archive" hidden aria-label="Recording archive" data-i18n-aria-label="Recording archive">
           <div id="global-error" class="banner error" role="alert" hidden></div>

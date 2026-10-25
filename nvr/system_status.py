@@ -7,6 +7,7 @@ import threading
 import time
 
 from .config import MAX_SEGMENT_SECONDS
+from .storage_policy import archive_storage_status
 
 
 SAMPLE_WINDOW_SECONDS = 86400
@@ -53,10 +54,10 @@ class RecordingCapacity:
 
     def snapshot(self, disk):
         with self._lock:
-            reserve = max(0, int(self.settings.min_free_bytes))
             archive = disk.get("recordings") if isinstance(disk, dict) else None
+            reserve = archive_storage_status(archive)["reserve_bytes"]
             free = archive.get("free") if isinstance(archive, dict) else None
-            usable = max(0, int(free) - reserve) if self._finite(free) and free >= 0 else None
+            usable = max(0, int(free) - reserve) if reserve is not None else None
             result = {"active_cameras": 0, "estimated_cameras": 0, "bytes_per_second": None, "bytes_per_day": None,
                       "usable_free_bytes": usable, "reserve_bytes": reserve, "remaining_seconds": None,
                       "reason": "insufficient_data", "method": "recent_recordings",

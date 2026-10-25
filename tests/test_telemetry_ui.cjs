@@ -5,16 +5,17 @@ const {readFileSync} = require("node:fs");
 const {join} = require("node:path");
 const {NvrSystemTelemetry} = require("../nvr/static/system-telemetry.js");
 const ids = ["telemetry-cpu-usage", "telemetry-cpu-temperature", "telemetry-memory-usage", "telemetry-swap-usage", "telemetry-disk-usage", "telemetry-disk-free"];
-function environment({capacity = true, outsideRoot = false} = {}) {
+function environment({capacity = true, outsideRoot = false, alerts = true} = {}) {
   const nodes = new Map(); let language = "en";
   const get = (id) => {
-    if (!nodes.has(id)) nodes.set(id, {textContent: "", title: "", dataset: {}, attributes: new Map(), setAttribute(key, value) { this.attributes.set(key, value); }, set innerHTML(_) { throw Error("HTML insertion is forbidden"); }});
+    if (!nodes.has(id)) nodes.set(id, {_text: "", textWrites: 0, hidden: true, get textContent() { return this._text; }, set textContent(value) { this._text = String(value); this.textWrites += 1; }, title: "", dataset: {}, attributes: new Map(), setAttribute(key, value) { this.attributes.set(key, value); }, set innerHTML(_) { throw Error("HTML insertion is forbidden"); }});
     return nodes.get(id);
   };
-  const translations = {"No swap": "Nessuno swap", "Host temp": "Temp. host", "Free": "Libero", "Waiting for system data.": "In attesa dei dati di sistema.", "Includes file cache.": "Include la cache dei file."};
+  const translations = {"No swap": "Nessuno swap", "Host temp": "Temp. host", "Free": "Libero", "Waiting for system data.": "In attesa dei dati di sistema.", "Includes file cache.": "Include la cache dei file.", "Low archive space: {percent}% free. Oldest completed, unprotected recordings are automatically removed below 5% free.": "Spazio archivio ridotto: {percent}% libero. Le registrazioni completate non protette più vecchie vengono rimosse automaticamente sotto il 5% di spazio libero."};
   const t = (key, params = {}) => (language === "it" ? translations[key] || key : key).replace(/\{(\w+)\}/g, (token, name) => Object.hasOwn(params, name) ? params[name] : token);
   const capacityIds = ["header-archive-free", "header-system-free", "header-recording-remaining"];
-  const root = {dataset: {}, ownerDocument: outsideRoot ? {getElementById: (id) => capacity && capacityIds.includes(id) ? get(id) : null} : undefined,
+  const alertIds = ["storage-alert", "storage-alert-archive", "storage-alert-system"];
+  const root = {dataset: {}, ownerDocument: {getElementById: (id) => capacity && outsideRoot && capacityIds.includes(id) || alerts && alertIds.includes(id) ? get(id) : null},
     querySelector: (selector) => capacityIds.includes(selector.slice(1)) && (!capacity || outsideRoot) ? null : get(selector.slice(1))};
   const renderer = new NvrSystemTelemetry({root, t, locale: () => language});
   return {renderer, get, root, nodes, language(value) { language = value; renderer.relabel(); }};
@@ -149,4 +150,76 @@ test("shared storage and relabeling preserve capacity values and absent optional
   env.language("it"); assert.equal(env.get("header-archive-free").textContent, "12,3 GB"); assert.equal(env.get("header-system-free").textContent, "12,3 GB");
   const legacy = environment({capacity: false}); assert.doesNotThrow(() => legacy.renderer.render(data)); assert.doesNotThrow(() => legacy.renderer.clear());
   assert.equal(legacy.nodes.has("header-archive-free"), false);
+});
+
+function storagePolicy(free, extra = {}) {
+  return {warning_free_percent: 10, overwrite_free_percent: 5, free_percent: free, reserve_bytes: 1e9,
+    warning: free !== null && free < 10, overwrite_required: free !== null && free < 5,
+    state: free === null ? "unavailable" : free < 5 ? "critical" : free < 10 ? "warning" : "normal", ...extra};
+}
+function storageSnapshot(free, system = null) {
+  return snapshot({storage: {archive: storagePolicy(free), system: system === null ? null : storagePolicy(system, {overwrite_required: false, reserve_bytes: null}), shared_filesystem: false}});
+}
+
+test("persistent storage warnings honor exact server thresholds and never classify rounded disk percentages", () => {
+  const env = environment({outsideRoot: true});
+  for (const [free, expected, visible, printed] of [[10, "normal", false], [9.999, "warning", true, "9.99%"], [5, "warning", true, "5%"], [4.999, "critical", true, "4.99%"], [0, "critical", true, "0%"]]) {
+    const data = storageSnapshot(free); data.disk.recordings.percent = 90; env.renderer.render(freeze(data));
+    assert.equal(env.get("telemetry-disk-usage").dataset.storageState, expected);
+    assert.equal(env.get("header-archive-free").dataset.storageState, expected);
+    assert.equal(env.get("storage-alert").hidden, !visible);
+    if (visible) { assert.equal(env.get("storage-alert").dataset.state, expected); assert.ok(env.get("storage-alert-archive").textContent.includes(printed)); }
+    assert.match(env.get("telemetry-disk-usage").title, /free.*(overwrite|removed)/i);
+  }
+  env.renderer.render(storageSnapshot(10)); assert.equal(env.get("storage-alert").hidden, true);
+  assert.equal(env.get("storage-alert-archive").textContent, ""); assert.equal(env.get("storage-alert-archive").hidden, true);
+});
+
+test("critical archive notices describe required overwrite without claiming successful removal or active-file deletion", () => {
+  const env = environment(); env.renderer.render(storageSnapshot(.001));
+  const message = env.get("storage-alert-archive").textContent;
+  assert.match(message, /less than 0\.01/); assert.match(message, /overwrite is required.*completed, unprotected.*when available/);
+  assert.doesNotMatch(message, /overwrite is active|have been removed|files deleted|all recordings/i);
+});
+
+test("system disk alerts remain separate and never promise deletion of operating-system files", () => {
+  const env = environment(); env.renderer.render(storageSnapshot(60, 8));
+  assert.equal(env.get("storage-alert-archive").hidden, true); assert.equal(env.get("storage-alert-system").hidden, false);
+  assert.match(env.get("storage-alert-system").textContent, /Low system disk space.*8%.*only applies to the archive/);
+  assert.equal(env.get("telemetry-disk-usage").dataset.storageState, "normal"); assert.equal(env.get("telemetry-disk-free").dataset.storageState, "warning");
+  env.renderer.render(storageSnapshot(60, 4)); assert.equal(env.get("storage-alert").dataset.state, "critical");
+  assert.match(env.get("storage-alert-system").textContent, /Free system disk space.*only applies to the archive/);
+  const shared = storageSnapshot(7, 2); shared.storage.shared_filesystem = true; shared.disk.shared_filesystem = true;
+  env.renderer.render(shared); assert.equal(env.get("storage-alert-system").hidden, true); assert.equal(env.get("storage-alert").dataset.state, "warning");
+  assert.equal(env.get("header-system-free").dataset.storageState, "unavailable"); assert.equal(env.get("telemetry-disk-free").dataset.storageState, "warning");
+});
+
+test("unchanged polls do not rewrite live warning messages, while relabeling preserves policy and measurements", () => {
+  const env = environment(), data = freeze(storageSnapshot(9.2, 3)); env.renderer.render(data);
+  const first = env.get("storage-alert-archive").textWrites, second = env.get("storage-alert-system").textWrites;
+  for (let index = 0; index < 5; index += 1) env.renderer.render(data);
+  assert.equal(env.get("storage-alert-archive").textWrites, first); assert.equal(env.get("storage-alert-system").textWrites, second);
+  env.language("it"); assert.match(env.get("storage-alert-archive").textContent, /Spazio archivio ridotto: 9,2%/);
+  assert.equal(env.renderer.snapshot, data); assert.equal(env.get("storage-alert").dataset.state, "critical");
+});
+
+test("missing, invalid, cleared or legacy storage data cannot retain warnings or manufacture zero-free alerts", () => {
+  const env = environment();
+  for (const policy of [null, storagePolicy(null), storagePolicy(NaN), storagePolicy(-1), storagePolicy(Infinity), storagePolicy("1"), storagePolicy(3, {state: '<img onerror="bad()">'})]) {
+    env.renderer.render(storageSnapshot(1)); env.renderer.render(snapshot({storage: {archive: policy, system: null}}));
+    assert.equal(env.get("storage-alert").hidden, true); assert.equal(env.get("storage-alert-archive").textContent, "");
+    assert.equal(env.get("telemetry-disk-usage").dataset.storageState, "unavailable");
+    assert.doesNotMatch(env.get("telemetry-disk-usage").title, /NaN|Infinity|onerror/);
+  }
+  env.renderer.render(storageSnapshot(1)); env.renderer.clear(); assert.equal(env.get("storage-alert").hidden, true);
+  for (const id of ["telemetry-disk-usage", "telemetry-disk-free", "header-archive-free", "header-system-free"]) assert.equal(env.get(id).dataset.storageState, "unavailable");
+  const legacy = environment({capacity: false, alerts: false}); assert.doesNotThrow(() => legacy.renderer.render(storageSnapshot(1, 1))); assert.doesNotThrow(() => legacy.renderer.clear());
+});
+
+test("the storage warning is a single global status outside page sections and has no toast or polling side effects", () => {
+  const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8"), source = readFileSync(join(__dirname, "../nvr/static/system-telemetry.js"), "utf8");
+  for (const id of ["storage-alert", "storage-alert-archive", "storage-alert-system"]) assert.equal((html.match(new RegExp('id="' + id + '"', "g")) || []).length, 1);
+  assert.ok(html.indexOf('id="storage-alert"') > html.indexOf('</header>')); assert.ok(html.indexOf('id="storage-alert"') < html.indexOf('<main>'));
+  assert.match(html, /id="storage-alert"[^>]*role="status"[^>]*hidden/);
+  assert.doesNotMatch(source, /\bfetch\s*\(|\bsetInterval\s*\(|\bsetTimeout\s*\(|innerHTML|insertAdjacentHTML|\btoast\s*\(/);
 });

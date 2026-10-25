@@ -8,6 +8,7 @@
   const timestamp = (value) => nonnegative(value) && value <= 8.64e12;
   const text = (value) => typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 300) : "";
   const defaults = (key, params = {}) => (global.NvrI18n?.t(key, params) || key).replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token);
+  const storageUI = global.NvrSystemTelemetry || (typeof module !== "undefined" && module.exports ? require("./system-telemetry.js").NvrSystemTelemetry : null);
   const MAX_GAP_SECONDS = 15;
   const COLORS = {cpu: "var(--accent)", memory: "var(--motion)", swap: "var(--system-swap)", temperature: "var(--system-temperature)"};
 
@@ -124,6 +125,17 @@
       const free = this.bytes(metric?.free);
       return [this.usage(metric), free === null ? this.t("Available space unavailable.") : this.t("Available space: {value}.", {value: free})];
     }
+    storageDetails(kind, policy) {
+      const node = this.cards.get(kind === "archive" ? "archive" : "root");
+      const state = storageUI?.storageState(policy) || "unavailable";
+      node.card.dataset.storageState = state;
+      const message = storageUI?.storageDescription(policy, kind, this.t, this.number.bind(this)) || "";
+      node.card.title = message;
+      if (message && (state === "warning" || state === "critical")) {
+        const detail = this.element("p", "system-storage-policy", message);
+        detail.dataset.state = state; node.detail.append(detail);
+      }
+    }
     render(snapshot) { this.snapshot = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? snapshot : null; this.relabel(); }
     clear() { this.snapshot = null; this.relabel(); }
     relabel() {
@@ -149,6 +161,8 @@
       this.card("temperature", host ? "Host temperature" : "CPU temperature", temperature, [temperature === null ? t("Temperature sensor unavailable.") : host ? t("Host sensor visible to this container.") : "", temperatures.length ? t("Peak in this window: {value}.", {value: this.number(Math.max(...temperatures)) + "°C"}) : ""]);
       this.card("archive", "Archive disk", this.percent(metricPercent(disk.recordings)), this.diskDetails(disk.recordings));
       this.card("root", "OS disk", disk.shared_filesystem === true ? t("Shared with archive") : this.percent(metricPercent(disk.root)), disk.shared_filesystem === true ? [t("The operating system and archive use the same filesystem."), ...this.diskDetails(disk.recordings)] : this.diskDetails(disk.root));
+      this.storageDetails("archive", data?.storage?.archive);
+      this.storageDetails("system", data?.storage?.shared_filesystem === true ? null : data?.storage?.system);
       const estimate = headroom(recording), rate = this.bytes(recording.bytes_per_second), daily = this.bytes(recording.bytes_per_day), usable = this.bytes(recording.usable_free_bytes), reserve = this.bytes(recording.reserve_bytes);
       this.card("recording", "Recording headroom", this.duration(estimate.seconds, true), [estimate.reason ? t(estimate.reason) : "", rate === null ? "" : t("Recent recording rate: {value}/s.", {value: rate}), daily === null ? "" : t("Estimated daily recordings: {value}.", {value: daily}), Number.isInteger(recording.active_cameras) && Number.isInteger(recording.estimated_cameras) ? t("Cameras included: {estimated} / {active}.", {estimated: this.number(recording.estimated_cameras, 0), active: this.number(recording.active_cameras, 0)}) : "", usable === null ? "" : t("Space after reserve: {value}.", {value: usable}), reserve === null ? "" : t("Storage reserve: {value}.", {value: reserve})]);
       this.cards.get("recording").card.title = this.note.textContent;

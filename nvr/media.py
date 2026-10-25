@@ -11,6 +11,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import struct
 import time
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from urllib.parse import urlsplit
 from .config import MAX_SEGMENT_SECONDS, MIN_SEGMENT_SECONDS
 from .camera_config import preview_stream_url
 from .motion import FRAME_BYTES, SAMPLE_SECONDS, MotionAnalyzer, motion_timeout
+from .storage_policy import archive_storage_status
 
 
 INPUT_PROTOCOLS = "rtsp,rtsps,http,https,tcp,tls,udp,rtp"
@@ -28,6 +30,10 @@ MAX_JPEG_BYTES = 8 * 1024 * 1024
 CACHE_ARTIFACT_NAME = re.compile(r"[0-9a-f]{64}\.(?:mp4|json|jpg)\Z")
 CACHE_PART_NAME = re.compile(r"[0-9a-f]{64}\.part\.(?:mp4|json|jpg)\Z")
 MAX_THUMBNAIL_BYTES = 256 * 1024
+RECORDING_NAME = re.compile(r"[0-9]{10,}-[0-9]{6,}\.mkv\Z")
+RETENTION_PAGE_SIZE = 256
+RETENTION_DELETE_LIMIT = 64
+RETENTION_CAMERA_LIMIT = 16
 
 
 class MediaError(RuntimeError):
@@ -89,6 +95,7 @@ class _Worker:
     last_segment_at: float | None = None
     stopping: bool = False
     segment_seconds: int | None = None
+    open_path: Path | None = None
 
 
 @dataclass
@@ -108,6 +115,11 @@ class MediaManager:
         self._hubs: dict[str, _LiveHub] = {}
         self._hub_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
+        self._retention_lock = asyncio.Lock()
+        self._retention_cursor: tuple[float, str] | None = None
+        self._retention_camera_offset = 0
+        self._retention_pressure = False
+        self._retention_protected: set[Path] = set()
         self._transcode_slots = asyncio.Semaphore(2)
         # Background decoding must leave one shared conversion slot available
         # for the selected recording, including when older analyses are queued.
@@ -269,6 +281,16 @@ class MediaManager:
             raise MediaError("Invalid recording path.")
         return path
 
+    def _archive_status(self) -> dict[str, Any]:
+        try:
+            return archive_storage_status(shutil.disk_usage(self.recordings_dir))
+        except OSError:
+            return archive_storage_status({})
+
+    def _archive_can_record(self) -> bool:
+        status = self._archive_status()
+        return status["state"] != "unavailable" and not status["overwrite_required"]
+
     async def _record(self, worker: _Worker) -> None:
         if worker.segment_seconds is None:
             worker.segment_seconds = self.settings.segment_seconds
@@ -284,9 +306,9 @@ class MediaManager:
                 url = validate_url(camera["url"])
                 directory = self._camera_dir(str(camera["id"]))
                 directory.mkdir(parents=True, exist_ok=True)
-                if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
+                if not self._archive_can_record():
                     await self._retention()
-                    if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
+                    if not self._archive_can_record():
                         worker.state, worker.message = "storage_full", "Insufficient storage; recording paused"
                         await asyncio.sleep(10)
                         continue
@@ -294,6 +316,7 @@ class MediaManager:
                 prefix = str(int(origin * 1000))
                 manifest = directory / f"{prefix}.csv"
                 output = directory / f"{prefix}-%06d.mkv"
+                worker.open_path = directory / f"{prefix}-000000.mkv"
                 args = [self.settings.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *_input_args(url),
                         "-map", "0:v:0"]
                 if camera.get("audio_mode", "copy") != "none":
@@ -312,9 +335,9 @@ class MediaManager:
                             if (directory / f"{prefix}-000000.mkv").stat().st_size > 0:
                                 worker.state, worker.message = "recording", "Recording"
                     await self._import_manifest(manifest, str(camera["id"]), origin, seen, worker, cursor)
-                    if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
+                    if not self._archive_can_record():
                         await self._retention()
-                        if shutil.disk_usage(self.recordings_dir).free < int(self.settings.min_free_bytes):
+                        if not self._archive_can_record():
                             await _stop_process(process)
                             worker.state, worker.message = "storage_full", "Insufficient storage; recording paused"
                             break
@@ -332,6 +355,7 @@ class MediaManager:
             finally:
                 await _stop_process(process)
                 worker.process = None
+                worker.open_path = None
                 if manifest:
                     with contextlib.suppress(MediaError, OSError, ValueError):
                         await self._import_manifest(manifest, str(worker.camera["id"]), origin, seen, worker, cursor)
@@ -364,6 +388,12 @@ class MediaManager:
             path = path.resolve()
             if not path.is_relative_to(self._camera_dir(camera_id)) or not path.is_file():
                 continue
+            if worker and worker.process is not None and worker.process.returncode is None:
+                # CSV entries are written after closing a file. Track the next
+                # open segment before probing, which can yield to retention.
+                if RECORDING_NAME.fullmatch(path.name):
+                    prefix, sequence = path.stem.rsplit("-", 1)
+                    worker.open_path = path.with_name(f"{prefix}-{int(sequence) + 1:06d}.mkv")
             try:
                 start, end = float(row[1]), float(row[2])
                 if not all(math.isfinite(v) for v in (start, end)) or end <= start:
@@ -453,28 +483,117 @@ class MediaManager:
             await asyncio.sleep(30)
 
     async def _retention(self) -> None:
-        cameras = {str(c["id"]): c for c in self.store.list_cameras()}
-        records = sorted(self.store.list_recordings(limit=1_000_000), key=lambda r: float(r["started_at"]))
-        now = time.time()
-        free = shutil.disk_usage(self.recordings_dir).free
-        reserve = int(self.settings.min_free_bytes)
-        for recording in records:
-            camera = cameras.get(str(recording["camera_id"]), {})
-            days = max(1, int(camera.get("retention_days", 7)))
-            expired = float(recording["started_at"]) + float(recording["duration"]) < now - days * 86400
-            if not expired and free >= reserve:
-                continue
-            path = self.recording_path(recording)
-            if path in self._in_use:
-                continue
-            try:
-                if path.exists():
-                    size = path.stat().st_size
-                    path.unlink()
-                    free += size
-                self.store.delete_recording(recording["id"])
-            except OSError:
-                continue
+        async with self._retention_lock:
+            cameras = {str(c["id"]): c for c in self.store.list_cameras()}
+            now, status = time.time(), self._archive_status()
+            pressure_at_start = bool(status["overwrite_required"])
+            protected = set(self._in_use) | {worker.open_path for worker in self.workers.values() if worker.open_path is not None}
+            if pressure_at_start and (not self._retention_pressure or self._retention_protected - protected):
+                self._retention_cursor = None
+            self._retention_protected = protected
+            page = self._retention_page()
+            if not page:
+                self._retention_cursor = None
+            page_ids = {str(record["id"]) for record in page}
+            candidates = {str(record["id"]): record for record in page}
+            # Dedicated expiry queries prevent a long-retention camera's old
+            # files from hiding another camera's expired files behind the page.
+            identities = sorted(cameras)
+            if identities:
+                offset = self._retention_camera_offset % len(identities)
+                selected = (identities[offset:] + identities[:offset])[:RETENTION_CAMERA_LIMIT]
+                self._retention_camera_offset = (offset + len(selected)) % len(identities)
+                for identity in selected:
+                    try:
+                        cutoff = now - max(1, int(cameras[identity].get("retention_days", 7))) * 86400
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    rows = self.store.list_recordings(camera_id=identity, end=cutoff, limit=RETENTION_DELETE_LIMIT)
+                    for record in rows[:RETENTION_DELETE_LIMIT]:
+                        candidates[str(record["id"])] = record
+            removed = 0
+            ordered = sorted((record for record in candidates.values() if self._retention_key(record) is not None),
+                             key=self._retention_key)
+            for index, recording in enumerate(ordered):
+                if index % 16 == 0:
+                    await asyncio.sleep(0)
+                if str(recording["id"]) in page_ids:
+                    self._retention_cursor = (float(recording["started_at"]), str(recording["id"]))
+                try:
+                    started, duration = float(recording["started_at"]), float(recording["duration"])
+                    if not math.isfinite(started) or not math.isfinite(duration) or duration <= 0:
+                        continue
+                    camera = cameras.get(str(recording["camera_id"]), {})
+                    days = max(1, int(camera.get("retention_days", 7)))
+                    expired = started + duration < now - days * 86400
+                    status = self._archive_status()
+                    if not expired and not status["overwrite_required"]:
+                        continue
+                    path = self._retention_file(recording)
+                    if (path is None or path in self._in_use
+                            or any(worker.open_path == path for worker in self.workers.values())):
+                        continue
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    self.store.delete_recording(recording["id"])
+                    removed += 1
+                    # Logical file length is not physically freed space: other
+                    # open handles, sparse files and filesystem accounting differ.
+                    status = self._archive_status()
+                    if removed >= RETENTION_DELETE_LIMIT:
+                        break
+                except (OSError, MediaError, KeyError, TypeError, ValueError, OverflowError):
+                    continue
+            self._retention_pressure = bool(status["overwrite_required"])
+            if pressure_at_start and not self._retention_pressure:
+                self._retention_cursor = None
+
+    def _retention_page(self) -> list[dict[str, Any]]:
+        if callable(getattr(self.store, "connect", None)):
+            with self.store.connect() as db:
+                clause, args = "", []
+                if self._retention_cursor is not None:
+                    stamp, identity = self._retention_cursor
+                    clause = "AND (started_at>? OR (started_at=? AND id>?))"
+                    args = [stamp, stamp, identity]
+                rows = db.execute("""SELECT id,camera_id,path,started_at,duration FROM recordings
+                    WHERE typeof(started_at) IN ('integer','real') AND started_at>=0 """ + clause
+                    + " ORDER BY started_at,id LIMIT ?", (*args, RETENTION_PAGE_SIZE)).fetchall()
+                return [dict(row) for row in rows if self._retention_key(row) is not None]
+        # Small in-memory stores used by embedders/tests need no SQL interface.
+        rows = sorted((record for record in self.store.list_recordings(limit=RETENTION_PAGE_SIZE)
+                       if self._retention_key(record) is not None), key=self._retention_key)
+        if self._retention_cursor is not None:
+            rows = [record for record in rows if (float(record["started_at"]), str(record["id"])) > self._retention_cursor]
+        return rows[:RETENTION_PAGE_SIZE]
+
+    @staticmethod
+    def _retention_key(recording: dict[str, Any]) -> tuple[float, str] | None:
+        try:
+            started = float(recording["started_at"])
+            return (started, str(recording["id"])) if math.isfinite(started) and started >= 0 else None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+    def _retention_file(self, recording: dict[str, Any]) -> Path | None:
+        relative = Path(str(recording["path"]))
+        identity = str(recording["camera_id"])
+        if (relative.is_absolute() or len(relative.parts) != 2 or relative.parts[0] != identity
+                or not RECORDING_NAME.fullmatch(relative.name)):
+            return None
+        directory = self.recordings_dir / identity
+        if directory.is_symlink() or directory != self._camera_dir(identity):
+            return None
+        path = directory / relative.name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return path
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or path.is_symlink():
+            return None
+        return path
 
     def _prune_cache(self) -> None:
         active_parts = {Path(key).with_suffix(".part" + Path(key).suffix) for key in self._jobs}
@@ -514,7 +633,10 @@ class MediaManager:
         try:
             reserve = 512 * 1024**2
             if self.cache_dir.stat().st_dev == self.recordings_dir.stat().st_dev:
-                reserve = max(reserve, int(self.settings.min_free_bytes))
+                status = self._archive_status()
+                if status["reserve_bytes"] is None:
+                    raise MediaError("Playback cache storage is unavailable.")
+                reserve = status["reserve_bytes"]
             pending = 0
             for temporary, estimate in self._cache_reservations.items():
                 written = 0
@@ -620,7 +742,7 @@ class MediaManager:
         key = hashlib.sha256(identity.encode()).hexdigest()
         return self.cache_dir / f"{key}.{extension}"
 
-    async def _cached_job(self, path: Path, factory: Any, *, background: bool = False) -> Path:
+    async def _cached_job(self, path: Path, factory: Any, *, background: bool = False, source: Path | None = None) -> Path:
         if path.is_file():
             # Access time drives cache LRU. Keep modification time unchanged:
             # FileResponse derives its ETag/If-Range identity from mtime+size.
@@ -634,13 +756,25 @@ class MediaManager:
             # distinct work consumes admission, before any source is pinned.
             if len(self._jobs) >= 16 or (background and len(self._background_jobs) >= 12):
                 raise MediaError("Media server is busy. Try again shortly.")
-            task = asyncio.create_task(factory(), name="media-artifact")
+            # Acquire before scheduling the coroutine: retention can otherwise
+            # run in the gap before its first turn. The done callback also runs
+            # when shutdown cancels a task before its factory ever starts.
+            if source is not None:
+                self._in_use[source] = self._in_use.get(source, 0) + 1
+            try:
+                task = asyncio.create_task(factory(), name="media-artifact")
+            except BaseException:
+                if source is not None:
+                    self._release_source(source)
+                raise
             self._jobs[key] = task
             if background:
                 self._background_jobs.add(key)
             def finished(done: asyncio.Task) -> None:
                 self._jobs.pop(key, None)
                 self._background_jobs.discard(key)
+                if source is not None:
+                    self._release_source(source)
                 if not done.cancelled():
                     done.exception()  # retrieve a failure even after every viewer disconnected
             task.add_done_callback(finished)
@@ -653,7 +787,6 @@ class MediaManager:
         async def convert() -> Path:
             temporary = destination.with_suffix(".part.mp4")
             process = None
-            self._in_use[source] = self._in_use.get(source, 0) + 1
             try:
                 async with self._transcode_slots:
                     estimate = math.ceil(source.stat().st_size * (2 if compatible else 1.05))
@@ -699,40 +832,42 @@ class MediaManager:
             finally:
                 await _stop_process(process)
                 self._cache_reservations.pop(temporary, None)
-                self._in_use[source] -= 1
-                if self._in_use[source] == 0:
-                    del self._in_use[source]
                 with contextlib.suppress(OSError):
                     temporary.unlink(missing_ok=True)
-        return await self._cached_job(destination, convert)
+        return await self._cached_job(destination, convert, source=source)
 
     @contextlib.asynccontextmanager
     async def playback_lease(self, recording: dict[str, Any], compatible: bool = False) -> AsyncIterator[Path]:
         destination = self._cache_path(recording, "h264-v2" if compatible else "copy-v1", "mp4")
         self._cache_leases[destination] = self._cache_leases.get(destination, 0) + 1
         try:
-            yield await self.playback(recording, compatible)
+            async with self.source_lease(recording):
+                yield await self.playback(recording, compatible)
         finally:
             self._cache_leases[destination] -= 1
             if self._cache_leases[destination] == 0:
                 del self._cache_leases[destination]
 
     @contextlib.asynccontextmanager
+    async def source_lease(self, recording: dict[str, Any]) -> AsyncIterator[Path]:
+        """Pin an original archive file for the complete HTTP response lifetime."""
+        source = self.recording_path(recording)
+        self._in_use[source] = self._in_use.get(source, 0) + 1
+        try:
+            yield source
+        finally:
+            self._release_source(source)
+
+    def _release_source(self, source: Path) -> None:
+        self._in_use[source] -= 1
+        if self._in_use[source] == 0:
+            del self._in_use[source]
+
+    @contextlib.asynccontextmanager
     async def download_lease(self, recording: dict[str, Any]) -> AsyncIterator[Path]:
         """The browser-compatible H.264/AAC MP4, shared with compatible playback."""
         async with self.playback_lease(recording, compatible=True) as path:
             yield path
-
-    @contextlib.asynccontextmanager
-    async def _source_slot(self, source: Path) -> AsyncIterator[None]:
-        self._in_use[source] = self._in_use.get(source, 0) + 1
-        try:
-            async with self._background_slots, self._transcode_slots:
-                yield
-        finally:
-            self._in_use[source] -= 1
-            if self._in_use[source] == 0:
-                del self._in_use[source]
 
     async def thumbnail(self, recording: dict[str, Any]) -> bytes:
         """One small frame from the original file, never from the live camera."""
@@ -743,7 +878,6 @@ class MediaManager:
 
         async def extract() -> Path:
             temporary = destination.with_suffix(".part.jpg")
-            self._in_use[source] = self._in_use.get(source, 0) + 1
             try:
                 async with self._thumbnail_slots, self._background_slots, self._transcode_slots:
                     self._ensure_cache_space(MAX_THUMBNAIL_BYTES)
@@ -760,14 +894,11 @@ class MediaManager:
                     temporary.replace(destination)
                     return destination
             finally:
-                self._in_use[source] -= 1
-                if self._in_use[source] == 0:
-                    del self._in_use[source]
                 with contextlib.suppress(OSError):
                     temporary.unlink(missing_ok=True)
 
         try:
-            path = await self._cached_job(destination, extract, background=True)
+            path = await self._cached_job(destination, extract, background=True, source=source)
             if not self._owned_cache_file(path) or path.stat().st_size > MAX_THUMBNAIL_BYTES:
                 raise MediaError("Preview unavailable.")
             result = path.read_bytes()
@@ -787,7 +918,7 @@ class MediaManager:
         async def extract() -> Path:
             process = None
             temporary = destination.with_suffix(".part.json")
-            async with self._source_slot(source):
+            async with self._background_slots, self._transcode_slots:
                 try:
                     sample_rate = 16000  # preserve speech and alarms before aggregating energy bins
                     process = await self._spawn(self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
@@ -836,7 +967,7 @@ class MediaManager:
                     await _stop_process(process)
                     with contextlib.suppress(OSError):
                         temporary.unlink(missing_ok=True)
-        path = await self._cached_job(destination, extract, background=True)
+        path = await self._cached_job(destination, extract, background=True, source=source)
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -856,8 +987,6 @@ class MediaManager:
         async def extract() -> Path:
             process = None
             temporary = destination.with_suffix(".part.json")
-            # Pin even while queued: retention must not delete the selected source.
-            self._in_use[source] = self._in_use.get(source, 0) + 1
             try:
                 async with self._motion_slots, self._background_slots, self._transcode_slots:
                     process = await self._spawn(self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
@@ -900,13 +1029,10 @@ class MediaManager:
                 raise MediaError("Motion analysis unavailable.") from None
             finally:
                 await _stop_process(process)
-                self._in_use[source] -= 1
-                if self._in_use[source] == 0:
-                    del self._in_use[source]
                 with contextlib.suppress(OSError):
                     temporary.unlink(missing_ok=True)
 
-        path = await self._cached_job(destination, extract, background=True)
+        path = await self._cached_job(destination, extract, background=True, source=source)
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

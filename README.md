@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.13.1:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.14.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -21,13 +21,13 @@ Il flusso originale viene copiato in file **Matroska/MKV con durata da 1 a 120 m
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.
 - Scelta dei profili principale e secondario per configurare registrazione e anteprima; nomi originali conservati e suggerimenti basati sui metadati per ciascuna sorgente video.
 - Registrazione continua senza ricodifica, audio opzionale, riconnessione automatica e stato per telecamera.
-- **Risorse di sistema in tutte le pagine**: indicatori compatti nella barra superiore mostrano CPU e temperatura, RAM e swap, occupazione e spazio libero dei dischi, autonomia stimata delle registrazioni al ritmo recente delle telecamere attive. **Settings → System** aggiunge hostname, IP locali, sistema operativo, tempi di attività e grafici con picchi degli ultimi 30 minuti. Dati locali del container o del PC Linux, aggiornati senza interrompere i video. Versione sotto il logo SR81 e impostazioni nello stile compatto di Record. [Guida risorse di sistema](docs/telemetry.md).
+- **Risorse di sistema in tutte le pagine**: indicatori compatti nella barra superiore mostrano CPU e temperatura, RAM e swap, occupazione e spazio libero dei dischi, tempo stimato prima della pulizia dell'archivio al ritmo recente delle telecamere attive. **Settings → System** aggiunge hostname, IP locali, sistema operativo, tempi di attività e grafici con picchi degli ultimi 30 minuti. Dati locali del container o del PC Linux, aggiornati senza interrompere i video. Versione sotto il logo SR81 e impostazioni nello stile compatto di Record. [Guida risorse di sistema](docs/telemetry.md).
 - **Live → Monitor** come pagina iniziale, con video continuo, griglie da 1/4/9/16 riquadri, schermo intero, audio su una camera per volta e riconnessione indipendente. **Live → Layout** dispone le telecamere con trascinamento o selettori, conserva gli spazi vuoti e salva la disposizione nel browser. La navigazione usa sfondo grigio scuro, accenti ciano brillanti e dettagli oro, logo SR81 compatto, icone a sinistra e sottomenu nella barra superiore. La voce **Cameras** raccoglie le configurazioni. Usa il sottostream quando disponibile, condividendo il processo video fra gli spettatori. [Guida monitor live](docs/live.md).
 - **Record / Registrazioni** con filtri telecamera, data e orari Da/A, anche attraverso mezzanotte; elenco con miniature reali dei file, video con controlli dedicati e timeline che conserva i vuoti dell'archivio. Audio e movimento seguono la posizione e la durata effettiva del filmato selezionato. Download dell'originale, senza modificarlo. [Guida alle registrazioni](docs/recordings.md).
 - MP4 per il browser: copia video originale e conversione audio in AAC. Se H.265 non è supportato, modalità compatibile su richiesta con conversione H.264, più onerosa per la CPU.
 - Forma d'onda da campioni audio reali, calcolata su richiesta e conservata in cache; clic per spostarsi nel video. L'assenza di audio è indicata, senza inventare dati.
 - Traccia di movimento senza AI sotto l'audio: analizza automaticamente la registrazione completata selezionata, con intervalli cliccabili, precedente/successivo e sensibilità bassa/media/alta. Risultati in cache locale; luce, pioggia e vegetazione possono generare indicazioni. Il primo calcolo usa CPU, senza modificare la registrazione continua. [Guida agli indizi di movimento](docs/motion.md).
-- Conservazione per giorni e rimozione dei segmenti chiusi più vecchi quando lo spazio libero scende sotto la riserva configurata. Se lo spazio resta insufficiente, la registrazione si sospende e riprende quando torna disponibile.
+- Conservazione per giorni e avviso sotto il **10% libero** nell'archivio. Sotto il **5%**, la rotazione automatica elimina i filmati completati idonei più vecchi fino a recuperare almeno il 5%, saltando originali aperti o protetti da operazioni in corso. Se lo spazio resta insufficiente, la registrazione si sospende e riprende quando torna disponibile. [Regole di conservazione e spazio](docs/recordings.md#conservazione-e-spazio-libero).
 - Recupero all'avvio dell'indice dei segmenti chiusi, credenziali dei flussi cifrate su disco con chiave locale.
 
 ## Avvio rapido con Docker Compose
@@ -103,7 +103,9 @@ Il file deve essere della nuova versione: una precedente installazione non lo co
 
 I timestamp sono UTC nel database e orari locali nel browser. Sincronizzare host e telecamere usando NTP locale. La timeline è ricostruita dalla ricezione dei flussi sul server; non sostituisce una sincronizzazione forense del timestamp della camera. Dopo un crash un segmento incompleto può richiedere recupero manuale; i precedenti restano indipendenti.
 
-Stima dello spazio: **1 Mbit/s ≈ 10,8 GB al giorno** (unità decimali), prima di audio e overhead. Esempio: 8 telecamere × 4 Mbit/s × 14 giorni ≈ **4,84 TB**, più margine e spazio libero. Riserva predefinita: 5 GB. La conservazione è un massimo, non una garanzia se il disco è più piccolo del necessario. La rimozione di una telecamera conserva i file esistenti, ai quali si applica una conservazione predefinita di 7 giorni e la riserva disco.
+Stima dello spazio: **1 Mbit/s ≈ 10,8 GB al giorno** (unità decimali), prima di audio e overhead. Esempio: 8 telecamere × 4 Mbit/s × 14 giorni ≈ **4,84 TB**, più margine e spazio libero. La riserva dell'archivio è il **5% della capacità del filesystem**; sotto il 10% libero compare un avviso. La conservazione per giorni è un massimo: la rotazione per spazio può rimuovere un filmato prima. La rimozione di una telecamera conserva inizialmente i suoi file, ai quali continuano ad applicarsi la conservazione predefinita di 7 giorni e la politica dello spazio.
+
+La pulizia riguarda soltanto originali NVR completati e idonei nell'archivio. File del sistema operativo, file estranei, collegamenti simbolici e originali aperti o protetti da operazioni in corso sono esclusi. Il disco del sistema viene segnalato quando ha poco spazio, senza pulizie di file di sistema. **Before cleanup / Prima della pulizia** stima il tempo per raggiungere la riserva del 5% al ritmo recente delle camere attive; bitrate, cache e conservazione per giorni possono anticipare la pulizia. La stima non è un conto alla rovescia all'arresto della registrazione.
 
 | Variabile | Valore predefinito | Uso |
 |---|---|---|
@@ -113,7 +115,7 @@ Stima dello spazio: **1 Mbit/s ≈ 10,8 GB al giorno** (unità decimali), prima 
 | `NVR_RECORDINGS_DIR` | `./recordings` | Archivio originale |
 | `NVR_CACHE_DIR` | `NVR_DATA_DIR/cache` se omesso | Copie e dati di consultazione; installer e Compose nuovi scelgono la `.cache` dell'archivio |
 | `NVR_SEGMENT_SECONDS` | `1800` | Durata iniziale in secondi, da 60 a 7200; sostituita dalla scelta salvata in Settings → Recording |
-| `NVR_MIN_FREE_GB` | `5` | Riserva sul disco archivio, GB decimali |
+| `NVR_MIN_FREE_GB` | `5` (legacy) | Accettata ma ignorata; archivio e cache sullo stesso filesystem rispettano la riserva del 5% |
 | `NVR_ADMIN_PASSWORD` | richiesta al primo avvio | Imposta/aggiorna la password all'avvio |
 | `NVR_SECURE_COOKIE` | `0` | Usare `1` con HTTPS locale |
 | `NVR_LIVE_MAX_STREAMS` | `16` | Massimo processi live condivisi, da 1 a 32 |
@@ -124,7 +126,7 @@ Un solo processo/istanza per archivio. Limite iniziale dell'interfaccia: 32 conf
 
 File più lunghi riducono il numero di segmenti, ma aumentano l'attesa per consultarli e il lavoro per preparare MP4, audio e movimento. A 4 Mbit/s, due ore valgono circa **3,6 GB** di solo video: serve spazio anche per la copia di consultazione. Cambiare durata non riduce il volume giornaliero del flusso originale. Per un punto di partenza equilibrato consigliamo 30 minuti; valutare tempi e spazio sul proprio hardware. [Scelta della durata](docs/settings.md#durata-dei-file-di-registrazione).
 
-Per file lunghi consigliamo una cache sul disco delle registrazioni, con spazio libero adeguato. Un aggiornamento conserva il percorso configurato; impostare `NVR_CACHE_DIR` nel file ambiente del servizio e riavviarlo per cambiare percorso. La vecchia cache resta al suo posto e non viene trasferita o cancellata automaticamente.
+Per file lunghi consigliamo una cache sul disco delle registrazioni, con spazio libero adeguato. Sullo stesso filesystem, le preparazioni rispettano la riserva del 5%; su un filesystem separato la cache mantiene una riserva minima di 512 MiB. Un aggiornamento conserva il percorso configurato; impostare `NVR_CACHE_DIR` nel file ambiente del servizio e riavviarlo per cambiare percorso. La vecchia cache resta al suo posto e non viene trasferita o cancellata automaticamente.
 
 ## Accesso locale
 

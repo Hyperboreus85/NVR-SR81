@@ -18,7 +18,9 @@ Le sorgenti e i parametri delle singole telecamere si gestiscono in **Cameras / 
 
 ## Manutenzione del sistema
 
-**Settings → System** mostra una panoramica del recorder: hostname, IP locali, versione, sistema operativo, tempi di attività, carico CPU, temperatura disponibile, RAM, swap, spazio dei dischi e autonomia stimata delle registrazioni. I grafici mostrano i campioni degli ultimi 30 minuti e i relativi picchi, senza riempire i periodi mancanti. [Come leggere le misure e la stima di spazio](telemetry.md).
+**Settings → System** mostra una panoramica del recorder: hostname, IP locali, versione, sistema operativo, tempi di attività, carico CPU, temperatura disponibile, RAM, swap, spazio dei dischi e tempo stimato prima della pulizia dell'archivio. I grafici mostrano i campioni degli ultimi 30 minuti e i relativi picchi, senza riempire i periodi mancanti. [Come leggere le misure e la stima di spazio](telemetry.md).
+
+Per l'archivio compare un avviso con meno del **10% libero**. Sotto il **5%**, la rotazione automatica rimuove i filmati completati idonei più vecchi fino a recuperare almeno il 5%; i file aperti o protetti da operazioni in corso vengono saltati. Se lo spazio resta insufficiente, la registrazione si sospende. Il disco del sistema riceve soltanto una segnalazione: non vengono rimossi file del sistema operativo. [Conservazione e spazio libero](recordings.md#conservazione-e-spazio-libero).
 
 Per riavviare il recorder aprire **Settings → System**. Il riavvio del servizio richiede una conferma esplicita; il riavvio del sistema operativo locale è disponibile solo se abilitato dall'amministratore Linux. Entrambi interrompono temporaneamente la registrazione. [Disponibilità e conferme della manutenzione](maintenance.md).
 
@@ -43,6 +45,8 @@ La registrazione copia il flusso originale: scegliere file più lunghi non dimin
 Per i file lunghi consigliamo di collocare la cache sul disco delle registrazioni. Le nuove installazioni con l'installer nativo e Compose usano la sottodirectory `.cache` dell'archivio; un servizio esistente conserva la propria configurazione. Il percorso si imposta con `NVR_CACHE_DIR` nel file ambiente del servizio e richiede il suo riavvio. Se la variabile è assente, rimane `NVR_DATA_DIR/cache`. Cambiare percorso conserva la vecchia cache al suo posto. Il budget di circa 2 GiB è morbido: il più recente MP4 può superarlo, e i file in uso da una richiesta sono protetti. Una preparazione che esaurirebbe lo spazio viene interrotta, rimuovendo i file temporanei.
 
 Usare una directory dedicata: all'interno dell'archivio sono accettate solo `.cache` e le sue sottodirectory, separate dalle cartelle delle telecamere. La pulizia riguarda soltanto i file generati dalla cache; non elimina file estranei o collegamenti simbolici.
+
+Se la cache condivide il filesystem dell'archivio, le conversioni rispettano la riserva del 5% e lo spazio già impegnato dalle altre preparazioni. Una cache su un filesystem separato mantiene una riserva minima di **512 MiB**; non provoca la cancellazione di originali o file estranei su quel disco. `NVR_MIN_FREE_GB` rimane accettata per compatibilità con i vecchi file di configurazione, ma viene ignorata: non cambia queste soglie.
 
 ## Sensibilità del movimento nel lettore
 

@@ -20,7 +20,29 @@
         || !bytes(value.remaining_seconds) || value.remaining_seconds > 100 * 366 * 86400) return {seconds: null, reason: "Recording headroom unavailable."};
     return {seconds: value.remaining_seconds, reason: reserveReached ? "Cleanup threshold reached." : null};
   }
+  function storageState(policy) {
+    if (!policy || !finite(policy.free_percent) || policy.free_percent < 0 || policy.free_percent > 100) return "unavailable";
+    return ["normal", "warning", "critical"].includes(policy.state) ? policy.state : "unavailable";
+  }
+  function storageDescription(policy, kind, t, number) {
+    const state = storageState(policy);
+    if (state === "unavailable") return "";
+    // Keep an under-threshold reading below that threshold when formatting it.
+    const [whole, fraction = ""] = policy.free_percent.toString().split(".");
+    const truncated = policy.free_percent < .01 ? 0 : Number(whole + "." + fraction.slice(0, 2));
+    const value = policy.free_percent > 0 && truncated === 0 ? t("less than {percent}", {percent: number(.01, 2)}) : number(truncated, 2);
+    const key = kind === "archive" ? state === "critical"
+      ? "Archive space is below 5% free ({percent}%). Automatic overwrite is required. Oldest completed, unprotected recordings are removed when available."
+      : state === "warning" ? "Low archive space: {percent}% free. Oldest completed, unprotected recordings are automatically removed below 5% free."
+      : "Archive space: {percent}% free. A warning appears below 10%; automatic overwrite removes the oldest completed, unprotected recordings below 5%."
+      : state === "critical" ? "System disk space is below 5% free ({percent}%). Free system disk space; automatic overwrite only applies to the archive."
+      : state === "warning" ? "Low system disk space: {percent}% free. Automatic overwrite only applies to the archive."
+      : "System disk space: {percent}% free. Automatic overwrite only applies to the archive.";
+    return t(key, {percent: value});
+  }
   class NvrSystemTelemetry {
+    static storageState(policy) { return storageState(policy); }
+    static storageDescription(policy, kind, t, number) { return storageDescription(policy, kind, t, number); }
     constructor({root, t, locale} = {}) {
       if (!root) throw new Error("System telemetry unavailable.");
       this.root = root; this.snapshot = null;
@@ -36,6 +58,9 @@
       for (const id of ["header-archive-free", "header-system-free", "header-recording-remaining"]) {
         this.capacityNodes[id] = document?.getElementById?.(id) || root.querySelector("#" + id);
       }
+      this.storageAlert = document?.getElementById?.("storage-alert") || null;
+      this.storageMessages = {};
+      for (const kind of ["archive", "system"]) this.storageMessages[kind] = document?.getElementById?.("storage-alert-" + kind) || null;
       this.clear();
     }
     number(value, digits = 1) {
@@ -88,6 +113,39 @@
       const explanation = this.t("Estimated time before space-based cleanup at the recent recording rate. Retention may remove files earlier.");
       this.setCapacity("header-recording-remaining", value, estimate.reason ? this.t(estimate.reason) + " " + explanation : explanation);
     }
+    renderStorage(data) {
+      const storage = data?.storage || {}, shared = storage.shared_filesystem === true;
+      const archive = storage.archive, system = shared ? null : storage.system;
+      const description = (policy, kind) => storageDescription(policy, kind, this.t, this.number.bind(this));
+      const mark = (element, policy, kind) => {
+        if (!element) return;
+        element.dataset.storageState = storageState(policy);
+        const details = description(policy, kind);
+        if (details) {
+          element.title += " " + details;
+          element.setAttribute("aria-label", element.title);
+        }
+      };
+      mark(this.nodes["telemetry-disk-usage"], archive, "archive");
+      mark(this.nodes["telemetry-disk-free"], shared ? archive : system, shared ? "archive" : "system");
+      mark(this.capacityNodes["header-archive-free"], archive, "archive");
+      mark(this.capacityNodes["header-system-free"], system, "system");
+      const active = [];
+      for (const [kind, policy] of [["archive", archive], ["system", system]]) {
+        const state = storageState(policy), message = this.storageMessages[kind];
+        const visible = state === "warning" || state === "critical";
+        if (visible) active.push(state);
+        if (message) {
+          const next = visible ? description(policy, kind) : "";
+          if (message.textContent !== next) message.textContent = next;
+          message.hidden = !visible; message.dataset.state = state;
+        }
+      }
+      if (this.storageAlert) {
+        this.storageAlert.hidden = active.length === 0;
+        this.storageAlert.dataset.state = active.includes("critical") ? "critical" : active.length ? "warning" : "normal";
+      }
+    }
     render(data) { this.snapshot = data && typeof data === "object" && !Array.isArray(data) ? data : null; this.relabel(); }
     clear() { this.snapshot = null; this.relabel(); }
     relabel() {
@@ -98,6 +156,7 @@
         this.nodes["telemetry-disk-secondary-label"].textContent = this.t("Free");
         for (const id of ["telemetry-cpu-usage", "telemetry-cpu-temperature", "telemetry-memory-usage", "telemetry-swap-usage", "telemetry-disk-usage", "telemetry-disk-free"]) this.set(id, null, this.t("Waiting for system data."), "waiting");
         for (const id of Object.keys(this.capacityNodes)) this.setCapacity(id, null, this.t("Waiting for system data."));
+        this.renderStorage(null);
         return;
       }
       const cpu = data.cpu || {}, memory = data.memory || {}, swap = data.swap || {}, disk = data.disk || {};
@@ -140,6 +199,7 @@
         const free = this.bytes(archive.free);
         this.set("telemetry-disk-free", free, free === null ? this.t("Archive disk free space unavailable.") : this.t("Archive disk free: {value}.", {value: free}));
       }
+      this.renderStorage(data);
     }
   }
   global.NvrSystemTelemetry = NvrSystemTelemetry;

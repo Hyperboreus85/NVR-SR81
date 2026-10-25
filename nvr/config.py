@@ -16,6 +16,7 @@ class Settings:
     ffmpeg: str = field(default_factory=lambda: os.getenv("NVR_FFMPEG", "ffmpeg"))
     ffprobe: str = field(default_factory=lambda: os.getenv("NVR_FFPROBE", "ffprobe"))
     segment_seconds: int = field(default_factory=lambda: int(os.getenv("NVR_SEGMENT_SECONDS", "1800")))
+    # Accepted for compatibility with old installers; archive policy is now 5%.
     min_free_bytes: int = field(default_factory=lambda: int(float(os.getenv("NVR_MIN_FREE_GB", "5")) * 1_000_000_000))
     password: str = field(default_factory=lambda: os.getenv("NVR_ADMIN_PASSWORD", ""))
     secure_cookie: bool = field(default_factory=lambda: os.getenv("NVR_SECURE_COOKIE", "0") == "1")

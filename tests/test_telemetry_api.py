@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from nvr.app import create_app
 from nvr.config import Settings
 from nvr import __version__
+from types import SimpleNamespace
 
 
 class QuietMedia:
@@ -48,6 +49,8 @@ def test_telemetry_requires_login_and_returns_uncached_samples_without_polling_s
         assert first.headers['cache-control']==second.headers['cache-control']=='no-store'
         assert first.json()['cpu']['percent']==10 and second.json()['cpu']['percent']==20
         assert first.json()['version']==__version__
+        assert first.json()['storage']['archive']['state']=='normal'
+        assert first.json()['storage']['archive']['reserve_bytes']==50
         assert first.json()['recording']['active_cameras']==2
         assert second.json()['recording']['remaining_seconds']==250
         assert app.state.capacity.calls==2
@@ -63,4 +66,30 @@ def test_collector_belongs_to_one_app_instance(tmp_path):
           for index in range(2)]
     assert apps[0].state.telemetry is not apps[1].state.telemetry
     assert apps[0].state.telemetry.directory!=apps[1].state.telemetry.directory
+
+
+def test_archive_policy_is_consistent_in_both_apis_and_never_authorizes_os_cleanup(tmp_path,monkeypatch):
+    class ChangingCollector(Collector):
+        free=100000
+        def snapshot(self):
+            data=super().snapshot()
+            data['disk']={'recordings':{'total':1000000,'free':self.free},
+                          'root':{'total':1000000,'free':20000},'shared_filesystem':False}
+            return data
+    settings=Settings(data_dir=tmp_path/'data',recordings_dir=tmp_path/'recordings',password='telemetry-test-password')
+    app=create_app(settings,media_factory=QuietMedia,telemetry_factory=ChangingCollector)
+    with TestClient(app) as client:
+        assert client.get('/api/system/telemetry').status_code==401
+        assert client.post('/api/login',json={'password':settings.password},headers={'X-NVR-Request':'1'}).status_code==200
+        for free,state,overwrite in [(100000,'normal',False),(99999,'warning',False),(50000,'warning',False),(49999,'critical',True)]:
+            app.state.telemetry.free=free
+            data=client.get('/api/system/telemetry').json()
+            assert data['storage']['archive']['state']==state
+            assert data['storage']['archive']['overwrite_required'] is overwrite
+            assert data['recording']['reserve_bytes']==50000
+            assert data['storage']['system']['state']=='critical'
+            assert data['storage']['system']['overwrite_required'] is False
+        monkeypatch.setattr('nvr.app.shutil.disk_usage',lambda _:SimpleNamespace(total=1000000,free=49999,used=950001))
+        value=client.get('/api/system').json()
+        assert value['min_free_bytes']==50000 and value['storage']['overwrite_required'] is True
 

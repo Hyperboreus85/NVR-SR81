@@ -29,6 +29,7 @@ from .security import Auth, redact_url
 from .store import Store
 from .telemetry import SystemTelemetry
 from .system_status import RecordingCapacity
+from .storage_policy import archive_storage_status, storage_overview
 
 LIVE_AUTH_CHECK_SECONDS = 15
 
@@ -494,9 +495,15 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 for row in store.list_recordings(camera_id, start, end, limit)]
 
     @app.get("/api/recordings/{recording_id}/download")
-    def download(recording_id: str):
-        recording, path = recording_or_404(recording_id)
-        return FileResponse(path, media_type="video/x-matroska", filename=path.name)
+    async def download(recording_id: str):
+        recording, _ = recording_or_404(recording_id)
+        lease = media.source_lease(recording)
+        path = await media_result(lease.__aenter__, archive=True)
+        try:
+            return LeasedFileResponse(path, lease=lease, media_type="video/x-matroska", filename=path.name)
+        except BaseException:
+            await lease.__aexit__(None, None, None)
+            raise
 
     @app.get("/api/recordings/{recording_id}/playback")
     async def playback(recording_id: str, compatible: bool = False):
@@ -673,15 +680,17 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         # sleeps or blocks the recording/live event loop to calculate CPU use.
         result = telemetry.snapshot()
         result["version"] = __version__
+        result["storage"] = storage_overview(result.get("disk", {}))
         result["recording"] = capacity.snapshot(result.get("disk", {}))
         return result
 
     @app.get("/api/system")
     def system():
         disk = shutil.disk_usage(settings.recordings_dir)
+        storage = archive_storage_status(disk)
         return {"version": __version__, "disk": {"total": disk.total, "used": disk.used, "free": disk.free},
                 "recordings_bytes": store.recording_bytes(), "segment_seconds": settings.segment_seconds,
-                "min_free_bytes": settings.min_free_bytes,
+                "min_free_bytes": storage["reserve_bytes"], "storage": storage,
                 "ffmpeg_available": bool(shutil.which(settings.ffmpeg) and shutil.which(settings.ffprobe))}
 
     static = Path(__file__).parent / "static"

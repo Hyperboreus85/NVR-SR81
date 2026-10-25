@@ -48,13 +48,13 @@ Opzioni:
   --memory MiB                 RAM (4096)
   --swap MiB                   Swap (512)
   --root-gb GiB                Disco di sistema (8)
-  --min-free-gb GB             Riserva archivio decimale (5)
+  --min-free-gb GB             Legacy: ignorata dall'NVR, soglia archivio al 5%
   --ref RIFERIMENTO            Branch, tag o commit da installare (codex/initial-nvr)
   --dry-run                    Controlli e riepilogo, nessuna creazione/download
   --help                       Mostra questa guida
 
 Nessun disco viene formattato; non vengono modificati pacchetti o reti del nodo.
-Le dimensioni dei volumi Proxmox sono GiB, la riserva NVR è in GB decimali.
+Le dimensioni dei volumi Proxmox sono GiB. L'NVR mantiene libero il 5% dell'archivio.
 USAGE
 }
 
@@ -104,8 +104,7 @@ done
 for number in "$CORES" "$MEMORY" "$SWAP" "$ROOT_GB" "$RECORDINGS_GB" "$MIN_FREE_GB"; do
     [[ $number =~ ^(0|[1-9][0-9]{0,6})$ ]] || die 'Le dimensioni e le risorse devono essere numeri interi non negativi.'
 done
-((CORES >= 1 && MEMORY >= 1024 && ROOT_GB >= 8 && RECORDINGS_GB >= 10 && MIN_FREE_GB >= 1)) || die 'Minimi: 1 core, 1024 MiB RAM, sistema 8 GiB, archivio 10 GiB, riserva 1 GB.'
-((RECORDINGS_GB * 1073741824 > MIN_FREE_GB * 1000000000)) || die 'Il volume registrazioni deve superare la riserva libera.'
+((CORES >= 1 && MEMORY >= 1024 && ROOT_GB >= 8 && RECORDINGS_GB >= 10)) || die 'Minimi: 1 core, 1024 MiB RAM, sistema 8 GiB, archivio 10 GiB.'
 python3 - "$IP" "$GATEWAY" <<'PY'
 import ipaddress
 import sys

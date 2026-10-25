@@ -146,19 +146,18 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.media._probe_file.await_count, 1)
 
     async def test_retention_removes_expired_and_oldest_for_disk_reserve(self):
-        old, old_path = self.add_file("old.mkv", time.time() - 9 * 86400)
-        recent, recent_path = self.add_file("recent.mkv", time.time() - 3600)
+        old, old_path = self.add_file("1700000000000-000000.mkv", time.time() - 9 * 86400)
+        recent, recent_path = self.add_file("1700000000001-000000.mkv", time.time() - 3600)
         await self.media._retention()
         self.assertFalse(old_path.exists())
         self.assertTrue(recent_path.exists())
-        self.settings.min_free_bytes = 10
-        with patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(free=0)):
+        with patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(total=1000, free=0)):
             await self.media._retention()
         self.assertFalse(recent_path.exists())
         self.assertEqual(self.store.records, [])
 
     async def test_retention_never_removes_file_being_converted(self):
-        record, path = self.add_file("active.mkv", time.time() - 9 * 86400)
+        record, path = self.add_file("1700000000000-000000.mkv", time.time() - 9 * 86400)
         self.media._in_use[path.resolve()] = 2
         await self.media._retention()
         self.assertTrue(path.exists())
@@ -344,7 +343,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_playback_preflight_rejects_insufficient_cache_space_before_spawning(self):
         recording, source = self.add_file("source.mkv")
-        with patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(free=0)), \
+        with patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(total=10 * 1024**3, free=0)), \
              patch.object(self.media, "_spawn", new=AsyncMock()) as spawn:
             with self.assertRaisesRegex(MediaError, "Insufficient cache storage"):
                 await self.media.playback(recording)
@@ -393,7 +392,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             return process
 
         with patch.object(self.media, "_spawn", spawn), \
-             patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(free=512 * 1024**2 + 2500)):
+             patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(total=10 * 1024**3, free=512 * 1024**2 + 2500)):
             first = asyncio.create_task(self.media.playback(recording))
             try:
                 await started.wait()
@@ -462,7 +461,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             os.utime(path, (old, old))
         self.media._prune_cache()
         self.assertFalse(owned.exists() or part.exists())
-        with patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(free=0)):
+        with patch("nvr.media.shutil.disk_usage", return_value=SimpleNamespace(total=10 * 1024**3, free=0)):
             with self.assertRaisesRegex(MediaError, "Insufficient cache storage"):
                 self.media._ensure_cache_space(100)
         self.assertTrue(all(path.read_bytes() == b"must survive cache cleanup" for path in foreign))
@@ -520,7 +519,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.media._cache_leases)
 
     async def test_waveform_pins_source_while_queued_and_shutdown_releases_it(self):
-        recording, source = self.add_file("expired.mkv", time.time() - 9 * 86400)
+        recording, source = self.add_file("1700000000000-000000.mkv", time.time() - 9 * 86400)
         await self.media._transcode_slots.acquire()
         await self.media._transcode_slots.acquire()
         with patch.object(self.media, "_spawn", AsyncMock()) as spawn:

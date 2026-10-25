@@ -67,8 +67,8 @@ def capacity(tmp_path):
     return collector, store, clock, states, camera, recording
 
 
-def disk(free):
-    return {"recordings": {"free": free}}
+def disk(free,total=20000):
+    return {"recordings": {"free": free,"total":total}}
 
 
 def test_weighted_last_three_files_per_active_camera_and_reserve(capacity):
@@ -79,7 +79,7 @@ def test_weighted_last_three_files_per_active_camera_and_reserve(capacity):
     recording("a", 12000, 120, 300)
     recording("a", 6000, 60, 100)
     recording("b", 12000)
-    result = collector.snapshot(disk(301000))
+    result = collector.snapshot(disk(400000,total=2000000))
     assert result["active_cameras"] == result["estimated_cameras"] == 2
     assert result["bytes_per_second"] == 300 and result["bytes_per_day"] == 25920000
     assert result["usable_free_bytes"] == 300000 and result["remaining_seconds"] == 1000
@@ -226,3 +226,15 @@ def test_database_or_media_status_failure_leaves_unknown_estimate(capacity):
     collector.media = SimpleNamespace(camera_status=lambda identity: {"state": "recording"})
     result = collector.snapshot(disk(10000))
     assert result["remaining_seconds"] is None and result["reason"] == "insufficient_data"
+
+
+def test_headroom_uses_five_percent_of_current_filesystem_instead_of_legacy_gigabyte_floor(capacity):
+    collector, _, _, _, camera, recording = capacity
+    camera("a"); recording("a",6000)
+    collector.settings.min_free_bytes=999999999
+    first=collector.snapshot(disk(11000,total=20000))
+    assert first['reserve_bytes']==1000 and first['remaining_seconds']==100
+    resized=collector.snapshot(disk(11000,total=40000))
+    assert resized['reserve_bytes']==2000 and resized['remaining_seconds']==90
+    missing=collector.snapshot({'recordings':{'free':11000}})
+    assert missing['reserve_bytes'] is None and missing['remaining_seconds'] is None

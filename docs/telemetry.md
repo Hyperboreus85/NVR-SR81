@@ -1,6 +1,6 @@
 # Stato del recorder e risorse del sistema
 
-La barra superiore, presente in tutte le pagine dopo l'accesso, mostra CPU e temperatura, RAM e swap, occupazione e spazio libero dei dischi, autonomia stimata delle registrazioni. La versione dell'applicazione si trova sotto il logo SR81. I valori riguardano il sistema operativo che esegue il recorder, non il solo processo web. I controlli **Layout**, pausa/ripresa e schermo intero rimangono sulla destra della barra del Live.
+La barra superiore, presente in tutte le pagine dopo l'accesso, mostra CPU e temperatura, RAM e swap, occupazione e spazio libero dei dischi, tempo stimato prima della pulizia dell'archivio per spazio. La versione dell'applicazione si trova sotto il logo SR81. I valori riguardano il sistema operativo che esegue il recorder, non il solo processo web. I controlli **Layout**, pausa/ripresa e schermo intero rimangono sulla destra della barra del Live.
 
 **Settings → System** raccoglie gli stessi dati in schede più dettagliate, con identificazione del sistema e grafici degli ultimi 30 minuti. Le altre sezioni delle impostazioni mantengono le funzioni esistenti con la stessa grafica compatta di Record.
 
@@ -16,13 +16,15 @@ Il pannello mostra versione dell'applicazione, hostname, indirizzi IP locali leg
 
 Hostname e indirizzi si leggono localmente: non vengono effettuate ricerche DNS, connessioni verso siti esterni o scansioni di rete. Queste informazioni e lo storico sono accessibili soltanto dopo il login. I valori assenti rimangono **—**.
 
-## Spazio libero e autonomia stimata
+## Spazio libero e stima prima della pulizia
 
 La barra mostra lo spazio disponibile nell'archivio e nel disco del sistema. Se sono lo stesso filesystem, il dettaglio lo indica senza contarli come due risorse indipendenti.
 
-L'autonomia indica il tempo approssimativo **prima della pulizia dovuta allo spazio**, al ritmo recente delle telecamere che stanno effettivamente registrando. Per ciascuna si usano al massimo gli ultimi tre file completati nelle 24 ore precedenti; si calcola il consumo medio in byte al secondo e si sommano i consumi delle telecamere. Dallo spazio libero viene sottratta la riserva di sicurezza configurata. Se anche una sola camera attiva non ha campioni sufficienti, non viene proposta una durata ottimistica. La prima registrazione di una nuova telecamera deve quindi completare un file prima di contribuire alla stima.
+**Before cleanup / Prima della pulizia** indica il tempo approssimativo al ritmo recente delle telecamere che stanno effettivamente registrando. Per ciascuna si usano al massimo gli ultimi tre file completati nelle 24 ore precedenti; si calcola il consumo medio in byte al secondo e si sommano i consumi delle telecamere. Dallo spazio libero viene sottratta la riserva effettiva dell'archivio, pari al **5% della capacità del filesystem**. Se anche una sola camera attiva non ha campioni sufficienti, non viene proposta una durata ottimistica. La prima registrazione di una nuova telecamera deve quindi completare un file prima di contribuire alla stima.
 
-È una stima: bitrate variabile, telecamere aggiunte o spente, conversioni in cache e altri file sul disco possono modificarla. La conservazione per giorni può eliminare registrazioni prima della soglia di spazio. L'NVR continua a gestire automaticamente i file secondo queste regole; l'autonomia non è una promessa sulla durata dell'archivio né un conto alla rovescia allo spegnimento del recorder.
+È una stima: bitrate variabile, telecamere aggiunte o spente, conversioni in cache e altri file sul disco possono modificarla. La conservazione per giorni può eliminare registrazioni prima della soglia di spazio. L'NVR continua a gestire automaticamente i file secondo queste regole; il tempo indicato non è una promessa sulla durata dell'archivio né un conto alla rovescia allo spegnimento del recorder.
+
+Con **meno del 10% di spazio libero** compare un avviso. Quando l'archivio scende **sotto il 5%**, la rotazione automatica rimuove i filmati completati idonei più vecchi per recuperare almeno il 5%. Gli originali aperti o protetti da operazioni in corso vengono saltati. Se non è possibile liberare spazio sufficiente, il recorder sospende la registrazione. La pulizia può lasciare l'archivio ancora sotto il 10%, quindi l'avviso può restare presente. [Regole di conservazione](recordings.md#conservazione-e-spazio-libero).
 
 ## CPU e temperatura
 
@@ -46,7 +48,9 @@ Il disco principale è quello che contiene la directory delle registrazioni. Qua
 
 Se archivio e sistema si trovano sullo stesso filesystem, non vengono presentati come due dischi distinti: rimangono la percentuale occupata dell'archivio e lo spazio libero. Il valore libero riguarda lo spazio disponibile al servizio. Questi indicatori descrivono i filesystem accessibili all'NVR; lo spazio fisico e gli eventuali pool di archiviazione del nodo Proxmox si controllano separatamente.
 
-Gli indicatori non modificano limiti CPU/RAM, swap, conservazione dei filmati o configurazione dei dischi. La raccolta è locale e non richiede un servizio cloud o l'accesso amministratore del nodo Proxmox.
+Lo spazio ridotto del disco del sistema viene segnalato. L'NVR non elimina file del sistema operativo per risolverlo: la rotazione può agire soltanto sugli originali idonei dell'archivio configurato, anche se archivio e sistema condividono il filesystem.
+
+Gli indicatori descrivono lo stato e la politica automatica dell'archivio; non modificano limiti CPU/RAM, swap o configurazione dei dischi. La raccolta è locale e non richiede un servizio cloud o l'accesso amministratore del nodo Proxmox.
 
 ## Origine dei dati
 

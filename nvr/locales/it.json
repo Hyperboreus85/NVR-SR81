@@ -963,6 +963,13 @@
     "CPU temperature": "Temperatura CPU",
     "{days}d{hours}h": "{days}g{hours}h",
     "{hours}h{minutes}m": "{hours}h{minutes}m",
-    "{minutes}m": "{minutes}m"
+    "{minutes}m": "{minutes}m",
+    "less than {percent}": "meno di {percent}",
+    "Archive space is below 5% free ({percent}%). Automatic overwrite is required. Oldest completed, unprotected recordings are removed when available.": "Spazio libero nell’archivio sotto il 5% ({percent}%). È necessaria la sovrascrittura automatica: le registrazioni completate più vecchie e non in uso vengono rimosse quando disponibili.",
+    "Low archive space: {percent}% free. Oldest completed, unprotected recordings are automatically removed below 5% free.": "Spazio archivio in esaurimento: {percent}% libero. Sotto il 5% vengono rimosse automaticamente le registrazioni completate più vecchie e non in uso.",
+    "Archive space: {percent}% free. A warning appears below 10%; automatic overwrite removes the oldest completed, unprotected recordings below 5%.": "Spazio archivio: {percent}% libero. Avviso sotto il 10%; sotto il 5% la sovrascrittura automatica rimuove le registrazioni completate più vecchie e non in uso.",
+    "System disk space is below 5% free ({percent}%). Free system disk space; automatic overwrite only applies to the archive.": "Spazio libero sul disco del sistema sotto il 5% ({percent}%). Libera spazio nel sistema: la sovrascrittura automatica riguarda solo l’archivio.",
+    "Low system disk space: {percent}% free. Automatic overwrite only applies to the archive.": "Spazio del sistema in esaurimento: {percent}% libero. La sovrascrittura automatica riguarda solo l’archivio.",
+    "System disk space: {percent}% free. Automatic overwrite only applies to the archive.": "Spazio del sistema: {percent}% libero. La sovrascrittura automatica riguarda solo l’archivio."
   }
 }

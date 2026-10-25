@@ -143,3 +143,44 @@ test("the renderer has no fetch, polling, browser storage or HTML parsing side e
   const source = readFileSync(join(__dirname, "../nvr/static/system-dashboard.js"), "utf8");
   assert.doesNotMatch(source, /\bfetch\s*\(|\bsetTimeout\s*\(|\bsetInterval\s*\(|localStorage|sessionStorage|innerHTML|insertAdjacentHTML/);
 });
+
+function policy(free, extra = {}) {
+  return {free_percent: free, warning: free !== null && free < 10, overwrite_required: free !== null && free < 5,
+    state: free === null ? "unavailable" : free < 5 ? "critical" : free < 10 ? "warning" : "normal", ...extra};
+}
+
+test("disk cards share server storage thresholds without applying archive overwrite policy to the OS", () => {
+  const env = environment();
+  for (const [free, expected] of [[10, "normal"], [9.999, "warning"], [5, "warning"], [4.999, "critical"], [0, "critical"]]) {
+    const data = freeze(snapshot({storage: {archive: policy(free), system: policy(3, {overwrite_required: false}), shared_filesystem: false}}));
+    env.dashboard.render(data);
+    assert.equal(env.card("archive").card.dataset.storageState, expected); assert.equal(env.card("root").card.dataset.storageState, "critical");
+    assert.match(env.card("archive").card.title, /free.*(overwrite|removed)/i);
+    assert.match(env.card("root").detail.textContent, /System disk space is below 5%.*only applies to the archive/);
+    assert.doesNotMatch(env.card("root").detail.textContent, /Oldest completed|system files.*removed|overwrite is active/i);
+    if (expected === "critical") assert.match(env.card("archive").detail.textContent, /overwrite is required.*when available/);
+    if (expected === "normal") assert.doesNotMatch(env.card("archive").detail.textContent, /warning|overwrite/);
+    assert.equal(data.storage.archive.free_percent, free);
+  }
+});
+
+test("shared filesystems show a single archive policy and recovery or logout removes every old warning", () => {
+  const env = environment(), data = snapshot({storage: {archive: policy(4), system: policy(2), shared_filesystem: true}});
+  data.disk.shared_filesystem = true; env.dashboard.render(data);
+  assert.equal(env.card("archive").card.dataset.storageState, "critical"); assert.equal(env.card("root").card.dataset.storageState, "unavailable");
+  assert.equal(env.card("root").value.textContent, "Shared with archive"); assert.doesNotMatch(env.card("root").detail.textContent, /overwrite|below 5%/);
+  data.storage.archive = policy(12); env.dashboard.render(data);
+  assert.equal(env.card("archive").card.dataset.storageState, "normal"); assert.doesNotMatch(env.card("archive").detail.textContent, /overwrite|Low archive/);
+  env.dashboard.clear(); assert.equal(env.card("archive").card.dataset.storageState, "unavailable"); assert.equal(env.card("archive").card.title, "");
+  assert.doesNotMatch(env.root.textContent, /Low archive|overwrite|12% free/);
+});
+
+test("unavailable or malicious storage values cannot create warning text, execute markup or imply zero free space", () => {
+  const env = environment();
+  for (const value of [null, policy(null), policy(NaN), policy(-1), policy("3"), policy(1, {state: '<img onerror="bad()">'})]) {
+    env.dashboard.render(snapshot({storage: {archive: value, system: null}}));
+    assert.equal(env.card("archive").card.dataset.storageState, "unavailable"); assert.equal(env.card("archive").card.title, "");
+    assert.doesNotMatch(env.card("archive").detail.textContent, /NaN|onerror|0% free|overwrite/);
+    assert.equal(all(env.root).some((node) => ["IMG", "SCRIPT"].includes(node.tagName)), false);
+  }
+});

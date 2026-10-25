@@ -963,6 +963,13 @@
     "CPU temperature": "CPU temperature",
     "{days}d{hours}h": "{days}d{hours}h",
     "{hours}h{minutes}m": "{hours}h{minutes}m",
-    "{minutes}m": "{minutes}m"
+    "{minutes}m": "{minutes}m",
+    "less than {percent}": "less than {percent}",
+    "Archive space is below 5% free ({percent}%). Automatic overwrite is required. Oldest completed, unprotected recordings are removed when available.": "Archive space is below 5% free ({percent}%). Automatic overwrite is required. Oldest completed, unprotected recordings are removed when available.",
+    "Low archive space: {percent}% free. Oldest completed, unprotected recordings are automatically removed below 5% free.": "Low archive space: {percent}% free. Oldest completed, unprotected recordings are automatically removed below 5% free.",
+    "Archive space: {percent}% free. A warning appears below 10%; automatic overwrite removes the oldest completed, unprotected recordings below 5%.": "Archive space: {percent}% free. A warning appears below 10%; automatic overwrite removes the oldest completed, unprotected recordings below 5%.",
+    "System disk space is below 5% free ({percent}%). Free system disk space; automatic overwrite only applies to the archive.": "System disk space is below 5% free ({percent}%). Free system disk space; automatic overwrite only applies to the archive.",
+    "Low system disk space: {percent}% free. Automatic overwrite only applies to the archive.": "Low system disk space: {percent}% free. Automatic overwrite only applies to the archive.",
+    "System disk space: {percent}% free. Automatic overwrite only applies to the archive.": "System disk space: {percent}% free. Automatic overwrite only applies to the archive."
   }
 }
