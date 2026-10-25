@@ -1,17 +1,51 @@
 """One local administrator with a scrypt password and expiring server sessions."""
 import hashlib
 import hmac
+import ipaddress
+import re
 import secrets
 import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
 
 
+STREAM_PROTOCOLS = ("rtsp", "rtsps", "http", "https")
+DEFAULT_STREAM_PORTS = {"rtsp": 554, "rtsps": 322, "http": 80, "https": 443}
+
+
+def validate_camera_host(value: str) -> str:
+    """A host field contains an IPv4/IPv6 address or DNS name, never a URL."""
+    try:
+        if not isinstance(value, str):
+            raise ValueError
+        host = value.strip()
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        if not host or any(character.isspace() for character in host) or any(character in host for character in "/@?#%[]"):
+            raise ValueError
+        try:
+            return str(ipaddress.ip_address(host))
+        except ValueError:
+            if ":" in host or host.replace(".", "").isdigit():
+                raise ValueError
+        host = host.encode("idna").decode("ascii").lower().rstrip(".")
+        if len(host) > 253 or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in host.split(".")):
+            raise ValueError
+        return host
+    except (UnicodeError, ValueError):
+        raise ValueError("Enter a valid camera IP address or hostname.") from None
+
+
 def validate_stream_url(url: str) -> str:
     try:
+        if not isinstance(url, str):
+            raise ValueError
         parts = urlsplit(url)
-        _ = parts.port
-        if parts.scheme not in {"rtsp", "rtsps", "http", "https"} or not parts.hostname:
+        port = parts.port
+        if parts.scheme not in STREAM_PROTOCOLS or not parts.hostname or parts.fragment:
+            raise ValueError
+        validate_camera_host(parts.hostname)
+        if port is not None and not 1 <= port <= 65535:
             raise ValueError
         if any(ord(c) < 32 or ord(c) == 127 for c in url) or len(url) > 4096:
             raise ValueError

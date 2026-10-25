@@ -14,6 +14,8 @@ La preferenza viene salvata nel browser. Ogni dispositivo può usare una lingua 
 
 **Settings → General** mostra versione, spazio libero, limiti delle dirette e durata effettiva dei file di registrazione. Il layout del monitor può essere scelto tra 1, 4, 9 e 16 riquadri e viene ricordato dal browser.
 
+Le sorgenti e i parametri delle singole telecamere si gestiscono in **Cameras / Telecamere**. Oltre a RTSP/RTSPS si possono inserire URL video HTTP/HTTPS, playlist HLS e flussi MJPEG compatibili. ONVIF aiuta a ricavare i profili di una telecamera; non è un trasporto video alternativo da scrivere come URL. [Guida alle sorgenti e alla configurazione delle telecamere](cameras.md).
+
 ## Manutenzione del sistema
 
 Per riavviare il recorder aprire **Settings → System**. Il riavvio del servizio richiede una conferma esplicita; il riavvio del sistema operativo locale è disponibile solo se abilitato dall'amministratore Linux. Entrambi interrompono temporaneamente la registrazione. [Disponibilità e conferme della manutenzione](maintenance.md).

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from .media import MediaError, _input_args, _stop_process
+from .camera_config import preview_stream_url
 
 MAX_INIT = 1024 * 1024
 MAX_FRAGMENT = 16 * 1024 * 1024
@@ -197,7 +198,7 @@ class LiveManager:
 
     @staticmethod
     def _signature(camera):
-        return (camera.get("preview_url") or camera["url"], camera.get("audio_mode", "copy"))
+        return (preview_stream_url(camera), camera.get("audio_mode", "copy"))
 
     async def reconcile(self, cameras: list[dict]) -> None:
         available = {str(camera["id"]): camera for camera in cameras}
@@ -209,7 +210,7 @@ class LiveManager:
 
     async def open(self, camera: dict, compatible: bool = False) -> LiveSubscription:
         try:
-            _input_args(camera.get("preview_url") or camera["url"])
+            _input_args(preview_stream_url(camera))
         except (MediaError, KeyError, TypeError):
             raise LiveError("Invalid live stream address.", 422) from None
         mode = "compatible" if compatible else "copy"
@@ -323,7 +324,7 @@ class LiveManager:
         args = [self.settings.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostats",
                 "-filter_threads", "1",
                 "-fflags", "+genpts+discardcorrupt", "-analyzeduration", "2000000", "-probesize", "1000000",
-                *_input_args(camera.get("preview_url") or camera["url"]), "-map", "0:v:0"]
+                *_input_args(preview_stream_url(camera)), "-map", "0:v:0"]
         if camera.get("audio_mode", "copy") != "none":
             args += ["-map", "0:a:0?"]
         args += ["-sn", "-dn"]

@@ -382,7 +382,9 @@ class RealLiveTests(unittest.IsolatedAsyncioTestCase):
         await stream.aclose()
         await other.aclose()
         async def stopped():
-            while process.returncode is None:
+            # The OS exit status can arrive before the retirement task has
+            # finished draining stdout and released the manager's quota slot.
+            while process.returncode is None or self.manager.status()["active_streams"] != 0:
                 await asyncio.sleep(0.05)
         await asyncio.wait_for(stopped(), 6)
         self.assertEqual(self.manager.status()["active_streams"], 0)

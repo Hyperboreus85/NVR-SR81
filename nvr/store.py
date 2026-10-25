@@ -38,6 +38,10 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS recordings_time ON recordings(camera_id, started_at);
                 CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS camera_extras (
+                    camera_id TEXT PRIMARY KEY, third_url TEXT NOT NULL,
+                    live_stream INTEGER NOT NULL DEFAULT 2 CHECK(live_stream IN (1,2,3))
+                );
             """)
 
     @contextmanager
@@ -54,18 +58,19 @@ class Store:
         if row is None:
             return None
         result = dict(row)
-        for key in ("url", "preview_url"):
-            result[key] = self.cipher.decrypt(result[key].encode()).decode()
+        for key in ("url", "preview_url", "third_url"):
+            result[key] = self.cipher.decrypt(result[key].encode()).decode() if result.get(key) else ""
+        result["live_stream"] = result.get("live_stream") or 2
         result["enabled"] = bool(result["enabled"])
         return result
 
     def list_cameras(self):
         with self.connect() as db:
-            return [self._decrypt_camera(row) for row in db.execute("SELECT * FROM cameras ORDER BY created_at")]
+            return [self._decrypt_camera(row) for row in db.execute("SELECT cameras.*,camera_extras.third_url,camera_extras.live_stream FROM cameras LEFT JOIN camera_extras ON cameras.id=camera_extras.camera_id ORDER BY created_at")]
 
     def get_camera(self, camera_id):
         with self.connect() as db:
-            return self._decrypt_camera(db.execute("SELECT * FROM cameras WHERE id=?", (camera_id,)).fetchone())
+            return self._decrypt_camera(db.execute("SELECT cameras.*,camera_extras.third_url,camera_extras.live_stream FROM cameras LEFT JOIN camera_extras ON cameras.id=camera_extras.camera_id WHERE cameras.id=?", (camera_id,)).fetchone())
 
     def save_camera(self, camera, camera_id=None):
         camera_id = camera_id or uuid.uuid4().hex
@@ -79,10 +84,18 @@ class Store:
                 audio_mode=excluded.audio_mode,retention_days=excluded.retention_days""",
                 (camera_id, values["name"], values["url"], values["preview_url"],
                  values["enabled"], values["audio_mode"], values["retention_days"], time.time()))
+            existing = db.execute("SELECT third_url,live_stream FROM camera_extras WHERE camera_id=?", (camera_id,)).fetchone()
+            third = (self.cipher.encrypt((values.get("third_url") or "").encode()).decode()
+                     if "third_url" in values or existing is None else existing["third_url"])
+            selected = values.get("live_stream", existing["live_stream"] if existing else 2)
+            db.execute("""INSERT INTO camera_extras VALUES (?, ?, ?)
+                ON CONFLICT(camera_id) DO UPDATE SET third_url=excluded.third_url,live_stream=excluded.live_stream""",
+                (camera_id, third, selected))
         return self.get_camera(camera_id)
 
     def delete_camera(self, camera_id):
         with self.connect() as db:
+            db.execute("DELETE FROM camera_extras WHERE camera_id=?", (camera_id,))
             db.execute("DELETE FROM cameras WHERE id=?", (camera_id,))
 
     def add_recording(self, camera_id, path, started_at, duration, size, video_codec, audio_codec=None):

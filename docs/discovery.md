@@ -2,6 +2,8 @@
 
 La sezione **Telecamere in rete** serve a trovare dispositivi ONVIF e consultarne i profili video. Funziona dal server NVR: il browser comanda la ricerca, mentre i pacchetti partono dal container o PC che esegue NVR-SR81. Le credenziali della telecamera possono essere diverse dalla password con cui si entra nel registratore.
 
+ONVIF fornisce ricerca, informazioni e indirizzi dei profili; la trasmissione del video avviene poi tramite RTSP/RTP e i trasporti previsti dal dispositivo. L'importazione attuale richiede gli URL RTSP ai servizi Media1/Media2. Per una sorgente HTTP(S), HLS o MJPEG già nota si può invece aggiungere direttamente il suo URL in **Cameras / Telecamere**: non è necessario che esponga ONVIF. La ricerca automatica descritta qui trova dispositivi ONVIF, non ogni possibile flusso video della LAN. [Scegliere una sorgente e aggiungere una telecamera](cameras.md), [specifica ONVIF dello streaming](https://www.onvif.org/specs/stream/ONVIF-Streaming-Spec.pdf).
+
 ## Ricerca automatica
 
 1. Accedere all'NVR e aprire **Telecamere in rete** nella barra laterale.
@@ -42,7 +44,7 @@ Con il normale bridge/NAT Docker, le risposte multicast possono non raggiungere 
 
 ## Limiti e verifiche
 
-La versione 0.2.0 implementa discovery IPv4, non gestione remota completa della telecamera: niente modifica utenti, rete, codec o PTZ. I dati di discovery sono annunci dei dispositivi; l'accesso ai profili viene verificato separatamente. È consentita una ricerca di rete per volta; i profili hanno una propria concorrenza limitata, indipendente dalla registrazione.
+NVR-SR81 implementa discovery IPv4, non gestione remota completa della telecamera: niente modifica utenti, rete, codec o PTZ. I dati di discovery sono annunci dei dispositivi; l'accesso ai profili viene verificato separatamente. È consentita una ricerca di rete per volta; i profili hanno una propria concorrenza limitata, indipendente dalla registrazione. Il progetto non dichiara conformità completa ONVIF Profile S o Profile T.
 
 Per contenere tempi e memoria, la discovery elenca fino a 128 dispositivi, il lettore considera fino a otto servizi Media e 64 profili per servizio, con un tempo totale limitato. Gli eventuali risultati parziali sono segnalati. Questi limiti non cambiano il massimo di 32 telecamere configurabili per registrare nella prima implementazione.
 

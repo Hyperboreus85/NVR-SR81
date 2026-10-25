@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 
 from . import __version__
 from .config import Settings
+from .camera_config import public_camera_connection, resolve_camera_streams
 from .discovery import DiscoveryError, discover, list_interfaces, scan_network
 from .live import LiveError, LiveManager
 from .languages import LanguageError, LanguageManager, MAX_PACK_BYTES
@@ -24,7 +25,7 @@ from .media import MediaError, MediaManager
 from .maintenance import MaintenanceError, MaintenanceManager
 from .onvif import get_profiles
 from .preferences import SEGMENT_PREFERENCE_KEY, recording_preferences, restore_recording_preferences
-from .security import Auth, redact_url, validate_stream_url
+from .security import Auth, redact_url
 from .store import Store
 
 LIVE_AUTH_CHECK_SECONDS = 15
@@ -55,10 +56,31 @@ class MaintenanceActionInput(BaseModel):
     confirmation: Literal["RESTART", "REBOOT"]
 
 
+class CameraConnectionInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    protocol: Literal["rtsp", "rtsps", "http", "https"] | None = None
+    host: str | None = Field(default=None, max_length=253)
+    port: int | None = Field(default=None, strict=True, ge=1, le=65535)
+    username: str | None = Field(default=None, max_length=200)
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class CameraStreamsInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    main: str | None = Field(default=None, max_length=4096)
+    sub: str | None = Field(default=None, max_length=4096)
+    third: str | None = Field(default=None, max_length=4096)
+
+
 class CameraInput(BaseModel):
+    model_config = {"extra": "forbid"}
     name: str = Field(min_length=1, max_length=80)
     url: str | None = Field(default=None, max_length=4096)
     preview_url: str | None = Field(default=None, max_length=4096)
+    third_url: str | None = Field(default=None, max_length=4096)
+    connection: CameraConnectionInput | None = None
+    streams: CameraStreamsInput | None = None
+    live_stream: int | None = Field(default=None, strict=True, ge=1, le=3)
     enabled: bool = True
     audio_mode: Literal["copy", "none"] = "copy"
     retention_days: int = Field(default=7, ge=1, le=3650)
@@ -198,11 +220,12 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         return recording, path
 
     def public_camera(camera):
-        return {key: value for key, value in camera.items() if key not in {"url", "preview_url"}} | {
+        return {key: value for key, value in camera.items() if key not in {"url", "preview_url", "third_url"}} | {
             "source": redact_url(camera["url"]),
             "preview_source": redact_url(camera["preview_url"]),
+            "third_source": redact_url(camera.get("third_url", "")),
             "status": media.camera_status(camera["id"]),
-        }
+        } | public_camera_connection(camera)
 
     async def media_result(operation, *, archive=False):
         try:
@@ -296,21 +319,17 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         values["name"] = values["name"].strip()
         if not values["name"]:
             raise HTTPException(422, "Enter a name")
-        for field in ("url", "preview_url"):
-            value = values[field]
-            if value is None:
-                value = previous[field] if previous else ""
-            if field == "url" and not value:
-                raise HTTPException(422, "Enter the main stream")
-            try:
-                values[field] = validate_stream_url(value) if value else ""
-            except ValueError as exc:
-                raise HTTPException(422, str(exc)) from None
-        return values
+        try:
+            resolved = resolve_camera_streams(values, previous)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {key: values[key] for key in ("name", "enabled", "audio_mode", "retention_days")} | resolved
 
     @app.post("/api/cameras", status_code=201)
-    async def add_camera(data: CameraInput):
+    async def add_camera(data: CameraInput, request: Request):
         async with mutation_lock:
+            if not auth.valid(request.cookies.get("nvr_session")):
+                raise HTTPException(401, "Authentication required")
             if len(store.list_cameras()) >= 32:
                 raise HTTPException(422, "This version supports up to 32 cameras")
             camera = store.save_camera(validated_camera(data))
@@ -319,8 +338,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         return public_camera(camera)
 
     @app.put("/api/cameras/{camera_id}")
-    async def update_camera(camera_id: str, data: CameraInput):
+    async def update_camera(camera_id: str, data: CameraInput, request: Request):
         async with mutation_lock:
+            if not auth.valid(request.cookies.get("nvr_session")):
+                raise HTTPException(401, "Authentication required")
             previous = camera_or_404(camera_id)
             camera = store.save_camera(validated_camera(data, previous), camera_id)
             await media.reconcile()
@@ -337,9 +358,12 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         return {"deleted": True, "recordings_preserved": True}
 
     @app.post("/api/cameras/{camera_id}/probe")
-    async def probe(camera_id: str):
+    async def probe(camera_id: str, stream: int = Query(1, ge=1, le=3)):
         camera = camera_or_404(camera_id)
-        return await media_result(lambda: media.probe(camera["url"]))
+        source = (camera["url"], camera.get("preview_url", ""), camera.get("third_url", ""))[stream - 1]
+        if not source:
+            raise HTTPException(422, "The selected stream is not configured.")
+        return await media_result(lambda: media.probe(source))
 
     @app.get("/api/cameras/{camera_id}/snapshot")
     async def snapshot(camera_id: str):

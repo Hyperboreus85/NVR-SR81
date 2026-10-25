@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
 
 from .config import MAX_SEGMENT_SECONDS, MIN_SEGMENT_SECONDS
+from .camera_config import preview_stream_url
 from .motion import FRAME_BYTES, SAMPLE_SECONDS, MotionAnalyzer, motion_timeout
 
 
@@ -533,7 +534,7 @@ class MediaManager:
         try:
             result = await self._capture([
                 self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
-                *_input_args(camera.get("preview_url") or camera["url"]), "-an", "-frames:v", "1",
+                *_input_args(preview_stream_url(camera)), "-an", "-frames:v", "1",
                 "-vf", "scale=640:-2", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1",
             ])
         finally:
@@ -580,7 +581,7 @@ class MediaManager:
             async with self._decode_slots:
                 process = hub.process = await self._spawn(
                     self.settings.ffmpeg, "-hide_banner", "-loglevel", "error",
-                    *_input_args(hub.camera.get("preview_url") or hub.camera["url"]),
+                    *_input_args(preview_stream_url(hub.camera)),
                     "-an", "-vf", "fps=2,scale=640:-2", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1", pipe=True)
                 assert process.stdout
                 buffer = bytearray()

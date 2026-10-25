@@ -58,6 +58,17 @@ const monitor = {
   statusTimer: null,
 };
 let liveLayout = null;
+let cameraEditor = null, cameraDialogEpoch = 0, cameraProbeEpoch = 0, cameraProbeController = null;
+
+function cancelCameraProbe() {
+  cameraProbeEpoch += 1;
+  cameraProbeController?.abort(); cameraProbeController = null;
+}
+
+function cameraEditorController() {
+  if (!cameraEditor && window.NvrCameraEditor) cameraEditor = new window.NvrCameraEditor({root: $("camera-form"), t});
+  return cameraEditor;
+}
 
 function ensureLiveLayout() {
   if (!liveLayout && window.NvrLiveLayout && $("live-layout-root")) {
@@ -242,6 +253,10 @@ function cameraStatus(camera) {
 function showLogin() {
   state.authEpoch += 1;
   state.authenticated = false;
+  cameraDialogEpoch += 1;
+  cancelCameraProbe();
+  cameraEditor?.setCamera(null);
+  state.editingId = null;
   clearTimeout(state.toastTimer);
   $("toast").hidden = true;
   window.dispatchEvent(new CustomEvent("nvr-authchange", {detail: {authenticated: false}}));
@@ -777,6 +792,8 @@ function timelineSeek(event) {
 }
 
 function openCameraDialog(camera = null) {
+  cameraDialogEpoch += 1;
+  cancelCameraProbe();
   state.editingId = camera?.id || null;
   $("camera-form").reset();
   setText("camera-form-error", "");
@@ -797,26 +814,42 @@ function openCameraDialog(camera = null) {
   setText("stored-source", camera ? t("Saved stream: {source}", {source: camera.source || t("configured")}) : "");
   $("delete-camera").hidden = !camera;
   $("probe-camera").hidden = !camera;
+  $("save-camera").disabled = false;
+  $("probe-camera").disabled = false;
+  if ($("camera-probe-controls")) $("camera-probe-controls").hidden = !camera;
+  if ($("camera-probe-stream")) $("camera-probe-stream").value = "1";
+  cameraEditorController()?.setCamera(camera);
   $("camera-dialog").showModal();
+  $("camera-dialog").querySelector(".modal-body").scrollTop = 0;
 }
 
 async function saveCamera(event) {
   event.preventDefault();
   const editingId = state.editingId;
+  const ticket = state.authEpoch, dialogEpoch = cameraDialogEpoch;
   const url = $("camera-url").value.trim();
   const preview = $("camera-preview-url").value.trim();
   const payload = {
     name: $("camera-name").value.trim(), url: url || (editingId ? null : ""),
     preview_url: $("clear-preview").checked ? "" : (preview || (editingId ? null : "")),
+    third_url: $("camera-third-url")?.value.trim() || (editingId ? null : ""),
     enabled: $("camera-enabled").checked,
     audio_mode: $("camera-audio-mode").value,
     retention_days: Number($("camera-retention-days").value),
   };
+  try {
+    const editorPayload = cameraEditorController()?.getPayload();
+    if (editorPayload) {
+      delete payload.url; delete payload.preview_url; delete payload.third_url;
+      Object.assign(payload, editorPayload);
+    }
+  } catch (error) { setText("camera-form-error", errorText(error)); return; }
   if (!payload.name) { setText("camera-form-error", t("Enter a camera name.")); return; }
   $("save-camera").disabled = true;
   setText("camera-form-error", "");
   try {
     const saved = await api(editingId ? `/api/cameras/${encodeURIComponent(editingId)}` : "/api/cameras", {method: editingId ? "PUT" : "POST", body: payload});
+    if (!state.authenticated || ticket !== state.authEpoch || dialogEpoch !== cameraDialogEpoch) return;
     $("camera-dialog").close();
     showView("recorder");
     if (!editingId && saved?.id) {
@@ -825,18 +858,26 @@ async function saveCamera(event) {
     await refresh(true, true);
     if (!editingId && state.selectedId) await loadRecordings();
     toast(editingId ? t("Configuration updated.") : t("Camera added. The recorder will try to connect to the stream."));
-  } catch (error) { setText("camera-form-error", errorText(error)); }
-  finally { $("save-camera").disabled = false; }
+  } catch (error) { if (ticket === state.authEpoch && dialogEpoch === cameraDialogEpoch) setText("camera-form-error", errorText(error)); }
+  finally { if (ticket === state.authEpoch && dialogEpoch === cameraDialogEpoch) $("save-camera").disabled = false; }
 }
 
 async function probeCamera() {
   if (!state.editingId) return;
+  const cameraId = state.editingId, ticket = state.authEpoch, dialogEpoch = cameraDialogEpoch;
+  const stream = Number($("camera-probe-stream")?.value || 1);
+  if (![1, 2, 3].includes(stream)) return;
+  cancelCameraProbe();
+  const request = cameraProbeEpoch, controller = new AbortController();
+  cameraProbeController = controller;
   $("probe-camera").disabled = true;
+  if ($("camera-probe-stream")) $("camera-probe-stream").disabled = true;
   $("probe-result").hidden = false;
   $("probe-result").className = "probe-result";
   setText("probe-result", t("Checking the saved stream…"));
   try {
-    const data = await api(`/api/cameras/${encodeURIComponent(state.editingId)}/probe`, {method: "POST"});
+    const data = await api(`/api/cameras/${encodeURIComponent(cameraId)}/probe?stream=${stream}`, {method: "POST", signal: controller.signal});
+    if (!state.authenticated || ticket !== state.authEpoch || dialogEpoch !== cameraDialogEpoch || request !== cameraProbeEpoch) return;
     const streams = Array.isArray(data?.streams) ? data.streams : [];
     const details = streams.map((stream) => `${stream.codec_type || t("stream")}: ${stream.codec_name || t("unknown")}${stream.width ? ` · ${number(stream.width)} × ${number(stream.height)}` : ""}`);
     if (!details.length) {
@@ -844,8 +885,8 @@ async function probeCamera() {
       if (data?.audio_codec) details.push(t("Audio: {codec}", {codec: data.audio_codec}));
     }
     setText("probe-result", details.length ? t("Stream reachable.\n{details}", {details: details.join("\n")}) : t("Stream reachable. Check completed."));
-  } catch (error) { $("probe-result").className = "probe-result error"; setText("probe-result", errorText(error)); }
-  finally { $("probe-camera").disabled = false; }
+  } catch (error) { if (error.name !== "AbortError" && ticket === state.authEpoch && dialogEpoch === cameraDialogEpoch && request === cameraProbeEpoch) { $("probe-result").className = "probe-result error"; setText("probe-result", errorText(error)); } }
+  finally { if (ticket === state.authEpoch && dialogEpoch === cameraDialogEpoch && request === cameraProbeEpoch) { cameraProbeController = null; $("probe-camera").disabled = false; if ($("camera-probe-stream")) $("camera-probe-stream").disabled = false; } }
 }
 
 async function findOnvifProfiles(event) {
@@ -1020,8 +1061,19 @@ function updateMonitorTile(tile, info) {
   }
 }
 
+function liveStreamLabel(camera) {
+  const selected = Number(camera.live_stream || 2);
+  if (selected === 3 && (camera.streams?.third?.configured ?? !!camera.third_source)) return t("Third stream");
+  if (selected === 2 && (camera.streams?.sub?.configured ?? !!camera.preview_source)) return t("SUBSTREAM");
+  return t("MAIN STREAM");
+}
+
+function liveSourceFingerprint(camera) {
+  return `${camera.source}|${camera.preview_source}|${camera.third_source || ""}|${camera.live_stream || 2}`;
+}
+
 function makeMonitorTile(camera) {
-  const tile = {id: camera.id, name: camera.name, source: `${camera.source}|${camera.preview_source}`, visible: false, hasAudio: false, mode: "copy"};
+  const tile = {id: camera.id, name: camera.name, source: liveSourceFingerprint(camera), visible: false, hasAudio: false, mode: "copy"};
   tile.element = el("article", "monitor-tile");
   tile.element.dataset.cameraId = camera.id;
   const heading = el("div", "monitor-tile-heading");
@@ -1037,7 +1089,7 @@ function makeMonitorTile(camera) {
   const connection = el("div", "monitor-connection");
   tile.connection = el("span", "", t("WAITING"));
   connection.append(el("i"), tile.connection);
-  tile.quality = el("span", "monitor-quality", camera.preview_source ? t("SUBSTREAM") : t("MAIN STREAM"));
+  tile.quality = el("span", "monitor-quality", liveStreamLabel(camera));
   heading.append(tile.title, connection);
   frame.append(tile.video, tile.overlay, tile.quality);
   tile.errorDetail = el("p", "monitor-tile-error"); tile.errorDetail.hidden = true;
@@ -1120,7 +1172,7 @@ function renderMonitor() {
   }
   cameras.forEach((camera) => {
     let tile = monitor.tiles.get(camera.id);
-    const source = `${camera.source}|${camera.preview_source}`;
+    const source = liveSourceFingerprint(camera);
     if (tile && tile.source !== source) { monitor.observer?.unobserve(tile.element); tile.live?.destroy(); tile.element.remove(); monitor.tiles.delete(camera.id); tile = null; }
     if (!tile) {
       tile = makeMonitorTile(camera); monitor.tiles.set(camera.id, tile); $("monitor-grid").append(tile.element);
@@ -1135,7 +1187,7 @@ function renderMonitor() {
     tile.menuToggle.setAttribute("aria-label", t("Camera actions"));
     tile.fullscreenButton.title = t("Fullscreen");
     tile.fullscreenButton.setAttribute("aria-label", t("Show {camera} fullscreen", {camera: camera.name}));
-    tile.quality.textContent = camera.preview_source ? t("SUBSTREAM") : t("MAIN STREAM");
+    tile.quality.textContent = liveStreamLabel(camera);
     const status = cameraStatus(camera);
     const recording = camera.enabled && ["recording", "running", "connected"].includes(camera.status?.state);
     tile.recordingBadge.textContent = recording ? t("● REC") : !camera.enabled ? t("Paused") : status.label;
@@ -1211,6 +1263,7 @@ function clearNetworkProfiles(clearCredentials = false) {
   $("network-profiles").replaceChildren();
   $("network-main-profile").replaceChildren();
   $("network-preview-profile").replaceChildren();
+  $("network-third-profile")?.replaceChildren();
   $("network-stream-tools").hidden = true;
   $("network-recording-pair").hidden = true;
   $("network-device-info").hidden = true;
@@ -1493,18 +1546,21 @@ function buildStreamCard(profile, index, mode) {
   copy.append(icon("copy"), document.createTextNode(t("Copy URL")));
   copy.addEventListener("click", () => copyStreamText(streamUrl(profile, $(isNetwork ? "network-include-credentials" : "onvif-include-credentials").checked)));
   actions.append(copy);
-  ["main", "preview"].forEach((target) => {
-    const button = el("button", "button quiet small-button", target === "main" ? t("Use for recording") : t("Use for preview"));
+  ["main", "preview", "third"].forEach((target) => {
+    const button = el("button", "button quiet small-button", target === "main" ? t("Use for recording") : target === "preview" ? t("Use for preview") : t("Use as third stream"));
     button.type = "button"; button.disabled = !available; button.dataset.streamTarget = target;
     button.addEventListener("click", () => {
       if (isNetwork) {
-        $(target === "main" ? "network-main-profile" : "network-preview-profile").value = String(index);
+        $(`network-${target}-profile`).value = String(index);
         updateProfilePair();
       } else {
-        $(target === "main" ? "camera-url" : "camera-preview-url").value = profile.url || profile.clean_url || "";
+        const field = target === "main" ? "url" : target === "preview" ? "preview_url" : "third_url";
+        const source = profile.url || profile.clean_url || "";
+        if (cameraEditorController()) cameraEditor.setSources({[field]: source});
+        else $(target === "main" ? "camera-url" : target === "preview" ? "camera-preview-url" : "camera-third-url").value = source;
         if (target === "preview") { $("clear-preview").checked = false; $("camera-preview-url").disabled = false; }
         $("onvif-dialog").close();
-        toast(target === "main" ? t("Main stream entered. Save the camera to record.") : t("Preview stream entered. Save the configuration."));
+        toast(target === "main" ? t("Main stream entered. Save the camera to record.") : target === "preview" ? t("Preview stream entered. Save the configuration.") : t("Third stream entered. Save the configuration."));
       }
     });
     actions.append(button);
@@ -1530,8 +1586,10 @@ function renderNetworkProfiles(resetPair = false) {
     $("network-main-profile").replaceChildren();
     $("network-preview-profile").replaceChildren(el("option", "", t("None · use the main stream")));
     $("network-preview-profile").firstChild.value = "";
+    $("network-third-profile").replaceChildren(el("option", "", t("No third stream")));
+    $("network-third-profile").firstChild.value = "";
     available.forEach(({profile, index}) => {
-      ["network-main-profile", "network-preview-profile"].forEach((id) => {
+      ["network-main-profile", "network-preview-profile", "network-third-profile"].forEach((id) => {
         const option = el("option", "", `${profile.name || t("Profile {number}", {number: number(index + 1)})} · ${profile.encoding || t("Video")}${profile.width ? ` · ${profile.width} × ${profile.height}` : ""}`);
         option.value = String(index); $(id).append(option);
       });
@@ -1540,23 +1598,23 @@ function renderNetworkProfiles(resetPair = false) {
     const preview = available.find(({profile, index}) => profile.role === "sub" && index !== main?.index && main?.profile.video_source && profile.video_source === main.profile.video_source);
     $("network-main-profile").value = main ? String(main.index) : "";
     $("network-preview-profile").value = preview ? String(preview.index) : "";
+    $("network-third-profile").value = "";
   }
   updateProfilePair();
 }
 
 function updateProfilePair() {
   document.querySelectorAll("#network-profiles .stream-card").forEach((card) => {
-    ["main", "preview"].forEach((target) => {
-      const selected = $(target === "main" ? "network-main-profile" : "network-preview-profile").value === card.dataset.profileIndex;
+    ["main", "preview", "third"].forEach((target) => {
+      const selected = $(`network-${target}-profile`).value === card.dataset.profileIndex;
       const button = card.querySelector(`[data-stream-target="${target}"]`);
       button.classList.toggle("chosen", selected);
       button.setAttribute("aria-pressed", String(selected));
     });
   });
-  const mainValue = $("network-main-profile").value, previewValue = $("network-preview-profile").value;
-  const main = mainValue === "" ? null : network.profiles[Number(mainValue)];
-  const preview = previewValue === "" ? null : network.profiles[Number(previewValue)];
-  $("network-pair-note").hidden = !(main?.video_source && preview?.video_source && main.video_source !== preview.video_source);
+  const selected = ["main", "preview", "third"].map((target) => $(`network-${target}-profile`).value)
+    .filter((value) => value !== "").map((value) => network.profiles[Number(value)]).filter(Boolean);
+  $("network-pair-note").hidden = new Set(selected.map((profile) => profile.video_source).filter(Boolean)).size <= 1;
 }
 
 async function copyStreamText(value) {
@@ -1586,12 +1644,18 @@ function addNetworkCamera() {
   const main = network.profiles[Number($("network-main-profile").value)];
   const previewValue = $("network-preview-profile").value;
   const preview = previewValue === "" ? null : network.profiles[Number(previewValue)];
+  const thirdValue = $("network-third-profile").value;
+  const third = thirdValue === "" ? null : network.profiles[Number(thirdValue)];
   if (!main || !(main.url || main.clean_url)) return;
   // Always create a new draft; never overwrite the recorder's selected camera.
   openCameraDialog();
   $("camera-name").value = String(network.selected?.name || network.selected?.hardware || network.selected?.ip || t("ONVIF camera")).slice(0, 80);
   $("camera-url").value = main.url || main.clean_url;
   $("camera-preview-url").value = preview ? preview.url || preview.clean_url || "" : "";
+  if ($("camera-third-url")) $("camera-third-url").value = third ? third.url || third.clean_url || "" : "";
+  cameraEditorController()?.setSources({url: main.url || main.clean_url,
+    preview_url: preview ? preview.url || preview.clean_url || "" : "",
+    third_url: third ? third.url || third.clean_url || "" : ""});
 }
 
 async function deleteCamera() {
@@ -1660,11 +1724,32 @@ $("timeline-zoom-in")?.addEventListener("click", () => zoomTimeline(.5));
 $("timeline-zoom-out")?.addEventListener("click", () => zoomTimeline(2));
 $("camera-form").addEventListener("submit", saveCamera);
 $("probe-camera").addEventListener("click", probeCamera);
+$("camera-probe-stream")?.addEventListener("change", () => {
+  cancelCameraProbe();
+  $("probe-result").hidden = true;
+  $("probe-camera").disabled = false;
+});
 $("open-onvif").addEventListener("click", () => {
   resetModalProfiles();
   $("onvif-form").reset(); $("onvif-profiles").replaceChildren(); setText("onvif-error", "");
   showWarnings("onvif-warnings", []);
+  const host = $("camera-host")?.value.trim();
+  if (host) {
+    try {
+      const configuredProtocol = $("camera-protocol")?.value;
+      const protocol = configuredProtocol === "https" ? "https" : "http";
+      const address = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+      const endpoint = new URL(`${protocol}://${address}`);
+      if (endpoint.username || endpoint.password || endpoint.pathname !== "/" || endpoint.search || endpoint.hash) throw new Error();
+      if (["http", "https"].includes(configuredProtocol)) endpoint.port = $("camera-port")?.value || "";
+      endpoint.pathname = "/onvif/device_service";
+      $("onvif-endpoint").value = endpoint.href;
+      $("onvif-username").value = $("camera-username")?.value || "";
+      $("onvif-password").value = $("camera-password")?.value || "";
+    } catch (_) { /* Keep the editable endpoint empty for an incomplete host. */ }
+  }
   $("onvif-dialog").showModal();
+  $("onvif-dialog").querySelector(".modal-body").scrollTop = 0;
 });
 $("onvif-form").addEventListener("submit", findOnvifProfiles);
 $("onvif-dialog").addEventListener("close", resetModalProfiles);
@@ -1741,10 +1826,16 @@ $("network-include-credentials").addEventListener("change", () => renderNetworkP
 $("onvif-include-credentials").addEventListener("change", renderModalProfiles);
 $("network-copy-all").addEventListener("click", () => copyAllProfiles("network"));
 $("onvif-copy-all").addEventListener("click", () => copyAllProfiles("modal"));
-["network-main-profile", "network-preview-profile"].forEach((id) => $(id).addEventListener("change", updateProfilePair));
+["network-main-profile", "network-preview-profile", "network-third-profile"].forEach((id) => $(id)?.addEventListener("change", updateProfilePair));
 $("network-add-recorder").addEventListener("click", addNetworkCamera);
 $("copy-dialog").addEventListener("close", () => { $("copy-value").value = ""; });
-$("camera-dialog").addEventListener("close", () => { $("camera-url").value = ""; $("camera-preview-url").value = ""; });
+$("camera-dialog").addEventListener("close", () => {
+  cameraDialogEpoch += 1;
+  cancelCameraProbe();
+  cameraEditor?.setCamera(null);
+  $("camera-url").value = ""; $("camera-preview-url").value = "";
+  if ($("camera-third-url")) $("camera-third-url").value = "";
+});
 $("delete-camera").addEventListener("click", () => { setText("delete-error", ""); $("delete-dialog").showModal(); });
 $("confirm-delete").addEventListener("click", deleteCamera);
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
@@ -1832,6 +1923,7 @@ window.addEventListener("nvr-languagechange", () => {
   });
   motionTrack?.relabel();
   liveLayout?.relabel();
+  cameraEditor?.relabel();
   setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings"})[network.view] || "Monitor"));
   $("toggle-live").replaceChildren(icon(state.live ? "close" : "play"), document.createTextNode(t(state.live ? "Close preview" : "Open preview")));
   $("onvif-form").querySelector("button[type=submit]").textContent = t(network.modalController ? "Reading profiles…" : "Find profiles");
@@ -1855,9 +1947,10 @@ window.addEventListener("nvr-languagechange", () => {
     }
     renderDeviceInfo(network.deviceInfo);
     if (network.profiles.length) {
-      const main = $("network-main-profile").value, preview = $("network-preview-profile").value;
+      const main = $("network-main-profile").value, preview = $("network-preview-profile").value, third = $("network-third-profile").value;
       renderNetworkProfiles(true);
       $("network-main-profile").value = main; $("network-preview-profile").value = preview;
+      $("network-third-profile").value = third;
       updateProfilePair();
     }
     if (network.modalProfiles.length) renderModalProfiles();

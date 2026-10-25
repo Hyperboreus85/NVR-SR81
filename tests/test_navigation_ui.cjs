@@ -351,3 +351,44 @@ test("logout destroys players and layout, and a late startup response cannot reo
   assert.equal(env.players.length, 0);
   assert.equal(env.layouts.length, 0);
 });
+
+test("changing the saved Live stream rebuilds its player and labels the effective Main, Sub or Third source", async () => {
+  const configured = {...camera("a"), third_source: "rtsp://camera-a/third", live_stream: 2};
+  const env = environment({cameras: [configured], saved: snapshot(1, ["a"])}); await env.boot();
+  const quality = () => env.node("monitor-grid").querySelectorAll(".monitor-quality")[0].textContent;
+  assert.equal(quality(), "SUBSTREAM");
+  const first = env.players.at(-1);
+  env.evaluate("state.cameras[0].live_stream = 1; renderMonitor()");
+  assert.equal(first.destroyed, true);
+  assert.equal(quality(), "MAIN STREAM");
+  const main = env.players.at(-1);
+  env.evaluate("state.cameras[0].live_stream = 3; renderMonitor()");
+  assert.equal(main.destroyed, true);
+  assert.equal(quality(), "Third stream");
+  env.evaluate("state.cameras[0].third_source = ''; renderMonitor()");
+  assert.equal(quality(), "MAIN STREAM");
+});
+
+test("a late Main probe cannot overwrite the selected Third probe or unlock its in-flight controls", async () => {
+  const main = deferred(), third = deferred();
+  const env = environment({handler(path, options, fallback) {
+    if (path.endsWith("/probe?stream=1")) return main.promise;
+    if (path.endsWith("/probe?stream=3")) return third.promise;
+    return fallback(path);
+  }});
+  await env.boot(); await env.node("edit-camera").fire("click");
+  const old = env.node("probe-camera").fire("click"); await flush();
+  assert.equal(env.node("camera-probe-stream").disabled, true);
+  const firstRequest = env.calls.find((call) => call.path.endsWith("/probe?stream=1"));
+  env.node("camera-probe-stream").value = "3";
+  await env.node("camera-probe-stream").fire("change");
+  assert.equal(firstRequest.options.signal.aborted, true);
+  const current = env.node("probe-camera").fire("click"); await flush();
+  main.resolve({video_codec: "h264"}); await old;
+  assert.equal(env.node("probe-camera").disabled, true);
+  assert.doesNotMatch(env.node("probe-result").textContent, /h264/);
+  third.resolve({video_codec: "hevc"}); await current;
+  assert.match(env.node("probe-result").textContent, /hevc/);
+  assert.equal(env.node("probe-camera").disabled, false);
+  assert.equal(env.node("camera-probe-stream").disabled, false);
+});

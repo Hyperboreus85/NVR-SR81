@@ -157,6 +157,7 @@ test("server reason text remains inert and the native confirmation has accessibl
   assert.match(html, /<input id="system-confirm-input"[^>]+autocomplete="off"[^>]+required/);
   for (const id of ["system-restart-service", "system-reboot-system", "system-reconnect", "system-reload"]) assert.match(html, new RegExp('<button id="' + id + '" type="button"'));
   const assets = [...html.matchAll(/(?:href|src)="(\/static\/[^\"]+)"/g)].map((match) => match[1]);
-  assert.ok(assets.every((asset) => asset.endsWith("?v=0.10.1")));
+  const version = readFileSync(join(__dirname, "../pyproject.toml"), "utf8").match(/^version = "([^"]+)"/m)[1];
+  assert.ok(assets.every((asset) => asset.endsWith(`?v=${version}`)));
   assert.ok(html.indexOf("/static/app.js") < html.indexOf("/static/system-settings.js")); assert.ok(html.indexOf("/static/system-settings.js") < html.indexOf("/static/settings.js"));
 });
