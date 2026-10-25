@@ -327,6 +327,7 @@ async def test_recorder_spawn_finishes_then_is_closed_before_any_archive_removal
     await clearing
     assert processes[0] in stopped and processes[0].returncode == 0 and not path.exists()
     assert not media._clearing
+    await media.stop()  # finish fake workers before their process helper is restored
 
 
 @pytest.mark.asyncio
