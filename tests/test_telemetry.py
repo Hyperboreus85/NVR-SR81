@@ -353,3 +353,103 @@ def test_missing_os_interfaces_return_unknown_without_process_or_host_metadata(t
 @pytest.mark.parametrize("value,expected", [("0-3", 4), ("0-1,4,6-7", 5), ("", None), ("0-999999999999", None), ("2-1", None), ("0-2,2-3", None)])
 def test_cpuset_parser_is_bounded_and_validates_ranges(value, expected):
     assert _cpu_count(value) == expected
+
+
+def test_identity_is_local_bounded_and_filters_loopback_without_dns(tmp_path, monkeypatch):
+    root, _, collector = environment(tmp_path, monkeypatch)
+    write(root, "proc/sys/kernel/hostname", "recorder\n")
+    write(root, "proc/sys/kernel/osrelease", "6.8.12-test")
+    write(root, "etc/os-release", 'NAME="Debian GNU/Linux"\nPRETTY_NAME="Debian GNU/Linux 13 (trixie)"\n')
+    write(root, "proc/net/if_inet6", "\n".join([
+        "00000000000000000000000000000001 01 80 10 80 lo",
+        "fe800000000000000000000000000123 02 40 20 80 eth0",
+        "20010db8000000000000000000000001 02 40 00 80 eth0",
+        "ff020000000000000000000000000001 02 40 00 80 eth0",
+        "not-an-address 02 40 00 80 eth0",
+    ]))
+    monkeypatch.setattr(collector, "_ipv4_addresses", lambda: ["127.0.0.1", "0.0.0.0", "224.0.0.1", "192.168.10.8", "192.168.10.8"])
+    monkeypatch.setattr(collector, "_architecture", lambda: "aarch64")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Identity must not perform DNS or connect to the network")
+
+    monkeypatch.setattr(telemetry.socket, "getaddrinfo", forbidden)
+    monkeypatch.setattr(telemetry.socket, "gethostbyname", forbidden)
+    identity = collector.snapshot()["identity"]
+    assert identity == {"hostname": "recorder", "addresses": ["192.168.10.8", "fe80::123%eth0", "2001:db8::1"],
+                        "os_name": "Debian GNU/Linux 13 (trixie)", "kernel": "6.8.12-test", "architecture": "aarch64"}
+    monkeypatch.setattr(collector, "_ipv4_addresses", lambda: [f"10.0.0.{index}" for index in range(1, 100)])
+    assert len(collector._addresses()) == 32
+
+
+def test_identity_cache_and_os_release_are_data_not_shell_code(tmp_path, monkeypatch):
+    root, clock, collector = environment(tmp_path, monkeypatch)
+    write(root, "proc/sys/kernel/hostname", "camera\x00recorder")
+    write(root, "etc/os-release", 'PRETTY_NAME="$(do-not-run)"\n')
+    first = collector.snapshot()["identity"]
+    assert first["hostname"] == "camerarecorder" and first["os_name"] == "$(do-not-run)"
+    write(root, "proc/sys/kernel/hostname", "changed")
+    first["addresses"].append("unexpected")
+    clock.value += 5
+    assert collector.snapshot()["identity"]["hostname"] == "camerarecorder"
+    assert collector.snapshot()["identity"]["addresses"] == []
+    clock.value += 25
+    assert collector.snapshot()["identity"]["hostname"] == "changed"
+
+
+def test_native_and_verified_container_uptime_never_report_host_boot_time_as_container(tmp_path, monkeypatch):
+    root, clock, collector = environment(tmp_path, monkeypatch)
+    write(root, "proc/uptime", "5432.12 8910.00")
+    assert collector.snapshot()["uptime"] == {"system_seconds": 5432.12, "service_seconds": 0}
+    clock.value += 2
+    write(root, "run/systemd/container", "lxc")
+    assert collector.snapshot()["uptime"] == {"system_seconds": None, "service_seconds": 2}
+    write(root, "proc/self/mountinfo", "31 20 0:28 /proc/uptime /proc/uptime rw - fuse.lxcfs lxcfs rw\n")
+    clock.value += 1
+    assert collector.snapshot()["uptime"] == {"system_seconds": 5432.12, "service_seconds": 3}
+    write(root, "proc/uptime", "nan 0")
+    clock.value += 1
+    assert collector.snapshot()["uptime"]["system_seconds"] is None
+
+
+def test_history_samples_at_most_every_five_seconds_and_does_not_fill_gaps(tmp_path, monkeypatch):
+    _, clock, collector = environment(tmp_path, monkeypatch)
+    assert collector.snapshot()["history"]["points"][0]["cpu_percent"] is None
+    clock.value += 4
+    assert len(collector.snapshot()["history"]["points"]) == 1
+    clock.value += 1
+    second = collector.snapshot()["history"]
+    assert second["window_seconds"] == 1800 and second["interval_seconds"] == 5
+    assert len(second["points"]) == 2
+    second["points"][0]["memory_percent"] = 999
+    clock.value += 80
+    result = collector.snapshot()
+    points = result["history"]["points"]
+    assert [point["sampled_at"] for point in points] == [1700000100, 1700000105, 1700000185]
+    assert points[0]["memory_percent"] == 75 and points[-1]["cpu_percent"] is None
+    assert points[-1]["memory_percent"] == result["memory"]["percent"]
+
+
+def test_history_is_bounded_to_thirty_minutes_and_clears_on_wall_clock_reversal(tmp_path, monkeypatch):
+    _, clock, collector = environment(tmp_path, monkeypatch)
+    for _ in range(370):
+        result = collector.snapshot()
+        clock.value += 5
+    points = result["history"]["points"]
+    assert len(points) == 361
+    assert points[-1]["sampled_at"] - points[0]["sampled_at"] == 1800
+    collector._wall_time = lambda: 1600000000.0
+    reversed_result = collector.snapshot()
+    assert len(reversed_result["history"]["points"]) == 1
+    assert reversed_result["history"]["points"][0]["sampled_at"] == 1600000000
+    assert reversed_result["uptime"]["service_seconds"] > 0
+
+
+def test_history_clears_when_monotonic_clock_resets(tmp_path, monkeypatch):
+    _, clock, collector = environment(tmp_path, monkeypatch)
+    collector.snapshot(); clock.value += 5; collector.snapshot()
+    collector._wall_time = lambda: 1700000200.0
+    clock.value = 90
+    result = collector.snapshot()
+    assert len(result["history"]["points"]) == 1
+    assert result["cpu"]["percent"] is None and result["uptime"]["service_seconds"] == 0

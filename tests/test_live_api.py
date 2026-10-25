@@ -196,6 +196,10 @@ def test_websocket_releases_stream_on_disconnect(client):
     with client.websocket_connect(f"/api/cameras/{camera_id}/live.ws", headers=ORIGIN) as socket:
         socket.receive_json()
         socket.receive_bytes()
+        # Wait for the server's cleanup acknowledgement before TestClient
+        # cancels its ASGI task during context teardown.
+        socket.close()
+        assert socket.receive()["type"] == "websocket.close"
     assert client.app.state.realtime.subscription.closed
 
 

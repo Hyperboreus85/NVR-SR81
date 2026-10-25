@@ -5,7 +5,7 @@ const {readFileSync} = require("node:fs");
 const {join} = require("node:path");
 const {NvrSystemTelemetry} = require("../nvr/static/system-telemetry.js");
 const ids = ["telemetry-cpu-usage", "telemetry-cpu-temperature", "telemetry-memory-usage", "telemetry-swap-usage", "telemetry-disk-usage", "telemetry-disk-free"];
-function environment() {
+function environment({capacity = true, outsideRoot = false} = {}) {
   const nodes = new Map(); let language = "en";
   const get = (id) => {
     if (!nodes.has(id)) nodes.set(id, {textContent: "", title: "", dataset: {}, attributes: new Map(), setAttribute(key, value) { this.attributes.set(key, value); }, set innerHTML(_) { throw Error("HTML insertion is forbidden"); }});
@@ -13,9 +13,11 @@ function environment() {
   };
   const translations = {"No swap": "Nessuno swap", "Host temp": "Temp. host", "Free": "Libero", "Waiting for system data.": "In attesa dei dati di sistema.", "Includes file cache.": "Include la cache dei file."};
   const t = (key, params = {}) => (language === "it" ? translations[key] || key : key).replace(/\{(\w+)\}/g, (token, name) => Object.hasOwn(params, name) ? params[name] : token);
-  const root = {dataset: {}, querySelector: (selector) => get(selector.slice(1))};
+  const capacityIds = ["header-archive-free", "header-system-free", "header-recording-remaining"];
+  const root = {dataset: {}, ownerDocument: outsideRoot ? {getElementById: (id) => capacity && capacityIds.includes(id) ? get(id) : null} : undefined,
+    querySelector: (selector) => capacityIds.includes(selector.slice(1)) && (!capacity || outsideRoot) ? null : get(selector.slice(1))};
   const renderer = new NvrSystemTelemetry({root, t, locale: () => language});
-  return {renderer, get, root, language(value) { language = value; renderer.relabel(); }};
+  return {renderer, get, root, nodes, language(value) { language = value; renderer.relabel(); }};
 }
 function snapshot(extra = {}) {
   return {sampled_at: 1234, scope: "container", cpu: {percent: 12.34, available_cpus: 2, temperature_celsius: 64.5, temperature_scope: "host", source: "cgroup"}, memory: {used: 3.6e9, total: 4e9, percent: 90, working_set: 283e6}, swap: {used: 0, total: 512e6, percent: 0}, disk: {recordings: {used: 8e9, total: 20e9, free: 12e9, percent: 40}, root: {used: 6.8e9, total: 8e9, free: 1e9, percent: 85}, shared_filesystem: false}, ...extra};
@@ -94,15 +96,57 @@ test("provided reason strings remain inert and successive render/clear calls do 
   env.renderer.render([]); assert.equal(env.root.dataset.state, "waiting");
 });
 
-test("toolbar keeps widgets on the left and layout/pause/fullscreen last on the right with uniform widget height", () => {
+test("global header contains one set of metrics and recording capacity while monitor controls remain on the right", () => {
   const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8"), css = readFileSync(join(__dirname, "../nvr/static/style.css"), "utf8");
+  const header = html.slice(html.indexOf('<header class="topbar">'), html.indexOf('</header>') + '</header>'.length);
   const toolbar = html.slice(html.indexOf('<div class="monitor-toolbar">'), html.indexOf('<div id="monitor-error"'));
-  assert.ok(toolbar.indexOf('id="monitor-telemetry"') < toolbar.indexOf('class="monitor-pagination"'));
+  assert.ok(header.includes('id="monitor-telemetry"')); assert.ok(header.includes('id="header-capacity"'));
+  assert.equal(toolbar.includes('id="monitor-telemetry"'), false);
   assert.ok(toolbar.indexOf('class="monitor-pagination"') < toolbar.indexOf('class="monitor-wall-actions"'));
   const controls = [...toolbar.matchAll(/<button([^>]*)>/g)].map((match) => match[1]);
   assert.ok(controls.at(-1).includes('id="monitor-fullscreen"')); assert.ok(controls.at(-2).includes('id="monitor-toggle"'));
-  assert.equal((toolbar.match(/class="telemetry-widget"/g) || []).length, 3);
-  for (const id of ids) assert.equal((html.match(new RegExp('id="' + id + '"', "g")) || []).length, 1);
-  assert.match(css, /\.telemetry-widget\{[^}]*height:32px[^}]*min-height:32px/); assert.match(css, /\.monitor-toolbar>\.monitor-wall-actions\{[^}]*margin-left:auto/);
+  assert.equal((header.match(/class="telemetry-widget"/g) || []).length, 3);
+  for (const id of [...ids, "header-archive-free", "header-system-free", "header-recording-remaining"]) { assert.equal((html.match(new RegExp('id="' + id + '"', "g")) || []).length, 1); assert.ok(header.includes('id="' + id + '"')); }
+  assert.match(css, /\.header-metrics \.telemetry-widget\{[^}]*height:32px[^}]*min-height:32px/); assert.match(css, /\.monitor-toolbar>\.monitor-wall-actions\{[^}]*margin-left:auto/);
   assert.ok(html.indexOf("/static/system-telemetry.js") < html.indexOf("/static/app.js"));
+});
+
+function measuredRecording(extra = {}) {
+  return {active_cameras: 2, estimated_cameras: 2, bytes_per_second: 1e6, usable_free_bytes: 8.1e9,
+    reserve_bytes: 5e9, remaining_seconds: 8100, reason: null, method: "recent_recordings", ...extra};
+}
+
+test("capacity nodes outside the legacy metric root show both free disks and measured time before cleanup", () => {
+  const env = environment({outsideRoot: true}), data = snapshot({recording: measuredRecording()});
+  env.renderer.render(data);
+  assert.equal(env.get("header-archive-free").textContent, "12 GB"); assert.equal(env.get("header-system-free").textContent, "1 GB");
+  assert.equal(env.get("header-recording-remaining").textContent, "≈ 2h15m");
+  assert.match(env.get("header-recording-remaining").title, /before space-based cleanup.*Retention may remove files earlier/);
+  assert.doesNotMatch(env.get("header-recording-remaining").title, /stop recording|recording will stop/i);
+  env.renderer.clear(); for (const id of ["header-archive-free", "header-system-free", "header-recording-remaining"]) assert.equal(env.get(id).textContent, "—");
+});
+
+test("incomplete or missing rate estimates stay unknown and explain no active or insufficient recording data", () => {
+  const env = environment();
+  for (const recording of [null, measuredRecording({active_cameras: 0, reason: "no_active_recordings"}), measuredRecording({estimated_cameras: 1}), measuredRecording({bytes_per_second: null}), measuredRecording({remaining_seconds: Infinity}), measuredRecording({method: "guess"})]) {
+    env.renderer.render(snapshot({recording})); assert.equal(env.get("header-recording-remaining").textContent, "—"); assert.doesNotMatch(env.get("header-recording-remaining").title, /Infinity|NaN|undefined/);
+  }
+  env.renderer.render(snapshot({recording: measuredRecording({active_cameras: 0, reason: "no_active_recordings"})})); assert.match(env.get("header-recording-remaining").title, /No cameras are recording/);
+  env.renderer.render(snapshot({recording: measuredRecording({reason: "insufficient_data"})})); assert.match(env.get("header-recording-remaining").title, /Not enough completed recordings/);
+});
+
+test("a valid reserve threshold displays zero headroom, while an unknown disk or inconsistent estimate stays unknown", () => {
+  const env = environment(), data = snapshot({recording: measuredRecording({remaining_seconds: 0, usable_free_bytes: 0, reason: "storage_reserve_reached"})});
+  data.disk.recordings.free = 0; env.renderer.render(data);
+  assert.equal(env.get("header-archive-free").textContent, "0 B"); assert.equal(env.get("header-recording-remaining").textContent, "≈ 0m"); assert.match(env.get("header-recording-remaining").title, /Cleanup threshold reached/);
+  data.recording.remaining_seconds = 1; data.disk.recordings.free = null; env.renderer.render(data);
+  assert.equal(env.get("header-archive-free").textContent, "—"); assert.equal(env.get("header-recording-remaining").textContent, "—");
+});
+
+test("shared storage and relabeling preserve capacity values and absent optional header nodes remain compatible", () => {
+  const env = environment(), data = snapshot({recording: measuredRecording()}); data.disk.shared_filesystem = true; data.disk.root = null; data.disk.recordings.free = 12.3e9;
+  env.renderer.render(data); assert.equal(env.get("header-system-free").textContent, "12.3 GB"); assert.match(env.get("header-system-free").title, /same filesystem/);
+  env.language("it"); assert.equal(env.get("header-archive-free").textContent, "12,3 GB"); assert.equal(env.get("header-system-free").textContent, "12,3 GB");
+  const legacy = environment({capacity: false}); assert.doesNotThrow(() => legacy.renderer.render(data)); assert.doesNotThrow(() => legacy.renderer.clear());
+  assert.equal(legacy.nodes.has("header-archive-free"), false);
 });

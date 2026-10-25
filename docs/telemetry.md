@@ -1,6 +1,28 @@
-# Risorse del sistema nel Monitor
+# Stato del recorder e risorse del sistema
 
-In **Live → Monitor**, tre indicatori compatti mostrano CPU e temperatura, RAM e swap, spazio dell'archivio e del sistema. I controlli **Layout**, pausa/ripresa e schermo intero rimangono sulla destra della stessa barra. I valori riguardano il sistema operativo che esegue il recorder, non il solo processo web.
+La barra superiore, presente in tutte le pagine dopo l'accesso, mostra CPU e temperatura, RAM e swap, occupazione e spazio libero dei dischi, autonomia stimata delle registrazioni. La versione dell'applicazione si trova sotto il logo SR81. I valori riguardano il sistema operativo che esegue il recorder, non il solo processo web. I controlli **Layout**, pausa/ripresa e schermo intero rimangono sulla destra della barra del Live.
+
+**Settings → System** raccoglie gli stessi dati in schede più dettagliate, con identificazione del sistema e grafici degli ultimi 30 minuti. Le altre sezioni delle impostazioni mantengono le funzioni esistenti con la stessa grafica compatta di Record.
+
+## Aggiornamento e storico
+
+Un'unica richiesta aggiorna i dati ogni cinque secondi, qualunque sia la pagina aperta. Non vengono aperti flussi video aggiuntivi per mostrare questi valori. Quando la scheda del browser passa in secondo piano, le richieste si fermano; errori, attese e disconnessione cancellano i valori correnti per evitare di presentarli come aggiornati.
+
+Il recorder conserva in memoria un massimo di 30 minuti di campioni CPU, RAM, swap e temperatura, raccolti quando viene consultato. Non ricostruisce valori dei periodi non osservati. I grafici rispettano gli orari reali dei campioni e interrompono la linea nei periodi senza dati. I picchi si riferiscono soltanto ai campioni disponibili nella finestra visualizzata. Un riavvio del servizio azzera questo storico; non viene scritto un archivio permanente delle risorse.
+
+## Identificazione del sistema
+
+Il pannello mostra versione dell'applicazione, hostname, indirizzi IP locali leggibili, distribuzione Linux, kernel, architettura e tempi di attività disponibili. In un container i dati descrivono il suo ambiente; il kernel e gli eventuali sensori fisici possono appartenere all'host condiviso. Il tempo di attività del container viene mostrato solo se il sistema lo rende distinguibile da quello dell'host. Il tempo del servizio indica da quanto è avviata l'applicazione.
+
+Hostname e indirizzi si leggono localmente: non vengono effettuate ricerche DNS, connessioni verso siti esterni o scansioni di rete. Queste informazioni e lo storico sono accessibili soltanto dopo il login. I valori assenti rimangono **—**.
+
+## Spazio libero e autonomia stimata
+
+La barra mostra lo spazio disponibile nell'archivio e nel disco del sistema. Se sono lo stesso filesystem, il dettaglio lo indica senza contarli come due risorse indipendenti.
+
+L'autonomia indica il tempo approssimativo **prima della pulizia dovuta allo spazio**, al ritmo recente delle telecamere che stanno effettivamente registrando. Per ciascuna si usano al massimo gli ultimi tre file completati nelle 24 ore precedenti; si calcola il consumo medio in byte al secondo e si sommano i consumi delle telecamere. Dallo spazio libero viene sottratta la riserva di sicurezza configurata. Se anche una sola camera attiva non ha campioni sufficienti, non viene proposta una durata ottimistica. La prima registrazione di una nuova telecamera deve quindi completare un file prima di contribuire alla stima.
+
+È una stima: bitrate variabile, telecamere aggiunte o spente, conversioni in cache e altri file sul disco possono modificarla. La conservazione per giorni può eliminare registrazioni prima della soglia di spazio. L'NVR continua a gestire automaticamente i file secondo queste regole; l'autonomia non è una promessa sulla durata dell'archivio né un conto alla rovescia allo spegnimento del recorder.
 
 ## CPU e temperatura
 

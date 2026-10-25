@@ -9,6 +9,17 @@
     if (bytes(metric.used) && bytes(metric.total) && metric.total > 0 && metric.used <= metric.total) return metric.used / metric.total * 100;
     return null;
   }
+  function recordingHeadroom(value) {
+    if (!value || typeof value !== "object") return {seconds: null, reason: "Recording headroom unavailable."};
+    if (value.active_cameras === 0 || value.reason === "no_active_recordings") return {seconds: null, reason: "No cameras are recording."};
+    if (value.reason === "insufficient_data" || !Number.isInteger(value.active_cameras) || value.active_cameras <= 0
+        || !Number.isInteger(value.estimated_cameras) || value.estimated_cameras < value.active_cameras) return {seconds: null, reason: "Not enough completed recordings to estimate."};
+    const reserveReached = value.reason === "storage_reserve_reached" && value.usable_free_bytes === 0 && value.remaining_seconds === 0;
+    if (value.reason && !reserveReached || value.method !== "recent_recordings" || !finite(value.bytes_per_second) || value.bytes_per_second <= 0
+        || !bytes(value.usable_free_bytes) || !bytes(value.reserve_bytes)
+        || !bytes(value.remaining_seconds) || value.remaining_seconds > 100 * 366 * 86400) return {seconds: null, reason: "Recording headroom unavailable."};
+    return {seconds: value.remaining_seconds, reason: reserveReached ? "Cleanup threshold reached." : null};
+  }
   class NvrSystemTelemetry {
     constructor({root, t, locale} = {}) {
       if (!root) throw new Error("System telemetry unavailable.");
@@ -19,6 +30,11 @@
       for (const id of ["telemetry-cpu-usage", "telemetry-cpu-temperature", "telemetry-memory-usage", "telemetry-swap-usage", "telemetry-disk-usage", "telemetry-disk-free", "telemetry-temperature-label", "telemetry-disk-secondary-label"]) {
         this.nodes[id] = root.querySelector("#" + id);
         if (!this.nodes[id]) throw new Error("System telemetry unavailable.");
+      }
+      this.capacityNodes = {};
+      const document = root.ownerDocument || global.document;
+      for (const id of ["header-archive-free", "header-system-free", "header-recording-remaining"]) {
+        this.capacityNodes[id] = document?.getElementById?.(id) || root.querySelector("#" + id);
       }
       this.clear();
     }
@@ -46,6 +62,32 @@
       element.title = title; element.setAttribute("aria-label", title);
       element.dataset.state = value === null && state === "ready" ? "unavailable" : state;
     }
+    setCapacity(id, value, title) {
+      const element = this.capacityNodes[id];
+      if (!element) return;
+      element.textContent = value === null ? "—" : value;
+      element.title = title; element.setAttribute("aria-label", title);
+      element.dataset.state = value === null ? "unavailable" : "ready";
+    }
+    renderCapacity(data) {
+      const disk = data?.disk || {}, archive = this.bytes(disk.recordings?.free);
+      const system = this.bytes(disk.shared_filesystem === true ? disk.recordings?.free : disk.root?.free);
+      this.setCapacity("header-archive-free", archive, archive === null ? this.t("Archive disk free space unavailable.") : this.t("Archive disk free: {value}.", {value: archive}));
+      let systemTitle = system === null ? this.t("OS disk free space unavailable.") : this.t("OS disk free: {value}.", {value: system});
+      if (disk.shared_filesystem === true) systemTitle += " " + this.t("The operating system and archive use the same filesystem.");
+      this.setCapacity("header-system-free", system, systemTitle);
+      const estimate = recordingHeadroom(data?.recording);
+      let value = null;
+      if (estimate.seconds !== null) {
+        const minutes = Math.floor(estimate.seconds / 60), hours = Math.floor(minutes / 60), days = Math.floor(hours / 24);
+        const duration = days ? this.t("{days}d{hours}h", {days: this.number(days, 0), hours: this.number(hours % 24, 0)})
+          : hours ? this.t("{hours}h{minutes}m", {hours: this.number(hours, 0), minutes: this.number(minutes % 60, 0)})
+          : this.t("{minutes}m", {minutes: this.number(minutes, 0)});
+        value = this.t("≈ {duration}", {duration});
+      }
+      const explanation = this.t("Estimated time before space-based cleanup at the recent recording rate. Retention may remove files earlier.");
+      this.setCapacity("header-recording-remaining", value, estimate.reason ? this.t(estimate.reason) + " " + explanation : explanation);
+    }
     render(data) { this.snapshot = data && typeof data === "object" && !Array.isArray(data) ? data : null; this.relabel(); }
     clear() { this.snapshot = null; this.relabel(); }
     relabel() {
@@ -55,9 +97,11 @@
         this.nodes["telemetry-temperature-label"].textContent = this.t("Temp");
         this.nodes["telemetry-disk-secondary-label"].textContent = this.t("Free");
         for (const id of ["telemetry-cpu-usage", "telemetry-cpu-temperature", "telemetry-memory-usage", "telemetry-swap-usage", "telemetry-disk-usage", "telemetry-disk-free"]) this.set(id, null, this.t("Waiting for system data."), "waiting");
+        for (const id of Object.keys(this.capacityNodes)) this.setCapacity(id, null, this.t("Waiting for system data."));
         return;
       }
       const cpu = data.cpu || {}, memory = data.memory || {}, swap = data.swap || {}, disk = data.disk || {};
+      this.renderCapacity(data);
       const cpuValue = finite(cpu.percent) && cpu.percent >= 0 && cpu.percent <= 100 ? this.number(cpu.percent) + "%" : null;
       let cpuTitle = cpuValue === null ? this.t(cpu.reason === "warming_up" ? "Measuring CPU usage…" : "CPU usage unavailable.") : this.t("CPU usage: {value}.", {value: cpuValue});
       if (cpuValue !== null && finite(cpu.available_cpus) && cpu.available_cpus > 0) cpuTitle += " " + this.t("Available CPUs: {count}.", {count: this.number(cpu.available_cpus, 2)});

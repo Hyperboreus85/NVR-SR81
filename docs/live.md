@@ -12,7 +12,7 @@ All'accesso l'NVR apre **Live → Monitor**, la vista delle telecamere configura
 
 Il Monitor mostra le telecamere assegnate ai riquadri visibili, comprese quelle con registrazione sospesa. Una telecamera offline mostra il proprio stato e viene ritentata senza bloccare le altre. REC/pausa riguarda la registrazione; lo stato della diretta riguarda il lettore. L'audio si attiva per una telecamera alla volta e non fa parte del layout salvato.
 
-Sopra la griglia, tre indicatori raccolgono **CPU e temperatura**, **RAM e swap**, **archivio e disco del sistema**. Le percentuali del container si riferiscono alle risorse assegnate; la RAM include la cache dei file. La temperatura può non essere disponibile: un eventuale sensore fisico visibile è identificato come temperatura host. Quando archivio e sistema sono su dischi distinti, vengono mostrati entrambi. I controlli **Layout**, pausa/ripresa e schermo intero sono sulla destra. [Come leggere gli indicatori](telemetry.md).
+Nella barra superiore, visibile anche nelle altre pagine, gli indicatori raccolgono **CPU e temperatura**, **RAM e swap**, **archivio e disco del sistema**, spazio libero e autonomia stimata delle registrazioni. Le percentuali del container si riferiscono alle risorse assegnate; la RAM include la cache dei file. La temperatura può non essere disponibile: un eventuale sensore fisico visibile è identificato come temperatura host. Quando archivio e sistema sono su dischi distinti, vengono mostrati entrambi. I controlli **Layout**, pausa/ripresa e schermo intero rimangono sulla destra della barra sopra la griglia. **Settings → System** offre la panoramica dettagliata e i grafici. [Come leggere gli indicatori](telemetry.md).
 
 ## Preparare e salvare il layout
 

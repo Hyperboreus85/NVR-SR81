@@ -28,6 +28,7 @@ from .preferences import SEGMENT_PREFERENCE_KEY, recording_preferences, restore_
 from .security import Auth, redact_url
 from .store import Store
 from .telemetry import SystemTelemetry
+from .system_status import RecordingCapacity
 
 LIVE_AUTH_CHECK_SECONDS = 15
 
@@ -109,7 +110,8 @@ class NetworkScanInput(BaseModel):
 
 
 def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager,
-               maintenance_factory=MaintenanceManager, telemetry_factory=SystemTelemetry):
+               maintenance_factory=MaintenanceManager, telemetry_factory=SystemTelemetry,
+               capacity_factory=RecordingCapacity):
     settings = settings or Settings()
     if settings.password and len(settings.password) < 12:
         raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
@@ -122,6 +124,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     realtime = live_factory(settings)
     maintenance = maintenance_factory()
     telemetry = telemetry_factory(settings.recordings_dir)
+    capacity = capacity_factory(settings, store, media)
     media_jobs = asyncio.Semaphore(2)
     onvif_jobs = asyncio.Semaphore(2)
     discovery_lock = asyncio.Lock()
@@ -164,6 +167,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     app.state.realtime = realtime
     app.state.maintenance = maintenance
     app.state.telemetry = telemetry
+    app.state.capacity = capacity
     app.state.languages = languages
 
     @app.middleware("http")
@@ -667,7 +671,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     def system_telemetry():
         # The synchronous route runs in FastAPI's thread pool. Sampling never
         # sleeps or blocks the recording/live event loop to calculate CPU use.
-        return telemetry.snapshot()
+        result = telemetry.snapshot()
+        result["version"] = __version__
+        result["recording"] = capacity.snapshot(result.get("disk", {}))
+        return result
 
     @app.get("/api/system")
     def system():

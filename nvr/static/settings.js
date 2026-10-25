@@ -12,6 +12,7 @@
   let recording = null, recordingDraft = "", recordingLoading = false, recordingSaving = false;
   let recordingEpoch = 0, recordingLoadFailed = false;
   let languageActions = [], packActions = [];
+  let resources = null, resourcesKnown = false;
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -195,9 +196,19 @@
     return size.toLocaleString(i18n.locale(), {maximumFractionDigits: 1}) + " " + units[unit];
   }
 
+  function renderResources() {
+    byId("settings-version").textContent = (resourcesKnown ? resources?.version : system?.version) || "—";
+    byId("settings-disk-free").textContent = resourcesKnown ? formatBytes(resources?.disk?.recordings?.free) : system ? formatBytes(system.disk?.free) : "—";
+  }
+
+  function setSystemSnapshot(value) {
+    if (!authenticated) return;
+    resourcesKnown = true; resources = value;
+    renderResources();
+  }
+
   function relabel() {
-    byId("settings-version").textContent = system?.version || "—";
-    byId("settings-disk-free").textContent = system ? formatBytes(system.disk?.free) : "—";
+    renderResources();
     const duration = recording?.segment_seconds ?? system?.segment_seconds;
     byId("settings-segment-duration").textContent = !Number.isFinite(duration) ? "—" : duration % 60 === 0 ? t(duration === 60 ? "{count} minute" : "{count} minutes", {count: duration / 60}) : t("{count} seconds", {count: duration});
     for (const [id, active, maximum] of [["settings-live-streams", live?.active_streams, live?.max_streams], ["settings-live-transcodes", live?.active_transcodes, live?.max_transcodes]]) byId(id).textContent = live ? t("{active} / {maximum}", {active, maximum}) : "—";
@@ -362,10 +373,11 @@
     authenticated = !!event.detail.authenticated;
     authEpoch += 1; fileEpoch += 1; operationEpoch += 1; openEpoch += 1; languageEpoch += 1; recordingEpoch += 1;
     selection = null; reading = busy = false; system = live = null;
+    resources = null; resourcesKnown = false;
     recording = null; recordingDraft = ""; recordingLoading = recordingSaving = recordingLoadFailed = false;
     message("settings-error"); message("settings-notice"); message("settings-recording-error"); relabel();
   });
-  window.NvrSettings = Object.freeze({open, relabel});
+  window.NvrSettings = Object.freeze({open, relabel, setSystemSnapshot});
   selectTab(tab); relabel();
   Promise.resolve(i18n.ready).then(relabel).catch(errorMessage);
 })();

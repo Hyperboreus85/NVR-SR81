@@ -1,16 +1,22 @@
 """Small OS-wide Linux samples, respecting the visible container boundary.
 
-No process command lines, environment, credentials, network calls or external
+No process command lines, environment, credentials, external network calls or
 commands are read. A native service's own cgroup is never reported as its OS.
 """
 from __future__ import annotations
 
 import copy
+from collections import deque
+import ipaddress
+import math
 import os
 from pathlib import Path, PurePosixPath
 import posixpath
 import re
 import shutil
+import shlex
+import socket
+import struct
 import threading
 import time
 
@@ -104,10 +110,17 @@ class SystemTelemetry:
         self._temperature_time = None
         self._temperature_scope = None
         self._virtual_meminfo = False
+        self._virtual_uptime = False
+        self._started = self._monotonic()
+        self._identity_cache = None
+        self._identity_time = None
+        self._history = deque(maxlen=361)
+        self._history_time = None
 
     def _mounts(self):
         mounts = []
         self._virtual_meminfo = False
+        self._virtual_uptime = False
         for line in (_read(self.proc / "self/mountinfo") or "").splitlines()[:1024]:
             before, separator, after = line.partition(" - ")
             fields, tail = before.split(), after.split()
@@ -116,6 +129,8 @@ class SystemTelemetry:
             root, point = _unescape(fields[3]), _unescape(fields[4])
             if point == "/proc/meminfo" and tail[0] == "fuse.lxcfs":
                 self._virtual_meminfo = True
+            if point == "/proc/uptime" and tail[0] == "fuse.lxcfs":
+                self._virtual_uptime = True
             if tail[0] not in {"cgroup", "cgroup2"}:
                 continue
             if not root.startswith("/") or not point.startswith("/") or any(".." in PurePosixPath(value).parts for value in (root, point)):
@@ -414,10 +429,126 @@ class SystemTelemetry:
         except OSError:
             return {"used": None, "total": None, "free": None, "percent": None, "reason": "unavailable"}
 
+    @staticmethod
+    def _identity_text(value, limit=256):
+        if not isinstance(value, str):
+            return None
+        value = "".join(character for character in value if ord(character) >= 32 and ord(character) != 127).strip()
+        return value[:limit] or None
+
+    @staticmethod
+    def _architecture():
+        try:
+            return os.uname().machine
+        except (AttributeError, OSError):
+            return None
+
+    def _ipv4_addresses(self):
+        # A local ioctl reads interface configuration; no DNS, connection,
+        # route probe or packet is sent to another device.
+        if self.root != Path("/"):
+            return []
+        addresses = []
+        try:
+            import fcntl
+            names = socket.if_nameindex()[:32]
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as handle:
+                for _, name in names:
+                    if name == "lo":
+                        continue
+                    try:
+                        request = struct.pack("256s", name.encode("utf-8")[:15])
+                        result = fcntl.ioctl(handle.fileno(), 0x8915, request)
+                        addresses.append(socket.inet_ntoa(result[20:24]))
+                    except OSError:
+                        continue
+        except (ImportError, AttributeError, OSError):
+            pass
+        return addresses
+
+    def _addresses(self):
+        candidates = list(self._ipv4_addresses())[:32]
+        for line in (_read(self.proc / "net/if_inet6", 32768) or "").splitlines()[:128]:
+            fields = line.split()
+            if len(fields) != 6 or not re.fullmatch(r"[0-9a-fA-F]{32}", fields[0]):
+                continue
+            try:
+                address = ipaddress.IPv6Address(int(fields[0], 16))
+                suffix = "%" + fields[5] if address.is_link_local and re.fullmatch(r"[A-Za-z0-9_.:-]{1,32}", fields[5]) else ""
+                candidates.append(str(address) + suffix)
+            except ValueError:
+                continue
+        result = []
+        for value in candidates:
+            try:
+                address = ipaddress.ip_address(value.split("%", 1)[0])
+                if not address.is_loopback and not address.is_unspecified and not address.is_multicast and value not in result:
+                    result.append(value)
+            except ValueError:
+                continue
+            if len(result) == 32:
+                break
+        return result
+
+    def _identity(self, now):
+        if self._identity_cache is not None and self._identity_time is not None and 0 <= now - self._identity_time < 30:
+            return copy.deepcopy(self._identity_cache)
+        hostname = _read(self.proc / "sys/kernel/hostname", 256)
+        if not hostname and self.root == Path("/"):
+            try:
+                hostname = socket.gethostname()
+            except OSError:
+                pass
+        release = {}
+        for line in (_read(self.root / "etc/os-release", 16384) or "").splitlines()[:128]:
+            key, separator, value = line.partition("=")
+            if separator and key in {"PRETTY_NAME", "NAME"}:
+                try:
+                    tokens = shlex.split(value)
+                    if len(tokens) == 1:
+                        release[key] = tokens[0]
+                except ValueError:
+                    pass
+        identity = {"hostname": self._identity_text(hostname), "addresses": self._addresses(),
+                    "os_name": self._identity_text(release.get("PRETTY_NAME") or release.get("NAME")),
+                    "kernel": self._identity_text(_read(self.proc / "sys/kernel/osrelease", 256)),
+                    "architecture": self._identity_text(self._architecture(), 64)}
+        self._identity_cache, self._identity_time = identity, now
+        return copy.deepcopy(identity)
+
+    def _uptime(self, now, scope):
+        seconds = None
+        if scope == "machine" or self._virtual_uptime:
+            fields = (_read(self.proc / "uptime", 256) or "").split()
+            try:
+                value = float(fields[0])
+                if math.isfinite(value) and value >= 0:
+                    seconds = value
+            except (ValueError, IndexError):
+                pass
+        return {"system_seconds": seconds, "service_seconds": round(max(0.0, now - self._started), 1)}
+
+    def _history_snapshot(self, now, sampled_at, result):
+        if self._history and (sampled_at < self._history[-1]["sampled_at"]
+                             or self._history_time is not None and now < self._history_time):
+            self._history.clear(); self._history_time = None
+        while self._history and sampled_at - self._history[0]["sampled_at"] > 1800:
+            self._history.popleft()
+        if not self._history or self._history_time is None or now - self._history_time >= 5:
+            self._history.append({"sampled_at": sampled_at, "cpu_percent": result["cpu"]["percent"],
+                                  "memory_percent": result["memory"]["percent"], "swap_percent": result["swap"]["percent"],
+                                  "temperature_celsius": result["cpu"]["temperature_celsius"]})
+            self._history_time = now
+        return {"window_seconds": 1800, "interval_seconds": 5, "points": [dict(point) for point in self._history]}
+
     def snapshot(self):
         with self._lock:
             now = self._monotonic()
-            if self._cached is not None and self._sample_time is not None and 0 <= now - self._sample_time < 1:
+            sampled_at = self._wall_time()
+            reversed_clock = self._cached is not None and (sampled_at < self._cached["sampled_at"] or now < self._sample_time)
+            if reversed_clock:
+                self._history.clear(); self._history_time = None
+            if self._cached is not None and self._sample_time is not None and not reversed_clock and 0 <= now - self._sample_time < 1:
                 return copy.deepcopy(self._cached)
             own = _cgroup_paths(_read(self.proc / "self/cgroup"))
             init = _cgroup_paths(_read(self.proc / "1/cgroup"))
@@ -430,7 +561,9 @@ class SystemTelemetry:
                 shared = self._device(self.recordings_dir) == self._device(self.root)
             except OSError:
                 shared = None
-            result = {"sampled_at": self._wall_time(), "scope": scope, "cpu": cpu, "memory": memory, "swap": swap,
+            result = {"sampled_at": sampled_at, "scope": scope, "cpu": cpu, "memory": memory, "swap": swap,
                       "disk": {"recordings": self._disk(self.recordings_dir), "root": None if shared else self._disk(self.root), "shared_filesystem": shared}}
+            result.update(identity=self._identity(now), uptime=self._uptime(now, scope))
+            result["history"] = self._history_snapshot(now, sampled_at, result)
             self._cached, self._sample_time = result, now
             return copy.deepcopy(result)

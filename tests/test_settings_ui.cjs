@@ -219,6 +219,26 @@ test("General reports the real 30-minute duration, layout preferences persist, a
   env.refreshHandler(null); await env.context.NvrSettings.open(); assert.equal(env.byId("settings-error").hidden, true);
 });
 
+test("General shares current system resources without resetting drafts or accepting updates after logout", async () => {
+  const env = environment(); await env.auth(true); await env.context.NvrSettings.open();
+  env.byId("settings-recording-minutes").value = "60"; await env.byId("settings-recording-minutes").fire("change");
+  const count = env.calls.length;
+  env.context.NvrSettings.setSystemSnapshot({version:"0.13.0",disk:{recordings:{free:14.5e9}}});
+  assert.equal(env.byId("settings-version").textContent,"0.13.0");
+  assert.equal(env.byId("settings-disk-free").textContent,"14.5 GB");
+  assert.equal(env.byId("settings-recording-minutes").value,"60");
+  assert.equal(env.calls.length,count);
+  await env.context.NvrSettings.open();
+  assert.equal(env.byId("settings-disk-free").textContent,"14.5 GB");
+  assert.equal(env.byId("settings-version").textContent,"0.13.0");
+  env.context.NvrSettings.setSystemSnapshot(null);
+  assert.equal(env.byId("settings-disk-free").textContent,"—");
+  await env.auth(false);
+  env.context.NvrSettings.setSystemSnapshot({version:"stale",disk:{recordings:{free:99e9}}});
+  assert.equal(env.byId("settings-version").textContent,"—");
+  assert.equal(env.byId("settings-disk-free").textContent,"—");
+});
+
 test("recording duration loads all server presets and only an explicit save applies a numeric duration", async () => {
   const env = environment(); await env.auth(true); await env.context.NvrSettings.open();
   const select = env.byId("settings-recording-minutes"), save = env.byId("settings-recording-form");

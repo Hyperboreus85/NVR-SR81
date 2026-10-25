@@ -119,9 +119,15 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
   });
   context.window = context; context.devicePixelRatio = 1; context.scrollTo = () => {};
   context.NvrLivePlayer = LivePlayer; context.NvrLiveLayout = LiveLayout;
-  const telemetryViews = [];
+  const telemetryViews = [], dashboardViews = [];
   if (telemetry) context.NvrSystemTelemetry = class {
     constructor(options) { this.options=options; this.data=null; this.renders=0; this.clears=0; this.relabels=0; telemetryViews.push(this); }
+    render(value) { this.data=value; this.renders+=1; }
+    clear() { this.data=null; this.clears+=1; }
+    relabel() { this.relabels+=1; }
+  };
+  if (telemetry) context.NvrSystemDashboard = class {
+    constructor(options) { this.options=options; this.data=null; this.renders=0; this.clears=0; this.relabels=0; dashboardViews.push(this); }
     render(value) { this.data=value; this.renders+=1; }
     clear() { this.data=null; this.clears+=1; }
     relabel() { this.relabels+=1; }
@@ -132,7 +138,7 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
   context.addEventListener = (type, listener) => { if (!windowEvents.has(type)) windowEvents.set(type, []); windowEvents.get(type).push(listener); };
   context.dispatchEvent = (event) => { for (const listener of windowEvents.get(event.type) || []) listener(event); return true; };
   vm.runInContext(source, context, {filename: "app.js"});
-  return {node, calls, players, layouts, layoutButtons, context, ready, document, storage, telemetryViews, timers,
+  return {node, calls, players, layouts, layoutButtons, context, ready, document, storage, telemetryViews, dashboardViews, timers,
     async boot() { ready.resolve(); await flush(); await flush(); },
     evaluate: (expression) => vm.runInContext(expression, context),
     async documentEvent(type, details = {}) { for (const listener of documentEvents.get(type) || []) await listener({type, ...details}); },
@@ -404,7 +410,7 @@ test("a late Main probe cannot overwrite the selected Third probe or unlock its 
 const telemetrySample = (usage=25) => ({sampled_at:1000,scope:'container',cpu:{percent:usage},memory:{},swap:{},disk:{}});
 const telemetryCalls = (env) => env.calls.filter((call)=>call.path==='/api/system/telemetry');
 
-test("OS polling runs only in visible Live Monitor, remains single-flight and continues while videos are paused", async()=>{
+test("System polling is shared across every visible authenticated page and remains single-flight while video is paused", async()=>{
   const pending=deferred(); let first=true;
   const env=environment({telemetry:true,handler(path,options,fallback){
     if(path==='/api/system/telemetry'){if(first){first=false;return pending.promise;} return telemetrySample(42);}
@@ -412,9 +418,9 @@ test("OS polling runs only in visible Live Monitor, remains single-flight and co
   }});
   await env.boot();
   assert.equal(telemetryCalls(env).length,1);
-  await env.evaluate('loadMonitorTelemetry()');
+  await env.evaluate('loadSystemTelemetry()');
   assert.equal(telemetryCalls(env).length,1);
-  const oldTimer=env.evaluate('monitorTelemetry.timer');
+  const oldTimer=env.evaluate('systemTelemetry.timer');
   env.document.hidden=true; await env.documentEvent('visibilitychange');
   assert.equal(telemetryCalls(env)[0].options.signal.aborted,true);
   assert.equal(env.timers.has(oldTimer),false);
@@ -424,13 +430,20 @@ test("OS polling runs only in visible Live Monitor, remains single-flight and co
   assert.equal(env.telemetryViews[0].data.cpu.percent,42);
   await env.node('monitor-toggle').fire('click');
   assert.equal(env.evaluate('monitor.playing'),false);
-  await env.runTimer(env.evaluate('monitorTelemetry.timer'));
+  await env.runTimer(env.evaluate('systemTelemetry.timer'));
   assert.equal(telemetryCalls(env).length,3);
-  await env.node('live-tab-layout').fire('click');
-  const count=telemetryCalls(env).length;
-  await env.evaluate('loadMonitorTelemetry()');
-  assert.equal(telemetryCalls(env).length,count);
-  assert.equal(env.telemetryViews[0].data,null);
+  const timer=env.evaluate('systemTelemetry.timer');
+  for (const button of ['live-tab-layout','nav-recorder','nav-cameras','nav-network','nav-settings']) {
+    await env.node(button).fire('click');
+    assert.equal(env.evaluate('systemTelemetry.timer'),timer);
+    const count=telemetryCalls(env).length;
+    await env.runTimer(timer);
+    assert.equal(telemetryCalls(env).length,count+1);
+    assert.equal(env.telemetryViews[0].data.cpu.percent,42);
+  }
+  assert.equal(env.players.every((player)=>player.destroyed),true);
+  assert.equal(env.dashboardViews.length,1);
+  assert.equal(env.dashboardViews[0].data.cpu.percent,42);
 });
 
 test("a timed-out telemetry response clears stale values and cannot replace a newer sample",async()=>{
@@ -441,10 +454,10 @@ test("a timed-out telemetry response clears stale values and cannot replace a ne
   }});
   await env.boot();
   const request=telemetryCalls(env)[0];
-  await env.runTimer(env.evaluate('monitorTelemetry.timeout'));
+  await env.runTimer(env.evaluate('systemTelemetry.timeout'));
   assert.equal(request.options.signal.aborted,true);
   assert.equal(env.telemetryViews[0].data,null);
-  await env.evaluate('loadMonitorTelemetry()');
+  await env.evaluate('loadSystemTelemetry()');
   assert.equal(env.telemetryViews[0].data.cpu.percent,17);
   old.resolve(telemetrySample(99)); await flush(); await flush();
   assert.equal(env.telemetryViews[0].data.cpu.percent,17);
@@ -463,12 +476,48 @@ test("telemetry errors and logout clear metrics; translation only relabels the c
   env.language('it'); await env.windowEvent('nvr-languagechange');
   assert.equal(telemetryCalls(env).length,requests);
   assert.equal(env.telemetryViews[0].relabels,1);
-  failing=true; await env.evaluate('loadMonitorTelemetry()');
+  failing=true; await env.evaluate('loadSystemTelemetry()');
   assert.equal(env.telemetryViews[0].data,null);
   assert.equal(env.players.every((player)=>player.active),true);
   await env.node('logout').fire('click');
   const count=telemetryCalls(env).length;
-  await env.evaluate('loadMonitorTelemetry()');
+  await env.evaluate('loadSystemTelemetry()');
   assert.equal(telemetryCalls(env).length,count);
-  assert.equal(env.evaluate('monitorTelemetry.timer'),null);
+  assert.equal(env.evaluate('systemTelemetry.timer'),null);
+});
+
+
+test("system overview renders the shared snapshot only on its tab and cannot survive logout or stale failures", async()=>{
+  let sample=telemetrySample(14);
+  const env=environment({telemetry:true,handler(path,options,fallback){
+    return path==='/api/system/telemetry'?sample:fallback(path);
+  }});
+  env.node('settings-system-panel').hidden=true;
+  await env.boot();
+  assert.equal(env.dashboardViews.length,0);
+  await env.node('nav-settings').fire('click');
+  assert.equal(env.dashboardViews.length,0);
+  const count=telemetryCalls(env).length;
+  env.node('settings-system-panel').hidden=false;
+  await env.windowEvent('nvr-settings-tabchange',{detail:{tab:'system'}});
+  assert.equal(env.dashboardViews.length,1);
+  assert.equal(env.dashboardViews[0].data.cpu.percent,14);
+  assert.equal(telemetryCalls(env).length,count);
+  const renders=env.dashboardViews[0].renders;
+  env.node('settings-system-panel').hidden=true;
+  sample=telemetrySample(18); await env.evaluate('loadSystemTelemetry()');
+  assert.equal(env.dashboardViews[0].renders,renders);
+  assert.equal(env.telemetryViews[0].data.cpu.percent,18);
+  env.node('settings-system-panel').hidden=false;
+  await env.windowEvent('nvr-settings-tabchange',{detail:{tab:'system'}});
+  assert.equal(env.dashboardViews[0].data.cpu.percent,18);
+  env.language('it'); await env.windowEvent('nvr-languagechange');
+  assert.equal(env.dashboardViews[0].relabels,1);
+  sample={}; await env.evaluate('loadSystemTelemetry()');
+  assert.equal(env.dashboardViews[0].data,null);
+  await env.node('logout').fire('click');
+  assert.equal(env.dashboardViews[0].data,null);
+  assert.equal(env.evaluate('systemTelemetry.timer'),null);
+  await env.windowEvent('pageshow',{persisted:true});
+  assert.equal(env.evaluate('systemTelemetry.timer'),null);
 });

@@ -1,8 +1,8 @@
 # Impostazioni, registrazione e lingue
 
-La versione 0.8.0 aggiunge la durata globale dei file in **Settings → Recording** e gestisce le lingue come **file JSON installabili** nella pagina **Settings → Languages**. Inglese e italiano sono inclusi; nuovi pacchetti si installano e si selezionano in Languages. Non sono richiesti servizi esterni. La barra sinistra mantiene icone e nomi in stile M777.
+Le impostazioni raccolgono **General**, **Languages**, **Recording** e **System**. Inglese e italiano sono inclusi; nuovi pacchetti JSON si installano e si selezionano in Languages. La grafica usa pannelli compatti, superfici grigio scuro, accenti ciano e dettagli oro, in linea con Record. La versione dell'applicazione compare sotto il logo e gli indicatori di sistema nella barra superiore rimangono visibili da ogni pagina autenticata.
 
-La pagina usa righe compatte per i pacchetti e raccoglie installazione e modello JSON in due riquadri affiancati sul desktop, disposti in colonna sul telefono. La grafica riprende le superfici piatte e i bordi sottili di M777, con una base grigio titanio e accenti verde acqua per comandi, selezioni, timeline e forma d'onda.
+La pagina usa righe compatte per i pacchetti e raccoglie installazione e modello JSON in due riquadri affiancati sul desktop, disposti in colonna sul telefono.
 
 ## Cambiare lingua
 
@@ -17,6 +17,8 @@ La preferenza viene salvata nel browser. Ogni dispositivo può usare una lingua 
 Le sorgenti e i parametri delle singole telecamere si gestiscono in **Cameras / Telecamere**. Oltre a RTSP/RTSPS si possono inserire URL video HTTP/HTTPS, playlist HLS e flussi MJPEG compatibili. ONVIF aiuta a ricavare i profili di una telecamera; non è un trasporto video alternativo da scrivere come URL. [Guida alle sorgenti e alla configurazione delle telecamere](cameras.md).
 
 ## Manutenzione del sistema
+
+**Settings → System** mostra una panoramica del recorder: hostname, IP locali, versione, sistema operativo, tempi di attività, carico CPU, temperatura disponibile, RAM, swap, spazio dei dischi e autonomia stimata delle registrazioni. I grafici mostrano i campioni degli ultimi 30 minuti e i relativi picchi, senza riempire i periodi mancanti. [Come leggere le misure e la stima di spazio](telemetry.md).
 
 Per riavviare il recorder aprire **Settings → System**. Il riavvio del servizio richiede una conferma esplicita; il riavvio del sistema operativo locale è disponibile solo se abilitato dall'amministratore Linux. Entrambi interrompono temporaneamente la registrazione. [Disponibilità e conferme della manutenzione](maintenance.md).
 

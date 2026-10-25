@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.12.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.13.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -21,7 +21,7 @@ Il flusso originale viene copiato in file **Matroska/MKV con durata da 1 a 120 m
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.
 - Scelta dei profili principale e secondario per configurare registrazione e anteprima; nomi originali conservati e suggerimenti basati sui metadati per ciascuna sorgente video.
 - Registrazione continua senza ricodifica, audio opzionale, riconnessione automatica e stato per telecamera.
-- **Risorse di sistema nel Live**: tre indicatori compatti mostrano CPU e temperatura, RAM e swap, occupazione dei dischi archivio/sistema. Controlli del monitor allineati a destra. Dati locali del container o del PC Linux, aggiornati senza interrompere i video. [Guida risorse di sistema](docs/telemetry.md).
+- **Risorse di sistema in tutte le pagine**: indicatori compatti nella barra superiore mostrano CPU e temperatura, RAM e swap, occupazione e spazio libero dei dischi, autonomia stimata delle registrazioni al ritmo recente delle telecamere attive. **Settings → System** aggiunge hostname, IP locali, sistema operativo, tempi di attività e grafici con picchi degli ultimi 30 minuti. Dati locali del container o del PC Linux, aggiornati senza interrompere i video. Versione sotto il logo SR81 e impostazioni nello stile compatto di Record. [Guida risorse di sistema](docs/telemetry.md).
 - **Live → Monitor** come pagina iniziale, con video continuo, griglie da 1/4/9/16 riquadri, schermo intero, audio su una camera per volta e riconnessione indipendente. **Live → Layout** dispone le telecamere con trascinamento o selettori, conserva gli spazi vuoti e salva la disposizione nel browser. La navigazione usa sfondo grigio scuro, accenti ciano brillanti e dettagli oro, logo SR81 compatto, icone a sinistra e sottomenu nella barra superiore. La voce **Cameras** raccoglie le configurazioni. Usa il sottostream quando disponibile, condividendo il processo video fra gli spettatori. [Guida monitor live](docs/live.md).
 - **Record / Registrazioni** con filtri telecamera, data e orari Da/A, anche attraverso mezzanotte; elenco con miniature reali dei file, video con controlli dedicati e timeline che conserva i vuoti dell'archivio. Audio e movimento seguono la posizione e la durata effettiva del filmato selezionato. Download dell'originale, senza modificarlo. [Guida alle registrazioni](docs/recordings.md).
 - MP4 per il browser: copia video originale e conversione audio in AAC. Se H.265 non è supportato, modalità compatibile su richiesta con conversione H.264, più onerosa per la CPU.
