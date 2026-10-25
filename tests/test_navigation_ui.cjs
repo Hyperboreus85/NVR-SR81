@@ -63,8 +63,9 @@ function camera(id) {
 const snapshot = (size = 4, ids = ["a", "b", "c", "d"]) => ({version: 1, size, slots: Array.from({length: 16}, (_, index) => ids[index] || null)});
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
-function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), handler} = {}) {
+function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), legacySize = null, handler} = {}) {
   const nodes = new Map(), windowEvents = new Map(), documentEvents = new Map(), calls = [], players = [], layouts = [], timers = new Map();
+  const storage = new Map(legacySize === null ? [] : [["nvr.monitor.layout", String(legacySize)]]);
   const ready = deferred(); let timer = 0, language = "en", settingsOpens = 0;
   const node = (id) => { if (!nodes.has(id)) { const item = new Element(id === "player" ? "video" : "div"); item.id = id; nodes.set(id, item); } return nodes.get(id); };
   const layoutButtons = [1, 4, 9, 16].map((size) => { const button = new Element("button"); button.dataset.monitorLayout = String(size); return button; });
@@ -91,7 +92,15 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
     destroy() { this.close(); this.destroyed = true; }
     relabel() { this.relabels += 1; }
     render() {}
-    applySize(size) { if (![1, 4, 9, 16].includes(size)) return false; this.saved.size = size; this.options.onSave(this.getSaved()); return true; }
+    applySize(size) {
+      if (this.failNextApply) {
+        this.failNextApply = false;
+        this.options.onError(vm.runInContext('new Error("The layout could not be saved in this browser. Check browser storage permissions and try again.")', context));
+        return false;
+      }
+      if (![1, 4, 9, 16].includes(size)) return false;
+      this.saved.size = size; this.options.onSave(this.getSaved()); return true;
+    }
     save(value) { this.saved = clone(value); this.options.onSave(this.getSaved()); }
   }
   const defaults = (path) => path === "/api/session" ? {authenticated: true}
@@ -104,7 +113,7 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
   const context = vm.createContext({console, document, Intl, Headers, URL, URLSearchParams, AbortController,
     setTimeout(callback) { const id = ++timer; timers.set(id, callback); return id; }, clearTimeout: (id) => timers.delete(id),
     setInterval(callback) { const id = ++timer; timers.set(id, callback); return id; }, clearInterval: (id) => timers.delete(id),
-    localStorage: {getItem: () => null, setItem() {}},
+    localStorage: {getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value))},
     CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     async fetch(path, options = {}) { calls.push({path, options}); const value = await (handler ? handler(path, options, defaults) : defaults(path)); return value instanceof Response ? value : new Response(JSON.stringify(value), {status: 200}); },
   });
@@ -116,7 +125,7 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
   context.addEventListener = (type, listener) => { if (!windowEvents.has(type)) windowEvents.set(type, []); windowEvents.get(type).push(listener); };
   context.dispatchEvent = (event) => { for (const listener of windowEvents.get(event.type) || []) listener(event); return true; };
   vm.runInContext(source, context, {filename: "app.js"});
-  return {node, calls, players, layouts, layoutButtons, context, ready, document,
+  return {node, calls, players, layouts, layoutButtons, context, ready, document, storage,
     async boot() { ready.resolve(); await flush(); await flush(); },
     evaluate: (expression) => vm.runInContext(expression, context),
     async documentEvent(type, details = {}) { for (const listener of documentEvents.get(type) || []) await listener({type, ...details}); },
@@ -242,6 +251,27 @@ test("quick grid size applies the saved layout while retaining assignments in hi
   assert.equal(env.node("monitor-grid").children.length, 4);
   assert.equal(first.destroyed, false);
   assert.equal(env.players.filter((item) => item.active).length, 4);
+});
+
+test("General grid preference follows the canonical layout and failed saves restore its displayed size", async () => {
+  const env = environment({saved: snapshot(16), legacySize: 1}); await env.boot();
+  assert.equal(env.layouts[0].getSaved().size, 16);
+  assert.equal(env.node("settings-monitor-layout").value, "16", "A stale legacy preference must not override the saved wall");
+  assert.equal(env.node("monitor-grid").children.length, 16);
+
+  await env.layoutButtons.find((button) => button.dataset.monitorLayout === "4").fire("click");
+  assert.equal(env.layouts[0].getSaved().size, 4);
+  assert.equal(env.node("settings-monitor-layout").value, "4");
+  assert.equal(env.storage.get("nvr.monitor.layout"), "4");
+
+  env.layouts[0].failNextApply = true;
+  env.node("settings-monitor-layout").value = "9";
+  await env.windowEvent("nvr-monitor-layoutchange", {detail: {layout: 9}});
+  assert.equal(env.layouts[0].getSaved().size, 4);
+  assert.equal(env.node("settings-monitor-layout").value, "4");
+  assert.equal(env.node("monitor-grid").children.length, 4);
+  assert.match(env.node("toast").textContent, /could not be saved in this browser/);
+  assert.doesNotMatch(env.node("toast").textContent, /Layout saved/);
 });
 
 test("audio starts muted, listening to one camera mutes the others and leaving Live clears the choice", async () => {

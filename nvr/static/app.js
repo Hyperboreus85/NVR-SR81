@@ -63,12 +63,17 @@ function ensureLiveLayout() {
       onSave(saved) {
         monitor.layout = saved.size;
         monitor.page = 0;
+        try { localStorage.setItem("nvr.monitor.layout", String(saved.size)); } catch (_) { /* The complete layout is already saved. */ }
         if ($("settings-monitor-layout")) $("settings-monitor-layout").value = String(saved.size);
         if (network.view === "monitor") renderMonitor();
         toast(t("Layout saved."));
       },
-      onError(error) { toast(errorText(error)); },
+      onError(error) {
+        if ($("settings-monitor-layout") && liveLayout) $("settings-monitor-layout").value = String(liveLayout.getSaved().size);
+        toast(errorText(error));
+      },
     });
+    if ($("settings-monitor-layout")) $("settings-monitor-layout").value = String(liveLayout.getSaved().size);
   }
   return liveLayout;
 }
