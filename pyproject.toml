@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nvr-sr81"
-version = "0.18.0"
+version = "0.19.0"
 description = "Local NVR with continuous RTSP recording and a multilingual web interface"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"

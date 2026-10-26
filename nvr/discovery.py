@@ -340,18 +340,30 @@ def _scan_targets(cidr: str, ports: list[int]) -> tuple[list[str], list[int]]:
         raise DiscoveryError("Use a private IPv4 subnet of /24 or smaller and 1 to 8 valid ports.") from None
 
 
-async def _verify_endpoint(client: httpx.AsyncClient, host: str, port: int, timeout: float) -> dict | None:
+async def _verify_endpoint(client: httpx.AsyncClient, host: str, port: int, timeout: float, *, server_hostname: str | None = None) -> dict | None:
     # Explicit, read-only PRE_AUTH operation (ONVIF Core 8.3.6). No passwords,
     # generic web port detection, redirects or advertised follow-up addresses.
-    endpoint = f"{'https' if port == 443 else 'http'}://{host}:{port}/onvif/device_service"
+    authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    endpoint = f"{'https' if port == 443 else 'http'}://{authority}:{port}/onvif/device_service"
+    headers = {"Content-Type": f'application/soap+xml; charset=utf-8; action="{DEVICE}/GetSystemDateAndTime"',
+               "SOAPAction": f'"{DEVICE}/GetSystemDateAndTime"'}
+    extensions = {}
+    logical_endpoint = endpoint
+    if server_hostname is not None:
+        # Callers resolve and validate once, then connect to the numeric host.
+        # Retain the original authority for virtual hosts and certificate/SNI
+        # validation without allowing HTTP redirects or a second DNS lookup.
+        if (not isinstance(server_hostname, str) or not server_hostname or len(server_hostname) > 253
+                or any(not (character.isascii() and (character.isalnum() or character in ".-")) for character in server_hostname)):
+            return None
+        headers["Host"] = f"{server_hostname}:{port}"
+        extensions["sni_hostname"] = server_hostname
+        logical_endpoint = f"{'https' if port == 443 else 'http'}://{server_hostname}:{port}/onvif/device_service"
     payload = (f'<s:Envelope xmlns:s="{SOAP}" xmlns:tds="{DEVICE}"><s:Body>'
                '<tds:GetSystemDateAndTime/></s:Body></s:Envelope>').encode()
     try:
         async with asyncio.timeout(timeout):
-            async with client.stream("POST", endpoint, content=payload, headers={
-                "Content-Type": f'application/soap+xml; charset=utf-8; action="{DEVICE}/GetSystemDateAndTime"',
-                "SOAPAction": f'"{DEVICE}/GetSystemDateAndTime"',
-            }) as response:
+            async with client.stream("POST", endpoint, content=payload, headers=headers, extensions=extensions) as response:
                 if not 200 <= response.status_code < 300:
                     return None
                 data = bytearray()
@@ -364,7 +376,7 @@ async def _verify_endpoint(client: httpx.AsyncClient, host: str, port: int, time
                 if root.tag == f"{{{soap}}}Envelope":
                     body = root.find(f"{{{soap}}}Body")
                     if body is not None and body.find(f"{{{DEVICE}}}GetSystemDateAndTimeResponse") is not None:
-                        return _device(endpoint, host, [endpoint], [])
+                        return _device(logical_endpoint, host, [logical_endpoint], [])
     except (httpx.HTTPError, OSError, asyncio.TimeoutError, ET.ParseError, DefusedXmlException, ValueError):
         pass
     return None

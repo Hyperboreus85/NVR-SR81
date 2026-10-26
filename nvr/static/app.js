@@ -58,6 +58,7 @@ function applyAccess() {
     "monitor-setup-empty": can("cameras") || can("network"), "monitor-assignment-empty": !can("cameras") && !can("network"),
     "toggle-live": can("live"), "edit-camera": can("cameras"), "monitor-find-cameras": can("network"),
     "network-add-recorder": can("cameras") && state.user?.camera_scope === "all",
+    "network-direct-add": can("cameras") && state.user?.camera_scope === "all",
     "add-camera": can("cameras") && state.user?.camera_scope === "all", "add-camera-small": can("cameras") && state.user?.camera_scope === "all",
     "add-first-camera": can("cameras") && state.user?.camera_scope === "all", "cameras-add": can("cameras") && state.user?.camera_scope === "all"};
   for (const [id, visible] of Object.entries(visibility)) if ($(id)) $(id).hidden = !visible;
@@ -74,6 +75,8 @@ const network = {
   scanEpoch: 0, profileEpoch: 0, modalEpoch: 0,
   scanController: null, profileController: null, modalController: null, scanTimer: null,
   scanProgress: null, deviceInfo: null, emptyMessage: null,
+  scanStatusController: null, progressData: null, suggestedTarget: null,
+  directController: null, directEpoch: 0, directVerified: null,
 };
 const monitor = {
   playing: true, layout: savedMonitorLayout(), page: 0, tiles: new Map(), observer: null,
@@ -87,7 +90,13 @@ const cameraRotation = window.NvrCameraRotation ? new window.NvrCameraRotation({
   onRotate: () => renderMonitor(),
 }) : null;
 let liveLayout = null;
+let networkSearch = null;
 let cameraEditor = null, cameraDialogEpoch = 0, cameraProbeEpoch = 0, cameraProbeController = null;
+
+function ensureNetworkSearch() {
+  if (!networkSearch && window.NvrNetworkSearch) networkSearch = new window.NvrNetworkSearch({api, t, isAuthenticated: () => can("network")});
+  return networkSearch;
+}
 
 function cancelCameraProbe() {
   cameraProbeEpoch += 1;
@@ -1196,10 +1205,13 @@ function showView(view) {
   });
   if (view !== "recorder") { stopLive(); player.pause(); }
   if (!isNetwork) {
+    networkSearch?.close();
+    cancelDirectProbe();
     cancelNetworkScan(false);
     if (network.profileController) clearNetworkProfiles(false);
     drawTimeline(); drawWaveform();
   }
+  else if (state.authenticated) { ensureNetworkSearch()?.open(); loadNetworkInterfaces(); }
   if (view === "monitor" && state.authenticated) { renderMonitor(); loadMonitorStatus(); }
   else releaseMonitor();
   if (view === "layout" && state.authenticated) ensureLiveLayout()?.open();
@@ -1468,6 +1480,7 @@ function showWarnings(id, warnings) {
 }
 
 function clearNetworkProfiles(clearCredentials = false) {
+  cancelDirectProbe();
   network.profileController?.abort();
   network.profileController = null;
   network.profileEpoch += 1;
@@ -1476,6 +1489,8 @@ function clearNetworkProfiles(clearCredentials = false) {
   if (clearCredentials) {
     $("network-username").value = "";
     $("network-password").value = "";
+    for (const id of ["network-stream-host", "network-stream-port"]) if ($(id)) $(id).value = "";
+    if ($("network-use-endpoint-address")) $("network-use-endpoint-address").checked = false;
   }
   $("network-include-credentials").checked = false;
   $("network-profiles").replaceChildren();
@@ -1515,10 +1530,13 @@ function resetNetwork() {
   network.selected = null;
   network.interfaces = [];
   network.interfacesLoaded = false;
+  network.progressData = null;
+  network.suggestedTarget = null;
   network.interfaceEpoch += 1;
   $("network-interface").replaceChildren(el("option", "", t("Automatic · all available interfaces")));
   $("network-interface").firstChild.value = "";
   $("network-manual-endpoint").value = "";
+  if ($("network-direct-url")) $("network-direct-url").value = "";
   $("network-cidr").value = "";
   $("network-endpoint").replaceChildren();
   $("copy-value").value = "";
@@ -1558,7 +1576,10 @@ function suggestNetworkCidr() {
   const item = network.interfaces.find((entry) => entry.address === $("network-interface").value) || network.interfaces[0];
   if (!item) return;
   const prefix = Number(String(item.cidr || "").split("/")[1]);
-  $("network-cidr").value = prefix >= 24 ? item.cidr : `${String(item.address).split(".").slice(0, 3).join(".")}.0/24`;
+  const current = $("network-cidr").value.trim();
+  if (current && current !== network.suggestedTarget) return;
+  const suggested = prefix >= 24 ? item.cidr : `${String(item.address).split(".").slice(0, 3).join(".")}.0/24`;
+  $("network-cidr").value = network.suggestedTarget = suggested;
 }
 
 function setScanBusy(busy) {
@@ -1567,6 +1588,7 @@ function setScanBusy(busy) {
   $("network-interface").disabled = busy;
   $("network-cancel").hidden = !busy;
   $("network-progress").hidden = !busy;
+  ensureNetworkSearch()?.setBusy(busy);
 }
 
 function cancelNetworkScan(announce = true) {
@@ -1574,17 +1596,22 @@ function cancelNetworkScan(announce = true) {
   network.scanEpoch += 1;
   network.scanController?.abort();
   network.scanController = null;
+  network.scanStatusController?.abort(); network.scanStatusController = null;
   clearInterval(network.scanTimer);
   network.scanTimer = null;
   network.scanProgress = null;
   setScanBusy(false);
+  if (wasRunning) {
+    network.progressData = {...(network.progressData || {}), state: "cancelled", partial: true};
+    networkSearch?.progress(network.progressData);
+  }
   if (wasRunning && !network.devices.length) renderNetworkDevices(t("Search cancellation requested. Wait for server confirmation before starting another search."));
   if (wasRunning && state.authenticated) {
     const authEpoch = state.authEpoch, cancelEpoch = network.scanEpoch;
     if (announce) toast(t("Search cancellation requested."));
     // Closing the HTTP response alone may leave the server's discovery task
     // running. Explicit cancellation releases that task and its discovery lock.
-    api("/api/onvif/cancel", {method: "POST", body: {}}).then((result) => {
+    api("/api/network/cancel", {method: "POST", body: {}}).then((result) => {
       if (!state.authenticated || authEpoch !== state.authEpoch || cancelEpoch !== network.scanEpoch) return;
       if (typeof result?.cancelled === "boolean" && !network.devices.length) renderNetworkDevices(t("Search closed. You can start another search or enter an endpoint manually."));
     }).catch(() => {
@@ -1594,53 +1621,69 @@ function cancelNetworkScan(announce = true) {
   }
 }
 
+function acceptNetworkResults(data) {
+  const incoming = Array.isArray(data?.devices) ? data.devices.slice(0, 128) : [];
+  const selected = network.selected;
+  network.devices = incoming;
+  if (selected) {
+    const current = incoming.find((item) => item.id === selected.id || item.endpoint && item.endpoint === selected.endpoint);
+    if (current) { network.selected = current; updateNetworkDeviceControls(current); }
+    else network.devices = [selected, ...incoming];
+  }
+  showWarnings("network-warnings", data?.warnings);
+  renderNetworkDevices(t("No services found. Check the address, routing, ports or camera discovery settings."));
+}
+
+function renderScanProgress() {
+  if (networkSearch) networkSearch.progress(network.progressData);
+  else setText("network-progress-label", t("Searching…"));
+}
+
 async function runNetworkScan(mode) {
-  if (network.scanController) return;
+  if (network.scanController || !can("network")) return;
+  const controls = ensureNetworkSearch();
+  if (mode === "scan") controls?.setMode("targets");
   let payload;
-  if (mode === "scan") {
-    const cidr = $("network-cidr").value.trim();
-    const parts = cidr.match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/);
-    const ports = [...new Set($("network-ports").value.split(",").map((value) => Number(value.trim())))];
-    if (!parts || parts[1].split(".").some((value) => Number(value) > 255) || Number(parts[2]) < 24 || Number(parts[2]) > 32) {
-      setText("network-error", t("Enter a valid IPv4 network with a prefix from /24 to /32 (up to 256 addresses).")); return;
-    }
-    if (!ports.length || ports.length > 8 || ports.some((port) => !Number.isInteger(port) || port < 1 || port > 65535)) {
-      setText("network-error", t("Enter 1 to 8 valid ports, separated by commas (1 to 65535).")); return;
-    }
-    payload = {cidr, ports};
-  } else payload = {interface_ip: $("network-interface").value || null, timeout: 6};
-  const request = ++network.scanEpoch, authEpoch = state.authEpoch;
-  const controller = new AbortController();
-  network.scanController = controller;
-  clearNetworkProfiles(true);
-  network.selected = null;
-  network.devices = [];
-  renderNetworkDevices(t("Searching. Results will appear when the search finishes."));
-  $("network-device-explorer").hidden = true;
-  $("network-select-placeholder").hidden = false;
-  setText("network-error", "");
-  showWarnings("network-warnings", []);
-  setScanBusy(true);
-  const started = Date.now();
-  const progress = () => setText("network-progress-label", t("{search} in progress · {seconds} s", {search: mode === "scan" ? t("IP range search") : t("ONVIF multicast search"), seconds: number(Math.floor((Date.now() - started) / 1000))}));
-  network.scanProgress = progress;
-  progress();
-  network.scanTimer = setInterval(progress, 1000);
   try {
-    const data = await api(`/api/onvif/${mode}`, {method: "POST", body: payload, signal: controller.signal});
-    if (request !== network.scanEpoch || authEpoch !== state.authEpoch || network.view !== "network" || !state.authenticated) return;
-    network.devices = Array.isArray(data?.devices) ? data.devices : [];
-    showWarnings("network-warnings", data?.warnings);
-    renderNetworkDevices(t("No devices found. Check that ONVIF is enabled, camera and server share the same LAN, and the firewall, bridge or LXC container allows traffic. Try an IP range or enter an endpoint manually."));
-    toast(t(Number.isFinite(data?.duration) ? network.devices.length === 1 ? "{count} device found in {seconds} s." : "{count} devices found in {seconds} s." : network.devices.length === 1 ? "{count} device found." : "{count} devices found.", {count: number(network.devices.length), seconds: number(data?.duration, {maximumFractionDigits: 1})}));
+    payload = controls ? controls.readForm() : {mode: mode === "scan" ? "targets" : "local", targets: mode === "scan" ? $("network-cidr").value.split(/[,\n]+/).map((value) => value.trim()).filter(Boolean) : [], methods: mode === "scan" ? ["onvif", "rtsp"] : ["onvif", "mdns"], interface_ip: $("network-interface").value || null};
+  } catch (error) { setText("network-error", errorText(error)); return; }
+  const request = ++network.scanEpoch, authEpoch = state.authEpoch;
+  const requestId = `search-${authEpoch}-${request}-${Date.now()}`;
+  payload.request_id = requestId;
+  const controller = new AbortController(); network.scanController = controller;
+  network.devices = network.selected ? [network.selected] : [];
+  renderNetworkDevices(t("Searching…"));
+  setText("network-error", ""); showWarnings("network-warnings", []);
+  setScanBusy(true);
+  network.progressData = {state: "running", completed: 0, total: 0, duration: 0};
+  network.scanProgress = renderScanProgress; renderScanProgress();
+  const current = () => request === network.scanEpoch && authEpoch === state.authEpoch && network.view === "network" && can("network");
+  const poll = async () => {
+    if (!current() || network.scanStatusController) return;
+    const statusController = new AbortController(); network.scanStatusController = statusController;
+    const timeout = setTimeout(() => statusController.abort(), 4000);
+    try {
+      const data = await api(`/api/network/status?${new URLSearchParams({request_id: requestId})}`, {signal: statusController.signal});
+      if (!current() || data?.request_id !== requestId || data.state === "idle") return;
+      network.progressData = data; renderScanProgress(); acceptNetworkResults(data);
+    } catch (_) { /* The search response reports failure; status never repeats it. */ }
+    finally { clearTimeout(timeout); if (network.scanStatusController === statusController) network.scanStatusController = null; }
+  };
+  network.scanTimer = setInterval(poll, 1000);
+  try {
+    const data = await api("/api/network/search", {method: "POST", body: payload, signal: controller.signal});
+    if (!current()) return;
+    network.progressData = data; renderScanProgress(); acceptNetworkResults(data);
+    if (!network.selected && network.devices.length === 1) chooseNetworkDevice(network.devices[0]);
+    if (data?.partial) toast(t("Partial results. Refine the targets or run the search again."));
   } catch (error) {
-    if (error.name !== "AbortError" && request === network.scanEpoch) {
-      setText("network-error", errorText(error));
-      renderNetworkDevices(t("Search did not finish. Check server connectivity or enter an endpoint manually."));
-    }
+    if (current() && error.name !== "AbortError") setText("network-error", errorText(error));
   } finally {
     if (request === network.scanEpoch) {
-      clearInterval(network.scanTimer); network.scanTimer = null; network.scanProgress = null; network.scanController = null; setScanBusy(false);
+      clearInterval(network.scanTimer); network.scanTimer = null;
+      network.scanStatusController?.abort(); network.scanStatusController = null;
+      network.scanProgress = null; network.scanController = null; setScanBusy(false);
+      if (network.progressData) controls?.progress(network.progressData);
     }
   }
 }
@@ -1652,7 +1695,7 @@ function renderNetworkDevices(emptyMessage = t("Start a search or enter an ONVIF
   setText("network-device-count", number(network.devices.length));
   if (!network.devices.length) {
     const empty = el("div", "network-device-empty");
-    empty.append(icon("network"), el("strong", "", t("Explore your network.")), el("p", "", emptyMessage));
+    empty.append(el("p", "", emptyMessage));
     list.append(empty);
   }
   network.devices.forEach((device, index) => {
@@ -1660,33 +1703,107 @@ function renderNetworkDevices(emptyMessage = t("Start a search or enter an ONVIF
     row.type = "button";
     row.setAttribute("aria-pressed", String(device === network.selected));
     const copy = el("span");
-    copy.append(el("strong", "", device.name || device.hardware || device.ip || t("Device {number}", {number: number(index + 1)})), el("small", "", `${device.ip || "ONVIF"}${device.manual ? t(" · manual endpoint") : ""}`));
+    const protocols = [...new Set((device.services || []).map((service) => String(service.protocol || "").toUpperCase()).filter(Boolean))];
+    if (device.endpoint && !protocols.includes("ONVIF")) protocols.unshift("ONVIF");
+    copy.append(el("strong", "", device.name || device.hardware || device.ip || t("Device {number}", {number: number(index + 1)})), el("small", "", [device.ip || "", protocols.join(" / "), device.manual ? t("Manual") : ""].filter(Boolean).join(" · ")));
     row.append(icon("camera"), copy, el("span", "device-chevron", "›"));
     row.addEventListener("click", () => chooseNetworkDevice(device));
     list.append(row);
   });
 }
 
+function updateNetworkDeviceControls(device, reset = false) {
+  const endpoints = [...new Set([device.endpoint, ...(Array.isArray(device.xaddrs) ? device.xaddrs : [])].filter((value) => typeof value === "string" && value))];
+  const select = $("network-endpoint"), previous = select.value;
+  const signature = JSON.stringify(endpoints);
+  if (select.dataset.endpoints !== signature) {
+    select.replaceChildren();
+    endpoints.forEach((endpoint) => { const option = el("option", "", endpoint); option.value = endpoint; select.append(option); });
+    select.value = endpoints.includes(previous) ? previous : endpoints[0] || "";
+    select.dataset.endpoints = signature;
+  }
+  setText("network-device-name", device.name || device.hardware || device.ip || t("ONVIF device"));
+  setText("network-device-address", device.ip || t("Manual endpoint"));
+  const methods = Array.isArray(device.methods) ? device.methods.map((method) => method === "mdns" ? "mDNS" : method.toUpperCase()) : [];
+  setText("network-device-description", [device.hardware, device.location, methods.join(" / ")].filter(Boolean).join(" · "));
+  if ($("network-onvif-controls")) $("network-onvif-controls").hidden = !endpoints.length;
+  if ($("network-direct-tools")) $("network-direct-tools").hidden = !!endpoints.length && device.kind !== "stream";
+  if (reset && $("network-direct-url")) {
+    const stream = (device.services || []).find((service) => ["rtsp", "rtsps", "http", "https"].includes(service.protocol));
+    $("network-direct-url").value = device.source_url || stream?.url || "";
+  }
+  $("network-read-profiles").disabled = !endpoints.length || !!network.profileController;
+  applyAccess();
+}
+
 function chooseNetworkDevice(device) {
   if (network.selected === device) return;
   clearNetworkProfiles(true);
   network.selected = device;
-  const endpoints = [...new Set([device.endpoint, ...(Array.isArray(device.xaddrs) ? device.xaddrs : [])].filter((value) => typeof value === "string" && value))];
-  $("network-endpoint").replaceChildren();
-  endpoints.forEach((endpoint) => { const option = el("option", "", endpoint); option.value = endpoint; $("network-endpoint").append(option); });
-  setText("network-device-name", device.name || device.hardware || device.ip || t("ONVIF device"));
-  setText("network-device-address", device.ip || t("Manual endpoint"));
-  setText("network-device-description", [device.hardware, device.location].filter(Boolean).join(" · "));
+  updateNetworkDeviceControls(device, true);
   $("network-select-placeholder").hidden = true;
   $("network-device-explorer").hidden = false;
-  $("network-read-profiles").disabled = !endpoints.length;
-  if (!endpoints.length) setText("network-profile-error", t("The device did not advertise an endpoint. Enter it manually in the field above."));
   renderNetworkDevices();
+}
+
+function cancelDirectProbe() {
+  network.directEpoch += 1; network.directController?.abort(); network.directController = null; network.directVerified = null;
+  if ($("network-direct-test")) $("network-direct-test").disabled = false;
+  if ($("network-direct-add")) $("network-direct-add").disabled = true;
+  if ($("network-direct-result")) { $("network-direct-result").textContent = ""; $("network-direct-result").hidden = true; }
+}
+
+function directStreamSource() {
+  const raw = $("network-direct-url")?.value.trim() || "";
+  let url;
+  try { url = new URL(raw); } catch (_) { throw uiError(t("Enter an RTSP, RTSPS, HTTP or HTTPS video address.")); }
+  if (!["rtsp:", "rtsps:", "http:", "https:"].includes(url.protocol) || url.hash || !url.hostname || /[\u0000-\u001f\u007f]/.test(raw)) throw uiError(t("Enter an RTSP, RTSPS, HTTP or HTTPS video address."));
+  if (!url.username && $("network-username").value) {
+    url.username = $("network-username").value; url.password = $("network-password").value;
+  }
+  return url.href;
+}
+
+async function testDirectStream() {
+  if (!can("network") || network.directController) return;
+  cancelDirectProbe();
+  $("network-direct-result").hidden = false;
+  let source;
+  try { source = directStreamSource(); } catch (error) { setText("network-direct-result", errorText(error)); return; }
+  const epoch = ++network.directEpoch, authEpoch = state.authEpoch, controller = new AbortController();
+  network.directController = controller; $("network-direct-test").disabled = true;
+  setText("network-direct-result", t("Testing video…"));
+  try {
+    const result = await api("/api/network/probe", {method: "POST", body: {url: source}, signal: controller.signal});
+    if (epoch !== network.directEpoch || authEpoch !== state.authEpoch || !can("network") || network.view !== "network" || directStreamSource() !== source) return;
+    if (result?.verified !== true || typeof result.video_codec !== "string") throw uiError(t("The stream does not contain a readable video track."));
+    network.directVerified = source;
+    const dimensions = Number.isInteger(result.width) && Number.isInteger(result.height) ? `${result.width} × ${result.height}` : "";
+    setText("network-direct-result", [t("Readable video"), result.video_codec.toUpperCase(), dimensions, result.audio_codec || ""].filter(Boolean).join(" · "));
+    $("network-direct-add").disabled = !can("cameras") || state.user?.camera_scope !== "all";
+  } catch (error) {
+    if (epoch === network.directEpoch && error.name !== "AbortError") setText("network-direct-result", errorText(error));
+  } finally {
+    if (epoch === network.directEpoch) { network.directController = null; $("network-direct-test").disabled = false; }
+  }
+}
+
+function addDirectStream() {
+  if (!can("cameras") || state.user?.camera_scope !== "all") return;
+  let source;
+  try { source = directStreamSource(); } catch (_) { return; }
+  if (!network.directVerified || network.directVerified !== source) return;
+  openCameraDialog();
+  $("camera-name").value = String(network.selected?.name || network.selected?.ip || t("Camera")).slice(0, 80);
+  $("camera-url").value = source; $("camera-preview-url").value = "";
+  if ($("camera-third-url")) $("camera-third-url").value = "";
+  cameraEditorController()?.setSources({url: source, preview_url: "", third_url: ""});
 }
 
 async function readNetworkProfiles(event) {
   event.preventDefault();
-  if (!network.selected || !$("network-endpoint").value) return;
+  if (!network.selected || !can("network")) return;
+  if (!$("network-endpoint").value) { await testDirectStream(); return; }
   clearNetworkProfiles(false);
   const request = ++network.profileEpoch, authEpoch = state.authEpoch;
   const controller = new AbortController();
@@ -1694,9 +1811,17 @@ async function readNetworkProfiles(event) {
   $("network-read-profiles").disabled = true;
   $("network-profile-progress").hidden = false;
   try {
+    const options = {};
+    const host = $("network-stream-host")?.value.trim(), port = $("network-stream-port")?.value.trim();
+    if (host) options.stream_host = host;
+    if (port) {
+      if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw uiError(t("Enter a valid stream port from 1 to 65535."));
+      options.stream_port = Number(port);
+    }
+    if ($("network-use-endpoint-address")?.checked) options.use_endpoint_address = true;
     const data = await api("/api/onvif/profiles", {method: "POST", signal: controller.signal, body: {
       endpoint: $("network-endpoint").value, username: $("network-username").value,
-      password: $("network-password").value,
+      password: $("network-password").value, ...options,
     }});
     if (request !== network.profileEpoch || authEpoch !== state.authEpoch || !state.authenticated) return;
     network.profiles = Array.isArray(data?.profiles) ? data.profiles : [];
@@ -1981,7 +2106,7 @@ $("live-tab-monitor")?.addEventListener("click", () => showView("monitor"));
 $("live-tab-layout")?.addEventListener("click", () => showView("layout"));
 $("nav-settings")?.addEventListener("click", () => showView("settings"));
 $("monitor-toggle").addEventListener("click", () => { monitor.playing = !monitor.playing; syncMonitorPlayers(); loadMonitorStatus(); });
-$("monitor-find-cameras").addEventListener("click", () => { showView("network"); loadNetworkInterfaces(); });
+$("monitor-find-cameras").addEventListener("click", () => showView("network"));
 document.querySelectorAll("[data-monitor-layout]").forEach((button) => button.addEventListener("click", () => {
   const size = Number(button.dataset.monitorLayout);
   if (![1, 4, 9, 16].includes(size)) return;
@@ -2012,29 +2137,55 @@ document.addEventListener("fullscreenchange", () => {
   monitor.fullscreenId = document.fullscreenElement?.dataset.cameraId || null;
   if (network.view === "monitor") syncMonitorPlayers();
 });
-$("nav-network").addEventListener("click", () => { showView("network"); loadNetworkInterfaces(); });
+$("nav-network").addEventListener("click", () => showView("network"));
 $("network-back").addEventListener("click", () => showView("recorder"));
 $("network-interface").addEventListener("change", suggestNetworkCidr);
 $("network-discover").addEventListener("click", () => runNetworkScan("discover"));
 $("network-cancel").addEventListener("click", () => cancelNetworkScan());
-$("network-scan-form").addEventListener("submit", (event) => { event.preventDefault(); runNetworkScan("scan"); });
+$("network-scan-form").addEventListener("submit", (event) => { event.preventDefault(); runNetworkScan(); });
 $("network-manual-form").addEventListener("submit", (event) => {
   event.preventDefault();
+  if (!can("network")) return;
   const endpoint = $("network-manual-endpoint").value.trim();
+  const kind = $("network-manual-kind")?.value === "stream" ? "stream" : "onvif";
   let url;
-  try { url = new URL(endpoint); } catch (_) { setText("network-error", t("Enter a valid HTTP or HTTPS endpoint.")); return; }
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+  try { url = new URL(endpoint); } catch (_) { setText("network-error", t(kind === "stream" ? "Enter an RTSP, RTSPS, HTTP or HTTPS video address." : "Enter a valid HTTP or HTTPS endpoint.")); return; }
+  if (kind === "stream" && (!["rtsp:", "rtsps:", "http:", "https:"].includes(url.protocol) || !url.hostname || url.hash || /[\u0000-\u001f\u007f]/.test(endpoint))) {
+    setText("network-error", t("Enter an RTSP, RTSPS, HTTP or HTTPS video address.")); return;
+  }
+  if (kind === "onvif" && (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.hash || url.username || url.password)) {
     setText("network-error", t("Use an HTTP or HTTPS endpoint without credentials in the address; enter them in the device fields.")); return;
+  }
+  let username = "", password = "";
+  if (kind === "stream") {
+    try { username = decodeURIComponent(url.username); password = decodeURIComponent(url.password); }
+    catch (_) { setText("network-error", t("Enter an RTSP, RTSPS, HTTP or HTTPS video address.")); return; }
+    url.username = ""; url.password = "";
   }
   cancelNetworkScan(false);
   setText("network-error", "");
-  let device = network.devices.find((item) => item.endpoint === endpoint);
-  if (!device) { device = {id: `manual:${endpoint}`, ip: url.hostname, name: url.hostname, endpoint, xaddrs: [endpoint], manual: true}; network.devices.push(device); }
+  let device = kind === "onvif" ? network.devices.find((item) => item.endpoint === endpoint) : null;
+  if (!device) {
+    device = {id: `manual-${Date.now()}-${network.devices.length}`, ip: url.hostname, name: url.hostname, manual: true, kind,
+      endpoint: kind === "onvif" ? endpoint : "", xaddrs: kind === "onvif" ? [endpoint] : [],
+      ...(kind === "stream" ? {source_url: url.href, services: [{protocol: url.protocol.slice(0, -1), url: url.href}]} : {})};
+    network.devices.push(device);
+  }
   chooseNetworkDevice(device);
+  if (kind === "stream") {
+    $("network-username").value = username; $("network-password").value = password;
+    // Credentials belong to the selected device fields, never to the address history.
+    $("network-manual-endpoint").value = url.href;
+  }
 });
 $("network-profile-form").addEventListener("submit", readNetworkProfiles);
 $("network-endpoint").addEventListener("change", () => clearNetworkProfiles(true));
 ["network-username", "network-password"].forEach((id) => $(id).addEventListener("input", () => clearNetworkProfiles(false)));
+["network-stream-host", "network-stream-port"].forEach((id) => $(id)?.addEventListener("input", () => clearNetworkProfiles(false)));
+$("network-use-endpoint-address")?.addEventListener("change", () => clearNetworkProfiles(false));
+$("network-direct-url")?.addEventListener("input", cancelDirectProbe);
+$("network-direct-test")?.addEventListener("click", testDirectStream);
+$("network-direct-add")?.addEventListener("click", addDirectStream);
 ["onvif-endpoint", "onvif-username", "onvif-password"].forEach((id) => $(id).addEventListener("input", () => {
   network.modalController?.abort(); network.modalController = null; network.modalEpoch += 1; network.modalProfiles = [];
   $("onvif-profiles").replaceChildren(); $("onvif-stream-tools").hidden = true;
@@ -2111,7 +2262,7 @@ document.addEventListener("visibilitychange", () => {
   if (network.view === "monitor") { syncMonitorPlayers(); if (!document.hidden) loadMonitorStatus(); }
   if (network.view === "layout") { if (document.hidden) liveLayout?.close(); else if (state.authenticated) liveLayout?.open(); }
 });
-window.addEventListener("pagehide", () => { stopSystemTelemetry(); stopLive(); player.pause(); releaseMonitor(); liveLayout?.close(); });
+window.addEventListener("pagehide", () => { cancelNetworkScan(false); cancelDirectProbe(); networkSearch?.close(); stopSystemTelemetry(); stopLive(); player.pause(); releaseMonitor(); liveLayout?.close(); });
 window.addEventListener("pageshow", (event) => {
   if (!event.persisted || !state.authenticated) return;
   startSystemTelemetry();

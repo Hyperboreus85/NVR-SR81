@@ -1,51 +1,62 @@
-# Cercare le telecamere e ricavare gli URL dei flussi
+# Cercare telecamere e ricavare i flussi
 
-La sezione **Telecamere in rete** serve a trovare dispositivi ONVIF e consultarne i profili video. Funziona dal server NVR: il browser comanda la ricerca, mentre i pacchetti partono dal container o PC che esegue NVR-SR81. Le credenziali della telecamera possono essere diverse dalla password con cui si entra nel registratore.
+La pagina **Network** esegue le ricerche dal recorder, non dal browser. Un risultato identifica un dispositivo o un servizio; il video viene verificato separatamente. Ricerca, consultazione e test non aggiungono automaticamente telecamere: **Add camera** apre una configurazione da controllare e salvare. Servono il permesso Network per la ricerca e Cameras con accesso a tutte le telecamere per salvarne una nuova.
 
-ONVIF fornisce ricerca, informazioni e indirizzi dei profili; la trasmissione del video avviene poi tramite RTSP/RTP e i trasporti previsti dal dispositivo. L'importazione attuale richiede gli URL RTSP ai servizi Media1/Media2. Per una sorgente HTTP(S), HLS o MJPEG già nota si può invece aggiungere direttamente il suo URL in **Cameras / Telecamere**: non è necessario che esponga ONVIF. La ricerca automatica descritta qui trova dispositivi ONVIF, non ogni possibile flusso video della LAN. [Scegliere una sorgente e aggiungere una telecamera](cameras.md), [specifica ONVIF dello streaming](https://www.onvif.org/specs/stream/ONVIF-Streaming-Spec.pdf).
+## Ricerca locale
 
-## Ricerca automatica
+1. Aprire **Network**, lasciare **Local discovery** e scegliere eventualmente un'interfaccia.
+2. Selezionare ONVIF e/o mDNS e premere **Find cameras**.
+3. Aprire un risultato. Per ONVIF inserire le credenziali del dispositivo e premere **Read profiles**.
+4. Scegliere Main, Sub e, se disponibile, Third; aprire la configurazione con **Add to recorder**.
 
-1. Accedere all'NVR e aprire **Telecamere in rete** nella barra laterale.
-2. Lasciare la selezione automatica delle interfacce oppure scegliere quella collegata alle telecamere.
-3. Avviare la ricerca ONVIF. Una ricerca normale richiede circa sei secondi.
-4. Selezionare un dispositivo e l'endpoint pubblicato. La porta e il percorso possono essere diversi da quelli della sua interfaccia web.
-5. Inserire utente e password ONVIF del dispositivo e scegliere **Leggi profili**.
+ONVIF usa WS-Discovery IPv4 sulla rete locale. mDNS/DNS-SD cerca annunci `_rtsp._tcp.local` e `_rtsps._tcp.local`: può trovare solo i dispositivi che pubblicano questi servizi. Un annuncio RTSP indica host e porta, senza garantire il percorso del flusso o un video utilizzabile. La ricerca locale dura normalmente circa sei secondi. [ONVIF Core](https://www.onvif.org/specs/core/ONVIF-Core-Specification.pdf), [DNS-SD, RFC 6763](https://www.rfc-editor.org/rfc/rfc6763.html), [mDNS, RFC 6762](https://www.rfc-editor.org/rfc/rfc6762.html).
 
-La ricerca usa WS-Discovery IPv4, inviando Probe multicast a `239.255.255.250:3702`. Le risposte riportano indirizzi del servizio, identificatore e dati opzionali come nome, modello e posizione. I dispositivi non vengono configurati o aggiunti automaticamente al registratore. [Specifica ONVIF Core, discovery](https://www.onvif.org/specs/core/ONVIF-Core-Specification.pdf), [WS-Discovery OASIS](https://docs.oasis-open.org/ws-dd/discovery/1.1/os/wsdd-discovery-1.1-spec-os.html)
+## IP, nomi host e altre sottoreti
 
-## Flussi principale, secondario e altri profili
+**Specific targets** accetta indirizzi separati da virgole o righe, ad esempio:
 
-Vengono consultati i servizi Media1 e Media2 disponibili, conservando nomi e token originali. Ogni profilo può mostrare codec, risoluzione, frequenza fotogrammi, limite bitrate, sorgente video, audio e indirizzo RTSP. Se un profilo non fornisce un URL, rimane nell'elenco con un messaggio: gli altri flussi restano utilizzabili.
+```text
+192.168.20.0/24
+10.40.5.18
+camera.sede.example
+```
 
-ONVIF espone profili, senza garantire etichette universali “main” e “sub”. Quando i metadati lo permettono, il registratore suggerisce come principale il profilo più grande e come secondario il più piccolo della **stessa sorgente video**. Gli altri rimangono disponibili. Questi suggerimenti non modificano la telecamera; su NVR multicanale o sensori multipli verificare anche la sorgente. [ONVIF Media2, GetProfiles/GetStreamUri](https://www.onvif.org/specs/2412/ONVIF-Media2-Service-Spec-v2412.pdf)
+Sono disponibili ONVIF, RTSP e RTSPS, con porte modificabili per ogni protocollo. ONVIF verifica `/onvif/device_service` senza password; RTSP/RTSPS usa OPTIONS, senza avviare il video o provare credenziali. Una pagina web o una porta TCP aperta non vengono considerate una telecamera. La verifica TLS rimane attiva. RTSP OPTIONS verifica capacità del servizio, senza enumerare percorsi video: serve un URL effettivo fornito dalla telecamera, da ONVIF o dal produttore. [RTSP, RFC 7826](https://www.rfc-editor.org/rfc/rfc7826.html).
 
-- **Copia URL** copia il collegamento del singolo profilo.
-- **Copia tutti** copia un URL per riga, per tutti i profili utilizzabili.
-- Il selettore per le credenziali permette di includere utente e password nell'URL RTSP. Sono codificati correttamente anche quando contengono caratteri riservati.
-- Senza tale selezione viene rimossa la parte `utente:password@`. Un eventuale token già presente nel percorso o nella query dell'URL fornito dalla camera resta parte dell'indirizzo: trattare comunque gli URL come dati riservati.
-- Scegliere il profilo per la registrazione e, facoltativamente, quello per l'anteprima; **Aggiungi al registratore** prepara una nuova configurazione da salvare.
+Limiti per ricerca:
 
-Le password e i risultati della consultazione rimangono in memoria nella pagina e vengono puliti al logout/cambio dispositivo. Non sono salvati nel browser. Gli URL vengono salvati cifrati sul server soltanto quando si salva una telecamera nel registratore. Su HTTP locale, se il browser limita la copia automatica, viene aperto un campo selezionato da copiare manualmente.
+- Da 1 a 16 indirizzi/reti; massimo 512 indirizzi distinti e 4096 verifiche protocollo/porta.
+- Reti IPv4 private, link-local o CGNAT da /24 a /32; un indirizzo pubblico deve essere un singolo host. IPv6 accetta singoli indirizzi senza zona, non intervalli.
+- Fino a 8 porte per protocollo, 32 verifiche contemporanee, circa 75 secondi complessivi. I risultati incompleti sono segnalati.
+- Una ricerca alla volta. Il conteggio mostra verifiche completate e totali; **Cancel** mantiene i risultati già ricevuti.
 
-## Se la ricerca automatica non trova nulla
+Il DNS ha limiti di tempo e dimensione; le verifiche mantengono l'identità del nome host. Loopback, multicast e indirizzi riservati non sono destinazioni valide. La ricerca non cambia rete, firewall o configurazione delle telecamere.
 
-Controllare che ONVIF sia abilitato sulla telecamera e che NVR e camera siano sulla stessa LAN/VLAN. Alcuni produttori richiedono un utente ONVIF separato; alcuni dispositivi possono avere la discovery disabilitata pur accettando chiamate dirette.
+**Saved targets** conserva nel database fino a 32 destinazioni con nome. Salvarle o selezionarle non avvia ricerche. Non accettano URL o credenziali. Risultati e credenziali restano in memoria nella pagina e vengono eliminati al logout o al cambio dispositivo.
 
-Si può scegliere **Ricerca per intervallo IP** e inserire una rete privata, ad esempio `192.168.1.0/24`, con le porte ONVIF desiderate. Sono consentite reti IPv4 RFC1918 o link-local fino a 256 indirizzi e da una a otto porte; l'applicazione limita connessioni e tempo. Il campo viene proposto dall'interfaccia scelta, ma va verificato prima di avviare la ricerca. Una scansione di una /24 su più porte può durare alcune decine di secondi.
+## Telecamere remote
 
-Questa modalità verifica `/onvif/device_service` sulle porte indicate, senza password, tramite una chiamata ONVIF di lettura dell'ora. La sola presenza di una pagina web o una risposta HTTP 401 non basta per dichiarare trovata una camera. Una telecamera con percorso diverso o che richiede autenticazione anche per tale chiamata va inserita con **Endpoint manuale**. La porta 443 viene verificata in HTTPS; sulle altre porte viene usato HTTP. La verifica TLS resta attiva.
+Il recorder deve raggiungere l'IP o il nome host inserito. Per un'altra sede si può configurare una VPN con rotte verso la sottorete delle telecamere, poi cercare quella rete in **Specific targets**. La discovery multicast locale non attraversa automaticamente router e Internet. VPN e rotte vanno predisposte sul sistema o sulla rete: l'applicazione non le crea. [ONVIF Core](https://www.onvif.org/specs/core/ONVIF-Core-Specification.pdf), [WireGuard quick start](https://www.wireguard.com/quickstart/).
 
-## Proxmox e Docker
+È possibile indicare anche un singolo IP pubblico o hostname raggiungibile, con porte note. Se più telecamere condividono un indirizzo pubblico tramite porte diverse, controllare ogni endpoint e aprire separatamente l'indirizzo esatto di ciascuna. Gli identificativi P2P/cloud proprietari richiedono un flusso standard esposto dal dispositivo o un gateway compatibile.
 
-Il container LXC può restare non privilegiato: questa ricerca usa normali socket UDP e connessioni HTTP, senza socket raw o privilegi aggiuntivi. Su Proxmox bridge, VLAN e firewall devono consentire il multicast e le risposte dei dispositivi. Le richieste vanno alla porta UDP 3702; le risposte unicast tornano alla porta temporanea aperta dal client. Consentire solo ingresso sulla 3702 può quindi non essere sufficiente. La ricerca per sottorete usa invece connessioni HTTP verso le porte indicate, se la LAN è raggiungibile dal container.
+Se ONVIF restituisce indirizzi della LAN remota inutilizzabili dal recorder, aprire **Remote options**:
 
-Con il normale bridge/NAT Docker, le risposte multicast possono non raggiungere il container: usare la ricerca per sottorete o configurare consapevolmente una rete adatta al multicast, ad esempio host networking su Linux con ascolto HTTP limitato all'IP locale desiderato. Non sono applicate modifiche automatiche alla rete o al firewall dell'host. [Esempio documentato di WS-Discovery con Docker](https://docs.openedgeplatform.intel.com/dev/edge-ai-libraries/sensor-manager/get-started.html)
+- **Use the entered endpoint address for ONVIF services** riutilizza esplicitamente l'origine dell'endpoint inserito per servizi pubblicati con indirizzo interno. Non modifica altri indirizzi pubblici e non degrada HTTPS a HTTP.
+- **Stream host override** e **Stream port override** sostituiscono solo host e/o porta degli URL video restituiti; percorso e query rimangono quelli della telecamera.
 
-## Limiti e verifiche
+Verificare le porte raggiungibili di ONVIF e video, che possono essere diverse. Le credenziali non vengono inviate all'indirizzo interno scartato. Una rete instradata tramite VPN permette di usare gli indirizzi della sede senza esporre ogni servizio su Internet.
 
-NVR-SR81 implementa discovery IPv4, non gestione remota completa della telecamera: niente modifica utenti, rete, codec o PTZ. I dati di discovery sono annunci dei dispositivi; l'accesso ai profili viene verificato separatamente. È consentita una ricerca di rete per volta; i profili hanno una propria concorrenza limitata, indipendente dalla registrazione. Il progetto non dichiara conformità completa ONVIF Profile S o Profile T.
+## Flussi noti e profili
 
-Per contenere tempi e memoria, la discovery elenca fino a 128 dispositivi, il lettore considera fino a otto servizi Media e 64 profili per servizio, con un tempo totale limitato. Gli eventuali risultati parziali sono segnalati. Questi limiti non cambiano il massimo di 32 telecamere configurabili per registrare nella prima implementazione.
+**Open known address → Known stream** accetta URL RTSP, RTSPS e HTTP(S), inclusi HLS o MJPEG leggibili da FFmpeg. Inserire utente e password nei campi del dispositivo, completare il percorso e premere **Test stream**. Il test controlla la presenza del video e mostra codec e risoluzione; dopo un risultato valido si abilita **Add camera**. Cambiare URL o credenziali richiede un nuovo test. Non vengono indovinati percorsi o password.
 
-I test automatici includono un responder UDP reale su localhost, un endpoint HTTP ONVIF locale, XML non validi, annullamento, deduplicazione, Media1/Media2, profili senza URI e copia dal browser. La compatibilità con le telecamere fisiche e con il firewall del proprio nodo va verificata sulla rete dell'installazione.
+**ONVIF endpoint** consulta un servizio HTTP(S) noto anche se la discovery non lo trova. Media1/Media2 forniscono i profili disponibili; un profilo senza URL rimane visibile con il relativo errore. Main/Sub/Third sono scelte dell'utente: i suggerimenti usano risoluzione e sorgente video, conservando nomi e token. ONVIF non garantisce etichette main/sub universali. [ONVIF streaming](https://www.onvif.org/specs/stream/ONVIF-Streaming-Spec.pdf).
+
+Gli URL si copiano singolarmente o insieme, con credenziali opzionali. Un token nel percorso o nella query resta parte dell'indirizzo: trattare gli URL come riservati. Solo il salvataggio della telecamera memorizza le sorgenti cifrate sul server. [Configurare telecamere e flussi](cameras.md).
+
+## Proxmox, Docker e verifiche
+
+La ricerca usa normali socket UDP e connessioni TCP: un LXC non privilegiato non richiede socket raw. Bridge, VLAN e firewall devono permettere multicast e risposte unicast alla porta temporanea del client. Con bridge/NAT Docker, se il multicast non ritorna al container usare **Specific targets** o una rete configurata per la discovery.
+
+I test coprono parser, limiti, DNS, TLS, RTSP, mDNS, servizi ONVIF, profili, annullamento, sessioni e interfaccia con fixture locali o risposte simulate. Non dimostrano compatibilità universale con dispositivi fisici o firewall. NVR-SR81 non dichiara conformità ONVIF Profile S/T e non modifica PTZ, utenti o configurazione del dispositivo.

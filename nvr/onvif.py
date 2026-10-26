@@ -21,6 +21,7 @@ from xml.etree import ElementTree as ET
 import httpx
 from defusedxml import ElementTree as SafeET
 from defusedxml.common import DefusedXmlException
+from .security import validate_camera_host
 
 SOAP = "http://www.w3.org/2003/05/soap-envelope"
 DEVICE = "http://www.onvif.org/ver10/device/wsdl"
@@ -39,6 +40,9 @@ IMPORT_TIMEOUT_SECONDS = 75
 DNS_TIMEOUT_SECONDS = 1
 MAX_DNS_ADDRESSES = 8
 MAX_DNS_HOSTS = 8
+LOCAL_SERVICE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "0.0.0.0/32",
+    "fc00::/7", "fe80::/10", "::/128"))
 
 
 class OnvifError(ValueError):
@@ -102,6 +106,24 @@ def _clean_stream_url(value: str) -> str:
     """Remove only URI userinfo; query strings may still contain camera tokens."""
     parsed = urlsplit(value)
     return urlunsplit(parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[-1]))
+
+
+def _override_stream(value: str, host: str | None, port: int | None) -> str:
+    parsed = _url(value, ("rtsp", "rtsps"), allow_credentials=True)
+    hostname = host if host is not None else parsed.hostname
+    hostname = f"[{hostname}]" if ":" in hostname else hostname
+    selected_port = port if port is not None else parsed.port
+    userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+    netloc = userinfo + hostname + (f":{selected_port}" if selected_port is not None else "")
+    return urlunsplit(parsed._replace(netloc=netloc))
+
+
+def _local_service_host(hostname: str) -> bool:
+    try:
+        address = ipaddress.ip_address(hostname)
+        return any(address.version == network.version and address in network for network in LOCAL_SERVICE_NETWORKS)
+    except ValueError:
+        return hostname.lower().rstrip(".").endswith((".local", ".lan", ".internal"))
 
 
 async def _resolve_host_ips(hostname: str) -> frozenset[str]:
@@ -332,7 +354,8 @@ async def _soap(client: httpx.AsyncClient, endpoint: str, namespace: str, operat
         raise OnvifError("ONVIF connection failed or invalid XML response.") from None
 
 
-async def get_profiles(endpoint: str, username: str = "", password: str = "") -> dict:
+async def get_profiles(endpoint: str, username: str = "", password: str = "", *, stream_host: str | None = None,
+                       stream_port: int | None = None, use_endpoint_address: bool = False) -> dict:
     """Enumerate the device's Media1 and Media2 profiles, including URI failures.
 
     Missing optional device information never blocks profile import. A report
@@ -341,6 +364,16 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
     clean_url removes userinfo but may retain tokens in the camera's query.
     """
     endpoint_parts = _url(endpoint, ("http", "https"))
+    if stream_host is not None:
+        try:
+            stream_host = validate_camera_host(stream_host)
+        except ValueError:
+            raise OnvifError("Enter a valid RTSP override host.") from None
+    if stream_port is not None and (type(stream_port) is not int or not 1 <= stream_port <= 65535):
+        raise OnvifError("RTSP override port must be between 1 and 65535.")
+    if type(use_endpoint_address) is not bool:
+        raise OnvifError("Choose whether to use the manual ONVIF endpoint address.")
+    stream_override_applied = service_address_override_applied = False
     endpoint_host = endpoint_parts.hostname.lower()
     candidates: list[tuple[str, str]] = []
     profiles: list[dict] = []
@@ -362,11 +395,21 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
         return resolved_hosts[hostname]
 
     async def add(namespace: str, address: str):
+        nonlocal service_address_override_applied
         if namespace not in (MEDIA1, MEDIA2) or not address:
             return
         try:
             address = urljoin(endpoint, address)
-            _url(address, ("http", "https"))
+            original = _url(address, ("http", "https"))
+            if use_endpoint_address and _local_service_host(original.hostname):
+                if original.scheme.lower() == "https" and endpoint_parts.scheme.lower() != "https":
+                    warn("A secure Media service cannot be mapped to an insecure manual endpoint: address ignored.")
+                    return
+                replacement = urlunsplit(original._replace(scheme=endpoint_parts.scheme, netloc=endpoint_parts.netloc))
+                if replacement != address:
+                    service_address_override_applied = True
+                    warn("Private Media service addresses use the manual ONVIF endpoint origin.")
+                address = replacement
             address = _replace_unspecified(address, endpoint)
             advertised = _url(address, ("http", "https"))
         except (OnvifError, ValueError):
@@ -394,12 +437,16 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
                 return await _soap(client, address, namespace, operation, username, password, arguments)
 
         async def resolve(profile: dict, namespace: str, address: str):
+            nonlocal stream_override_applied
             arguments = [(namespace, "ProfileToken", profile["token"])]
             if namespace == MEDIA2:
                 arguments.insert(0, (namespace, "Protocol", "RTSP"))
             try:
                 stream = await request(address, namespace, "GetStreamUri", arguments)
                 profile["url"] = _stream_url(_text(stream, "Uri"), endpoint, username, password)
+                if stream_host is not None or stream_port is not None:
+                    profile["url"] = _override_stream(profile["url"], stream_host, stream_port)
+                    stream_override_applied = True
                 profile["clean_url"] = _clean_stream_url(profile["url"])
                 profile["error"] = None
             except OnvifError as error:
@@ -482,5 +529,9 @@ async def get_profiles(endpoint: str, username: str = "", password: str = "") ->
     failed = sum(profile["url"] is None for profile in profiles)
     if failed:
         warn(f"RTSP URI unavailable for {failed} profiles: other addresses remain usable.")
+    if stream_override_applied:
+        warn("RTSP stream addresses use the explicit host or port override.")
     return {"device": device, "profiles": profiles, "warnings": warnings,
+            "stream_override_applied": stream_override_applied,
+            "service_address_override_applied": service_address_override_applied,
             "success": any(profile["url"] is not None for profile in profiles)}

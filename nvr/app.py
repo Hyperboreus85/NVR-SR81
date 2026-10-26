@@ -1,12 +1,14 @@
 """Authenticated same-origin HTTP API and bundled offline interface."""
 import asyncio
 import contextlib
+import copy
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
 import re
 import sqlite3
 import time
+import uuid
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -19,15 +21,18 @@ from . import __version__
 from .config import Settings
 from .camera_config import public_camera_connection, resolve_camera_streams
 from .discovery import DiscoveryError, discover, list_interfaces, scan_network
+from .network_scan import NetworkScanError, scan_targets
+from .network_targets import NetworkTargetError, NetworkTargets
+from .mdns_discovery import discover_mdns
 from .live import LiveError, LiveManager
 from .languages import LanguageError, LanguageManager, MAX_PACK_BYTES
 from .general_preferences import GeneralPreferenceError, GeneralPreferences
 from .media import MediaError, MediaManager
 from .maintenance import MaintenanceError, MaintenanceManager
 from .telemetry_history import TelemetryHistory
-from .onvif import get_profiles
+from .onvif import OnvifError, get_profiles
 from .preferences import SEGMENT_PREFERENCE_KEY, recording_preferences, restore_recording_preferences
-from .security import Auth, redact_url
+from .security import Auth, redact_url, validate_stream_url
 from .accounts import AccountError
 from .store import Store
 from .telemetry import SystemTelemetry
@@ -187,9 +192,13 @@ class OwnPasswordInput(BaseModel):
 
 
 class OnvifInput(BaseModel):
+    model_config = {"extra": "forbid"}
     endpoint: str = Field(max_length=4096)
     username: str = Field(default="", max_length=200)
     password: str = Field(default="", max_length=1024)
+    stream_host: str | None = Field(default=None, min_length=1, max_length=253)
+    stream_port: int | None = Field(default=None, strict=True, ge=1, le=65535)
+    use_endpoint_address: bool = Field(default=False, strict=True)
 
 
 class DiscoveryInput(BaseModel):
@@ -203,6 +212,33 @@ class NetworkScanInput(BaseModel):
         default_factory=lambda: [80, 8000, 8080, 8899], min_length=1, max_length=8)
 
 
+NetworkPort = Annotated[int, Field(strict=True, ge=1, le=65535)]
+
+
+class NetworkSearchInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    mode: Literal["local", "targets"] = "local"
+    request_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    interface_ip: str | None = Field(default=None, max_length=45)
+    targets: list[str] = Field(default_factory=list, max_length=16)
+    methods: list[Literal["onvif", "mdns", "rtsp", "rtsps"]] | None = Field(default=None, min_length=1, max_length=4)
+    onvif_ports: list[NetworkPort] = Field(default_factory=lambda: [80, 8000, 8080, 8899], max_length=8)
+    rtsp_ports: list[NetworkPort] = Field(default_factory=lambda: [554, 8554], max_length=8)
+    rtsps_ports: list[NetworkPort] = Field(default_factory=lambda: [322], max_length=8)
+    timeout: float = Field(default=.75, strict=True, ge=.1, le=2)
+
+
+class NetworkTargetInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    name: str = Field(strict=True, min_length=1, max_length=60)
+    address: str = Field(strict=True, min_length=1, max_length=512)
+
+
+class NetworkProbeInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    url: str = Field(strict=True, min_length=1, max_length=4096)
+
+
 def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager,
                maintenance_factory=MaintenanceManager, telemetry_factory=SystemTelemetry,
                capacity_factory=RecordingCapacity, history_factory=TelemetryHistory, general_factory=GeneralPreferences):
@@ -210,6 +246,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     if settings.password and len(settings.password) < 12:
         raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
     store = Store(settings.data_dir)
+    network_targets = NetworkTargets(store)
     restore_recording_preferences(store, settings)
     auth = Auth(store, settings.password)
     languages = LanguageManager(settings.data_dir / "languages", Path(__file__).parent / "locales")
@@ -226,6 +263,9 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     discovery_lock = asyncio.Lock()
     active_scan: asyncio.Task | None = None
     active_scan_session: str | None = None
+    search_status: dict | None = None
+    search_status_owner: str | None = None
+    search_status_time = 0.0
     login_jobs = asyncio.Semaphore(2)
     mutation_lock = asyncio.Lock()
     recording_updates: set[asyncio.Task] = set()
@@ -270,6 +310,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     app.state.history = history
     app.state.capacity = capacity
     app.state.languages = languages
+    app.state.network_targets = network_targets
 
     def token_of(request):
         return request if isinstance(request, str) else request.cookies.get("nvr_session")
@@ -328,6 +369,11 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             return user
         if path == "/api/onvif/interfaces" and method == "GET" or path in {"/api/onvif/cancel", "/api/onvif/discover", "/api/onvif/scan", "/api/onvif/profiles"} and method == "POST":
             return require_access(request, ("network",))
+        if (path == "/api/network/targets" and method in {"GET", "POST"}
+                or re.fullmatch(r"/api/network/targets/[^/]+", path) and method == "DELETE"
+                or path == "/api/network/status" and method == "GET"
+                or path in {"/api/network/search", "/api/network/cancel", "/api/network/probe"} and method == "POST"):
+            return require_access(request, ("network",))
         if path in {"/api/settings/general", "/api/settings/recording"} and method in {"GET", "PUT"} or path == "/api/languages/template" and method == "GET" or path == "/api/languages/install" and method == "POST" or re.fullmatch(r"/api/languages/[^/]+", path) and method == "DELETE":
             return require_access(request, ("settings",))
         if path in {"/api/system", "/api/system/telemetry", "/api/system/history"} and method == "GET":
@@ -385,6 +431,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
 
     @app.exception_handler(GeneralPreferenceError)
     async def invalid_general_preferences(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
+
+    @app.exception_handler(NetworkTargetError)
+    async def invalid_network_target(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
 
     @app.exception_handler(AccountError)
@@ -930,6 +980,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         return True
 
     @app.post("/api/onvif/cancel")
+    @app.post("/api/network/cancel")
     async def cancel_onvif_scan(request: Request):
         session_token = request.cookies.get("nvr_session")
         if active_scan and not active_scan.done() and active_scan_session != session_token:
@@ -944,16 +995,163 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     async def scan_onvif_network(data: NetworkScanInput, request: Request):
         return await run_discovery(request, lambda: scan_network(data.cidr, data.ports), 60)
 
+    @app.get("/api/network/targets")
+    def saved_network_targets(request: Request):
+        require_access(request, ("network",))
+        return network_targets.read()
+
+    @app.post("/api/network/targets", status_code=201)
+    async def save_network_target(data: NetworkTargetInput, request: Request):
+        async with mutation_lock:
+            require_access(request, ("network",))
+            return network_targets.create(data.name, data.address)
+
+    @app.delete("/api/network/targets/{target_id}")
+    async def delete_network_target(target_id: str, request: Request):
+        async with mutation_lock:
+            require_access(request, ("network",))
+            return network_targets.delete(target_id)
+
+    @app.get("/api/network/status")
+    def network_search_status(request: Request, request_id: str = Query("", max_length=64)):
+        require_access(request, ("network",))
+        if (search_status is None or search_status_owner != token_of(request)
+                or search_status.get("request_id") != request_id or time.monotonic() - search_status_time > 120):
+            return {"request_id": request_id, "state": "idle", "completed": 0, "total": 0, "devices": [], "warnings": [], "duration": 0}
+        return copy.deepcopy(search_status)
+
+    @app.post("/api/network/search")
+    async def network_search(data: NetworkSearchInput, request: Request):
+        methods = list(dict.fromkeys(data.methods or (["onvif", "mdns"] if data.mode == "local" else ["onvif", "rtsp"])))
+        if (data.mode == "local" and (data.targets or any(method not in {"onvif", "mdns"} for method in methods))
+                or data.mode == "targets" and (not data.targets or "mdns" in methods)):
+            raise HTTPException(422, "Choose local discovery or explicit IP and network targets.")
+        request_id = data.request_id or uuid.uuid4().hex
+        owner = token_of(request)
+        started = time.monotonic()
+
+        def publish(value):
+            nonlocal search_status, search_status_owner, search_status_time
+            search_status = {**copy.deepcopy(value), "request_id": request_id, "duration": round(time.monotonic() - started, 3)}
+            search_status_owner, search_status_time = owner, time.monotonic()
+
+        async def local_search():
+            devices, warnings, completed, partial = [], [], 0, False
+            async def one(method):
+                function, duration = (discover, 6) if method == "onvif" else (discover_mdns, 4)
+                return method, await function(data.interface_ip, duration)
+            tasks = [asyncio.create_task(one(method)) for method in methods]
+            try:
+                for future in asyncio.as_completed(tasks):
+                    method, report = await future
+                    completed += 1
+                    for incoming in report.get("devices", []):
+                        item = copy.deepcopy(incoming)
+                        item["methods"] = list(dict.fromkeys([*item.get("methods", []), method]))
+                        item.setdefault("services", [])
+                        if method == "onvif":
+                            from urllib.parse import urlsplit
+                            for endpoint in item.get("xaddrs", []) or [item.get("endpoint")]:
+                                if not endpoint:
+                                    continue
+                                parsed = urlsplit(endpoint)
+                                item["services"].append({"protocol": "onvif", "host": parsed.hostname,
+                                    "port": parsed.port or (443 if parsed.scheme == "https" else 80), "url": endpoint, "status": "verified"})
+                        existing = next((row for row in devices if row.get("ip") == item.get("ip")), None)
+                        if existing is None:
+                            if len(devices) < 128:
+                                devices.append(item)
+                            else:
+                                partial = True
+                        else:
+                            existing["methods"] = list(dict.fromkeys([*existing.get("methods", []), *item["methods"]]))
+                            existing["xaddrs"] = list(dict.fromkeys([*existing.get("xaddrs", []), *item.get("xaddrs", [])]))
+                            services = existing.setdefault("services", [])
+                            for service in item["services"]:
+                                if service not in services:
+                                    services.append(service)
+                            if not existing.get("endpoint") and item.get("endpoint"):
+                                existing["endpoint"] = item["endpoint"]
+                            if not existing.get("name") and item.get("name"):
+                                existing["name"] = item["name"]
+                    warnings.extend(report.get("warnings", []))
+                    if partial and "Only the first 128 devices are shown. Refine the search targets." not in warnings:
+                        warnings.append("Only the first 128 devices are shown. Refine the search targets.")
+                    publish({"state": "running", "completed": completed, "total": len(methods), "devices": devices, "warnings": warnings})
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            return {"devices": devices, "warnings": list(dict.fromkeys(warnings)), "completed": completed,
+                    "total": len(methods), "partial": partial}
+
+        async def operation():
+            publish({"state": "running", "completed": 0, "total": 0, "devices": [], "warnings": []})
+            async def work():
+                if data.mode == "local":
+                    return await local_search()
+                return await scan_targets(data.targets, methods, data.onvif_ports, data.rtsp_ports, data.rtsps_ports,
+                                          timeout=data.timeout, deadline=75, progress=publish)
+            async def authorized():
+                while True:
+                    await asyncio.sleep(1)
+                    require_access(owner, ("network",))
+            worker, watcher = asyncio.create_task(work()), asyncio.create_task(authorized())
+            try:
+                done, _ = await asyncio.wait((worker, watcher), return_when=asyncio.FIRST_COMPLETED)
+                if watcher in done:
+                    await watcher
+                result = await worker
+                require_access(request, ("network",))
+                publish({**result, "state": "complete"})
+                return copy.deepcopy(search_status)
+            except asyncio.CancelledError:
+                publish({**(search_status or {}), "state": "cancelled"})
+                raise
+            except Exception:
+                publish({**(search_status or {}), "state": "failed"})
+                raise
+            finally:
+                for task in (worker, watcher):
+                    task.cancel()
+                await asyncio.gather(worker, watcher, return_exceptions=True)
+        try:
+            return await run_discovery(request, operation, 85)
+        except NetworkScanError as error:
+            raise HTTPException(422, str(error)) from None
+
+    @app.post("/api/network/probe")
+    async def test_network_stream(data: NetworkProbeInput, request: Request):
+        try:
+            source = validate_stream_url(data.url)
+        except ValueError:
+            raise HTTPException(422, "Enter an RTSP, RTSPS, HTTP or HTTPS video address.") from None
+        async def operation():
+            require_access(request, ("network",))
+            return await media.probe(source)
+        result = await media_result(operation)
+        require_access(request, ("network",))
+        return {"verified": True, **{key: result.get(key) for key in ("video_codec", "audio_codec", "width", "height", "duration")}}
+
     @app.post("/api/onvif/profiles")
     async def onvif(data: OnvifInput, request: Request):
         try:
             async with onvif_jobs:
                 require_access(request, ("network",))
-                result = await asyncio.wait_for(get_profiles(data.endpoint, data.username, data.password), 90)
+                options = {}
+                if data.stream_host is not None:
+                    options["stream_host"] = data.stream_host
+                if data.stream_port is not None:
+                    options["stream_port"] = data.stream_port
+                if data.use_endpoint_address:
+                    options["use_endpoint_address"] = True
+                result = await asyncio.wait_for(get_profiles(data.endpoint, data.username, data.password, **options), 90)
                 require_access(request, ("network",))
                 return result
         except asyncio.TimeoutError:
             raise HTTPException(504, "The camera did not finish returning its profiles. Try again or check its ONVIF services.") from None
+        except OnvifError as error:
+            raise HTTPException(422, str(error)) from None
         except (ValueError, RuntimeError, OSError):
             raise HTTPException(422, "ONVIF unavailable. Check the endpoint, credentials and camera clock.") from None
 

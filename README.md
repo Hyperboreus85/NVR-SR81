@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.18.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.19.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -17,7 +17,7 @@ Il flusso originale viene copiato in file **Matroska/MKV con durata da 1 a 120 m
 - Interfaccia inglese predefinita e italiano incluso, selezionabili anche prima del login. Barra laterale con icone sopra ai nomi, ispirata al layout M777.
 - **Settings / Impostazioni** con sezioni General, Recording e Languages: layout del monitor per browser, durata globale dei file e gestione di **pacchetti lingua JSON installabili**. Recording offre 1, 2, 3, 4, 5 minuti e poi intervalli di 5 minuti fino a 120. Salvando, i file correnti vengono chiusi e la nuova durata entra in uso senza riavviare il servizio; i file precedenti restano invariati. La scelta è conservata nel database e vale per tutte le telecamere e i browser. Scelta della lingua, installazione, download dei modelli e rimozione dei file sono tutti nella pagina Languages. [Guida impostazioni e pacchetti lingua](docs/settings.md).
 - Configurazione telecamera con protocollo, IP/hostname, porta, utente e password separati, oppure URL completo. Fino a tre flussi Main/Sub/Third: Main registra, il Live usa il flusso scelto per la telecamera. Credenziali e percorsi salvati rimangono protetti e si conservano lasciando vuoti i rispettivi campi. [Guida telecamere e flussi](docs/cameras.md).
-- Sezione **Telecamere in rete** con discovery ONVIF multicast, selezione della scheda di rete e ricerca opzionale su sottoreti private fino a /24.
+- **Network** compatta: discovery locale ONVIF e mDNS/DNS-SD, ricerca mirata ONVIF/RTSP/RTSPS su IP, nomi host e sottoreti raggiungibili, destinazioni salvate, avanzamento e annullamento. Test di URL video noti, tre profili e opzioni esplicite per endpoint/stream remoti via rete instradata o VPN. Nessuna ricerca di percorsi RTSP o password per tentativi. [Guida ricerca e sedi remote](docs/discovery.md).
 - Esplorazione dei profili ONVIF Media1/Media2: informazioni del dispositivo, risoluzione, codec, fps, bitrate e URL RTSP di tutti i profili disponibili. Copia singola o completa, con utente/password opzionali.
 - Scelta dei profili principale e secondario per configurare registrazione e anteprima; nomi originali conservati e suggerimenti basati sui metadati per ciascuna sorgente video.
 - Registrazione continua senza ricodifica, audio opzionale, riconnessione automatica e stato per telecamera.
