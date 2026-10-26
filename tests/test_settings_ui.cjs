@@ -393,6 +393,7 @@ test("the recorder updates its duration immediately and ignores an older in-flig
   const context = vm.createContext({state, network: {view: "settings"},
     api: (path) => path === "/api/system" ? previousSystem.promise : Promise.resolve([]),
     renderCameras() {}, renderSelected() {}, renderStats() {}, ensureLiveLayout() { return null; }, errorText: String,
+    applyGeneralPreferences() {},
     renderSystem() { displayed.push(state.system.segment_seconds); },
     window: {addEventListener(type, listener) { listeners.set(type, listener); }},
   });

@@ -12,7 +12,15 @@ La preferenza viene salvata nel browser. Ogni dispositivo può usare una lingua 
 
 ## Impostazioni generali
 
-**Settings → General** mostra versione, spazio libero, limiti delle dirette e durata effettiva dei file di registrazione. Il layout del monitor può essere scelto tra 1, 4, 9 e 16 riquadri e viene ricordato dal browser.
+**Settings → General** raccoglie nome del recorder, hostname e IP locali, fuso orario, formato a 12/24 ore e rotazione Live. Il nome è un alias del recorder: lasciarlo vuoto ripristina il nome del sistema. Hostname e indirizzi sono in sola lettura.
+
+Il fuso **Automatic (system)** segue la configurazione locale Linux (`TZ`, collegamento `/etc/localtime`, poi `/etc/timezone`); se non è riconoscibile usa UTC. Si può scegliere un fuso IANA manualmente. Il paese, o i paesi, proviene dalle tabelle locali associate al fuso: non è una geolocalizzazione dell'indirizzo IP. UTC non identifica un paese. Non occorrono servizi esterni e non viene modificata la configurazione di Ubuntu/Debian.
+
+Il formato e il fuso si applicano alle date dei filmati, ai controlli del lettore, alla ricerca Record e ai grafici di sistema. I timestamp archiviati restano UTC. Gli orari locali inesistenti al cambio dell'ora vengono rifiutati; un orario ripetuto si riferisce alla prima occorrenza.
+
+La rotazione è **disattivata** inizialmente. Gli intervalli disponibili sono 15, 30, 60, 120 e 300 secondi. Scorre tutte le telecamere configurate in pagine della dimensione del layout attuale; scegliere un riquadro per una telecamera alla volta. Non modifica le registrazioni o le assegnazioni salvate nel Layout. La pausa del monitor, una scheda in secondo piano o una singola telecamera a schermo intero sospendono la rotazione; il mosaico intero a schermo intero continua a scorrere.
+
+**Save general settings** salva queste preferenze nel database, condivise dagli utenti e conservate dopo i riavvii. Il layout predefinito da 1, 4, 9 o 16 riquadri rimane una preferenza del browser. Nella stessa scheda sono visibili versione, spazio libero, limiti delle dirette e durata effettiva dei file di registrazione.
 
 Le sorgenti e i parametri delle singole telecamere si gestiscono in **Cameras / Telecamere**. Oltre a RTSP/RTSPS si possono inserire URL video HTTP/HTTPS, playlist HLS e flussi MJPEG compatibili. ONVIF aiuta a ricavare i profili di una telecamera; non è un trasporto video alternativo da scrivere come URL. [Guida alle sorgenti e alla configurazione delle telecamere](cameras.md).
 

@@ -189,7 +189,7 @@
       controls.select.value = String(this.historyHours); controls.refresh.textContent = t("Refresh history");
       const identity = data?.identity || {}, uptime = data?.uptime || {}, cpu = data?.cpu || {}, memory = data?.memory || {}, swap = data?.swap || {}, disk = data?.disk || {}, recording = data?.recording || {};
       const addresses = Array.isArray(identity.addresses) ? identity.addresses.slice(0, 8).map(text).filter(Boolean) : [];
-      this.card("recorder", "Recorder", text(identity.hostname) || null, [text(data?.version) ? t("Application version: {value}.", {value: text(data.version)}) : "", addresses.length ? t("IP addresses: {value}.", {value: addresses.join(" · ")}) : ""]);
+      this.card("recorder", "Recorder", text(identity.recorder_name) || text(identity.hostname) || null, [text(identity.recorder_name) && text(identity.recorder_name) !== text(identity.hostname) ? t("Hostname: {value}.", {value: text(identity.hostname)}) : "", text(data?.version) ? t("Application version: {value}.", {value: text(data.version)}) : "", addresses.length ? t("IP addresses: {value}.", {value: addresses.join(" · ")}) : ""]);
       this.card("os", "Operating system", text(identity.os_name) || null, [text(identity.kernel) ? t("Kernel: {value}.", {value: text(identity.kernel)}) : "", text(identity.architecture) ? t("Architecture: {value}.", {value: text(identity.architecture)}) : ""]);
       const service = this.duration(uptime.service_seconds);
       this.card("uptime", "System uptime", this.duration(uptime.system_seconds), [service === null ? "" : t("Service uptime: {value}.", {value: service})]);
@@ -213,6 +213,8 @@
       this.chart("memory", "RAM and swap history", [{name: "RAM", key: "memory", field: "memory_percent"}, {name: "Swap", key: "swap", field: "swap_percent"}], history);
     }
     timeLabel(value, withDate = false) {
+      const clock = typeof window !== "undefined" && window.NvrRecorderClockInstance;
+      if (clock) return clock.format(new Date(value * 1000), {hour: "2-digit", minute: "2-digit", ...(withDate ? {day: "2-digit", month: "2-digit"} : {})}, this.locale());
       try { return new Intl.DateTimeFormat(this.locale(), {hour: "2-digit", minute: "2-digit", hourCycle: "h23", ...(withDate ? {day: "2-digit", month: "2-digit"} : {})}).format(new Date(value * 1000)); }
       catch (_) { return "—"; }
     }

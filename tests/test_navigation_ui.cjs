@@ -8,6 +8,7 @@ const {join} = require("node:path");
 const vm = require("node:vm");
 
 const source = readFileSync(join(__dirname, "../nvr/static/app.js"), "utf8");
+const preferencesSource = readFileSync(join(__dirname, "../nvr/static/recorder-preferences.js"), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return {promise, resolve, reject}; }
 
@@ -62,11 +63,18 @@ function camera(id) {
 }
 const snapshot = (size = 4, ids = ["a", "b", "c", "d"]) => ({version: 1, size, slots: Array.from({length: 16}, (_, index) => ids[index] || null)});
 const clone = (value) => JSON.parse(JSON.stringify(value));
+const generalSettings = (extra = {}) => ({recorder_name: "Fixture recorder", timezone: "UTC", effective_timezone: "UTC", hour_format: "24", rotation_seconds: 0, ...extra});
 
-function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), legacySize = null, handler, telemetry = false, history = false} = {}) {
+function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), legacySize = null, handler, telemetry = false, history = false,
+                      preferences = true, general = generalSettings()} = {}) {
   const nodes = new Map(), windowEvents = new Map(), documentEvents = new Map(), calls = [], players = [], layouts = [], timers = new Map();
   const storage = new Map(legacySize === null ? [] : [["nvr.monitor.layout", String(legacySize)]]);
   const ready = deferred(); let timer = 0, language = "en", settingsOpens = 0;
+  const timerDetails = new Map(); let timerNow = 0;
+  const schedule = (callback, delay = 0, repeat = false) => {
+    const id = ++timer; timers.set(id, callback); timerDetails.set(id, {due: timerNow + Number(delay), delay: Number(delay), repeat}); return id;
+  };
+  const cancel = (id) => { timers.delete(id); timerDetails.delete(id); };
   const node = (id) => { if (!nodes.has(id)) { const item = new Element(id === "player" ? "video" : "div"); item.id = id; nodes.set(id, item); } return nodes.get(id); };
   const layoutButtons = [1, 4, 9, 16].map((size) => { const button = new Element("button"); button.dataset.monitorLayout = String(size); return button; });
   const document = {hidden: false, fullscreenElement: null, body: new Element("body"), getElementById: node,
@@ -107,12 +115,13 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
     : path === "/api/cameras" ? cameras
     : path === "/api/system" ? {version: "test", recordings_bytes: 0, segment_seconds: 1800, ffmpeg_available: true, disk: {total: 100000, free: 90000, used: 10000}}
     : path === "/api/live/status" ? {active_streams: 0, max_streams: 16, active_transcodes: 0, max_transcodes: 2, streams: []}
+    : path === "/api/settings/general" ? general
     : path === "/api/logout" ? {authenticated: false}
     : path.startsWith("/api/recordings") ? []
     : path === "/api/onvif/interfaces" ? [] : {};
   const context = vm.createContext({console, document, Intl, Headers, URL, URLSearchParams, AbortController,
-    setTimeout(callback) { const id = ++timer; timers.set(id, callback); return id; }, clearTimeout: (id) => timers.delete(id),
-    setInterval(callback) { const id = ++timer; timers.set(id, callback); return id; }, clearInterval: (id) => timers.delete(id),
+    setTimeout: (callback, delay) => schedule(callback, delay), clearTimeout: cancel,
+    setInterval: (callback, delay) => schedule(callback, delay, true), clearInterval: cancel,
     localStorage: {getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value))},
     CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     async fetch(path, options = {}) { calls.push({path, options}); const value = await (handler ? handler(path, options, defaults) : defaults(path)); return value instanceof Response ? value : new Response(JSON.stringify(value), {status: 200}); },
@@ -145,6 +154,7 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
     t: (key, params = {}) => (language === "en" ? String(key) : "IT: " + key).replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (token, name) => Object.hasOwn(params, name) ? String(params[name]) : token)};
   context.addEventListener = (type, listener) => { if (!windowEvents.has(type)) windowEvents.set(type, []); windowEvents.get(type).push(listener); };
   context.dispatchEvent = (event) => { for (const listener of windowEvents.get(event.type) || []) listener(event); return true; };
+  if (preferences) vm.runInContext(preferencesSource, context, {filename: "recorder-preferences.js"});
   vm.runInContext(source, context, {filename: "app.js"});
   return {node, calls, players, layouts, layoutButtons, context, ready, document, storage, telemetryViews, dashboardViews, historyViews, timers,
     async boot() { ready.resolve(); await flush(); await flush(); },
@@ -153,6 +163,17 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
     async windowEvent(type, details = {}) { for (const listener of windowEvents.get(type) || []) await listener({type, ...details}); },
     language(value) { language = value; }, settingsOpens: () => settingsOpens,
     async runTimer(id) { const callback=timers.get(id); assert.equal(typeof callback,'function'); await callback(); await flush(); },
+    async advanceTimers(milliseconds) {
+      const end = timerNow + milliseconds;
+      for (let count = 0; count < 1000; count++) {
+        const next = [...timerDetails.entries()].filter(([id]) => timers.has(id)).sort(([, a], [, b]) => a.due - b.due)[0];
+        if (!next || next[1].due > end) { timerNow = end; return; }
+        const [id, details] = next, callback = timers.get(id); timerNow = details.due;
+        if (details.repeat) details.due += Math.max(1, details.delay); else cancel(id);
+        await callback(); await flush(); await flush();
+      }
+      throw Error("Unexpected application timer loop");
+    },
   };
 }
 
@@ -570,4 +591,47 @@ test("system overview renders the shared snapshot only on its tab and cannot sur
   assert.equal(env.evaluate('systemTelemetry.timer'),null);
   await env.windowEvent('pageshow',{persisted:true});
   assert.equal(env.evaluate('systemTelemetry.timer'),null);
+});
+
+test("actual rotation switches Live pages at15seconds despite polling and disabling restores the saved layout", async () => {
+  const env = environment({cameras: [camera("a"), {...camera("b"), enabled: false}], saved: snapshot(1, ["b"]),
+    general: generalSettings({rotation_seconds: 15})});
+  await env.boot();
+  const saved = env.layouts[0].getSaved();
+  const visibleIds = () => env.node("monitor-grid").children.map((tile) => tile.dataset.cameraId).filter(Boolean);
+  assert.deepEqual(visibleIds(), ["a"]);
+  await env.advanceTimers(10000); assert.deepEqual(visibleIds(), ["a"]);
+  assert.ok(env.calls.filter((call) => call.path === "/api/settings/general").length >= 2);
+  await env.advanceTimers(5000); assert.deepEqual(visibleIds(), ["b"]);
+  assert.equal(env.node("monitor-page-label").textContent, "Page 2 / 2");
+  await env.advanceTimers(15000); assert.deepEqual(visibleIds(), ["a"]);
+  await env.windowEvent("nvr-general-settingschange", {detail: generalSettings()});
+  assert.deepEqual(visibleIds(), ["b"]);
+  assert.deepEqual(env.layouts[0].getSaved(), saved);
+  assert.equal(env.evaluate("cameraRotation.state().active"), false);
+});
+
+test("actual rotation pauses for monitor pause, hidden tab and tile fullscreen but continues whole-wall fullscreen", async () => {
+  const env = environment({cameras: [camera("a"), camera("b")], saved: snapshot(1, ["a"]), general: generalSettings({rotation_seconds: 15})});
+  await env.boot();
+  const page = () => env.evaluate("cameraRotation.state().page");
+  await env.node("monitor-toggle").fire("click");
+  await env.advanceTimers(30000); assert.equal(page(), 0);
+  await env.node("monitor-toggle").fire("click");
+  await env.advanceTimers(15000); assert.equal(page(), 1);
+  env.document.hidden = true; await env.documentEvent("visibilitychange");
+  await env.advanceTimers(30000); assert.equal(page(), 1);
+  env.document.hidden = false; await env.documentEvent("visibilitychange");
+  const tile = env.node("monitor-grid").children[0];
+  env.document.fullscreenElement = tile; await env.documentEvent("fullscreenchange");
+  assert.equal(env.evaluate("monitor.fullscreenId"), "b");
+  await env.advanceTimers(30000); assert.equal(page(), 1);
+  env.document.fullscreenElement = env.node("monitor-grid"); await env.documentEvent("fullscreenchange");
+  assert.equal(env.evaluate("monitor.fullscreenId"), null);
+  await env.advanceTimers(15000); assert.equal(page(), 0);
+  await env.node("nav-cameras").fire("click");
+  await env.advanceTimers(30000); assert.equal(page(), 0);
+  assert.equal(env.evaluate("cameraRotation.state().active"), false);
+  await env.node("logout").fire("click");
+  assert.equal(env.evaluate("cameraRotation.state().seconds"), 0);
 });

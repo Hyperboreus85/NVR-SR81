@@ -7,12 +7,12 @@
   const i18n = window.NvrI18n, t = (key, params) => i18n.t(key, params);
   let authenticated = !byId("app").hidden, authEpoch = 0, requestEpoch = 0;
   let status = null, result = null, loading = false, submitting = false, uncertain = false, mustCheck = false;
-  let settingsBusy = false, systemBusy = false, publishedBusy = false, controller = null, opener = null;
+  let settingsBusy = false, systemBusy = false, generalBusy = false, publishedBusy = false, controller = null, opener = null;
   let errorSource = null, noticeSource = null;
 
   const valid = (ticket, request) => authenticated && ticket === authEpoch && request === requestEpoch;
   const visible = () => !byId("settings-view").hidden && !panel.hidden;
-  const externalBusy = () => settingsBusy || systemBusy;
+  const externalBusy = () => settingsBusy || systemBusy || generalBusy;
   const safeInteger = (value) => Number.isSafeInteger(value) && value >= 0;
   function number(value, digits = 0) {
     try { return value.toLocaleString(i18n.locale?.() || "en", {maximumFractionDigits: digits}); }
@@ -150,10 +150,11 @@
   window.addEventListener("nvr-settings-tabchange", (event) => { if (event.detail.tab === "system") load(); else close(); });
   window.addEventListener("nvr-settings-busychange", (event) => { settingsBusy = !!event.detail.busy; render(); });
   window.addEventListener("nvr-system-busychange", (event) => { systemBusy = !!event.detail.busy; render(); });
+  window.addEventListener("nvr-general-busychange", (event) => { generalBusy = !!event.detail.busy; render(); });
   window.addEventListener("nvr-languagechange", render);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated; authEpoch += 1; abortRequest();
-    loading = submitting = uncertain = mustCheck = settingsBusy = systemBusy = false; status = result = errorSource = noticeSource = null;
+    loading = submitting = uncertain = mustCheck = settingsBusy = systemBusy = generalBusy = false; status = result = errorSource = noticeSource = null;
     closeDialog(); render();
   });
   window.NvrArchiveSettings = Object.freeze({open: load, relabel: render, close});

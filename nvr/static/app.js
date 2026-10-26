@@ -17,10 +17,13 @@ const t = (key, params) => {
   return value;
 };
 const number = (value, options = {}) => Number(value || 0).toLocaleString(locale(), options);
+const recorderClock = window.NvrRecorderClock ? new window.NvrRecorderClock() : null;
+window.NvrRecorderClockInstance = recorderClock;
 function dateFormat(options) {
   const formats = new Map();
   return {format(date) {
     const language = locale();
+    if (recorderClock) return recorderClock.format(date, options, language);
     if (!formats.has(language)) formats.set(language, new Intl.DateTimeFormat(language, options));
     return formats.get(language).format(date);
   }};
@@ -37,6 +40,7 @@ const state = {
   rangeFollowsNow: true,
   motionSeek: null,
   recordingSettingsRevision: 0, recordingDuration: null,
+  general: null, generalSettingsRevision: 0,
   archiveController: null, waveformController: null, archiveFiltersDirty: false,
   timelineWindow: null,
 };
@@ -57,6 +61,12 @@ const monitor = {
   fullscreenId: null, audioCameraId: null, statusEpoch: 0,
   statusTimer: null,
 };
+const cameraRotation = window.NvrCameraRotation ? new window.NvrCameraRotation({
+  getCameras: () => state.cameras,
+  getLayout: () => monitor.layout,
+  isActive: () => state.authenticated && network.view === "monitor" && monitor.playing && !document.hidden && !monitor.fullscreenId,
+  onRotate: () => renderMonitor(),
+}) : null;
 let liveLayout = null;
 let cameraEditor = null, cameraDialogEpoch = 0, cameraProbeEpoch = 0, cameraProbeController = null;
 
@@ -95,10 +105,15 @@ function renderSystemDashboard() {
       systemTelemetry.history = new window.NvrSystemHistory({dashboard: systemTelemetry.dashboard, api, t, isActive: historyCanUpdate});
       systemTelemetry.history.open();
     }
-    if (systemTelemetry.data) systemTelemetry.dashboard.render(systemTelemetry.data);
+    if (systemTelemetry.data) systemTelemetry.dashboard.render(dashboardSnapshot());
     else systemTelemetry.dashboard.clear();
     systemTelemetry.history?.onTelemetrySnapshot();
   }
+}
+
+function dashboardSnapshot() {
+  const data = systemTelemetry.data;
+  return data && state.general ? {...data, identity: {...data.identity, recorder_name: state.general.recorder_name}} : data;
 }
 
 function historyCanUpdate() {
@@ -154,6 +169,7 @@ async function loadSystemTelemetry() {
         || !["container", "machine", "unknown"].includes(data.scope)
         || ["cpu", "memory", "swap", "disk"].some((key) => !data[key] || typeof data[key] !== "object")) throw new Error("Invalid telemetry response");
     systemTelemetry.data = data;
+    window.NvrGeneralSettings?.setIdentity?.(data);
     systemTelemetry.display.render(data);
     window.NvrSettings?.setSystemSnapshot?.(data);
     renderSystemDashboard();
@@ -296,16 +312,62 @@ function timeLabel(value, withDate = false) {
 }
 
 function localInput(date) {
+  if (recorderClock) return recorderClock.toInput(date);
   const pad = (n) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function inputDate(value) {
+  return recorderClock ? recorderClock.fromInput(value) : new Date(value);
+}
+
+function nextCalendarDate(value) {
+  const date = new Date(`${value}T12:00:00Z`);
+  if (!Number.isFinite(date.getTime())) return "";
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function resetArchiveTimes() {
+  const now = new Date();
+  $("search-start").value = `${localInput(now).slice(0, 10)}T00:00`;
+  $("search-end").value = localInput(new Date(now.getTime() + 60000));
+  syncArchiveFilters();
+}
+
+function applyGeneralPreferences(data) {
+  if (!data || typeof data.recorder_name !== "string" || typeof data.effective_timezone !== "string"
+      || !["12", "24"].includes(data.hour_format) || ![0, 15, 30, 60, 120, 300].includes(data.rotation_seconds)) return false;
+  const previous = state.general;
+  try {
+    if (!previous || previous.effective_timezone !== data.effective_timezone || previous.hour_format !== data.hour_format) recorderClock?.configure(data);
+  } catch (_) { return false; }
+  const timezoneChanged = previous && previous.effective_timezone !== data.effective_timezone;
+  // Preserve the absolute search range when changing how its dates are shown.
+  const oldClock = recorderClock && timezoneChanged && !state.archiveFiltersDirty ? new window.NvrRecorderClock({timezone: previous.effective_timezone, hourFormat: previous.hour_format}) : null;
+  const absoluteStart = oldClock?.fromInput($("search-start").value);
+  const absoluteEnd = oldClock?.fromInput($("search-end").value);
+  state.general = data;
+  cameraRotation?.configure(data.rotation_seconds);
+  if (!previous && !state.archiveFiltersDirty) resetArchiveTimes();
+  else if (absoluteStart && absoluteEnd) {
+    $("search-start").value = localInput(absoluteStart); $("search-end").value = localInput(absoluteEnd); syncArchiveFilters();
+  }
+  document.title = `${data.recorder_name} · SR81 NVR`;
+  if (!previous || previous.effective_timezone !== data.effective_timezone || previous.hour_format !== data.hour_format) {
+    renderSelected(); renderRecordings(); renderPlayingLabels(); drawTimeline(); recordControls?.relabel(); systemTelemetry.dashboard?.render(dashboardSnapshot());
+  }
+  return true;
 }
 
 function prepareArchiveSearch() {
   const date = $("archive-date")?.value, from = $("archive-from")?.value, to = $("archive-to")?.value;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "") || !/^\d{2}:\d{2}$/.test(from || "") || !/^\d{2}:\d{2}$/.test(to || "")) return false;
-  const start = new Date(`${date}T${from}`), end = new Date(`${date}T${to}`);
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || localInput(start) !== `${date}T${from}` || localInput(end) !== `${date}T${to}`) return false;
-  if (end <= start) end.setDate(end.getDate() + 1);
+  const start = inputDate(`${date}T${from}`);
+  let end = inputDate(`${date}T${to}`);
+  if (!start || !end || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || localInput(start) !== `${date}T${from}` || localInput(end) !== `${date}T${to}`) return false;
+  if (end <= start) end = inputDate(`${nextCalendarDate(date)}T${to}`);
+  if (!end) return false;
   if (localInput(end).slice(11) !== to) return false;
   $("search-start").value = localInput(start);
   $("search-end").value = localInput(end);
@@ -357,6 +419,9 @@ function cameraStatus(camera) {
 function showLogin() {
   state.authEpoch += 1;
   state.authenticated = false;
+  state.general = null; state.generalSettingsRevision += 1;
+  cameraRotation?.configure(0);
+  document.title = "SR81 NVR System";
   cameraDialogEpoch += 1;
   cancelCameraProbe();
   cameraEditor?.setCamera(null);
@@ -417,8 +482,10 @@ function refresh(showErrors = true, force = false) {
 async function refreshData(showErrors) {
   const authEpoch = state.authEpoch;
   const durationRevision = state.recordingSettingsRevision;
-  const results = await Promise.allSettled([api("/api/cameras"), api("/api/system")]);
+  const generalRevision = state.generalSettingsRevision;
+  const results = await Promise.allSettled([api("/api/cameras"), api("/api/system"), api("/api/settings/general")]);
   if (!state.authenticated || authEpoch !== state.authEpoch) return;
+  if (results[2].status === "fulfilled" && generalRevision === state.generalSettingsRevision) applyGeneralPreferences(results[2].value);
   const errors = [];
   if (results[0].status === "fulfilled") {
     const previousId = state.selectedId;
@@ -562,8 +629,8 @@ async function loadRecordings() {
   state.archiveController?.abort(); state.archiveController = null;
   const searchButton = $("search-form").querySelector("button[type=submit]");
   if (!state.selectedId) { searchButton.disabled = !state.cameras.length; return; }
-  const start = new Date($("search-start").value).getTime() / 1000;
-  const end = new Date($("search-end").value).getTime() / 1000;
+  const start = inputDate($("search-start").value)?.getTime() / 1000;
+  const end = inputDate($("search-end").value)?.getTime() / 1000;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
     archiveError(t("Choose a valid range: the end must be after the start."));
     searchButton.disabled = false;
@@ -1111,6 +1178,7 @@ function showView(view) {
 }
 
 function releaseMonitor() {
+  cameraRotation?.stop();
   clearTimeout(monitor.statusTimer); monitor.statusTimer = null;
   monitor.observer?.disconnect(); monitor.observer = null;
   monitor.tiles.forEach((tile) => tile.live?.destroy());
@@ -1137,6 +1205,7 @@ function syncMonitorPlayers() {
   });
   $("monitor-toggle").replaceChildren(icon(monitor.playing ? "pause" : "play"), el("span", "", monitor.playing ? t("Pause monitor") : t("Start monitor")));
   $("monitor-toggle").disabled = !state.cameras.length;
+  cameraRotation?.sync();
 }
 
 function updateMonitorAudio(tile) {
@@ -1265,7 +1334,7 @@ function renderMonitor() {
   const saved = layout?.getSaved();
   if (saved) monitor.layout = saved.size;
   const cameraMap = new Map(state.cameras.map((camera) => [camera.id, camera]));
-  const slots = saved ? saved.slots.slice(0, saved.size) : state.cameras.slice(0, monitor.layout).map((camera) => camera.id);
+  const slots = cameraRotation?.currentIds() ?? (saved ? saved.slots.slice(0, saved.size) : state.cameras.slice(0, monitor.layout).map((camera) => camera.id));
   while (slots.length < monitor.layout) slots.push(null);
   const cameras = slots.map((id) => cameraMap.get(id)).filter(Boolean);
   const ids = new Set(cameras.map((camera) => camera.id));
@@ -1321,7 +1390,8 @@ function renderMonitor() {
   $("monitor-grid").className = `monitor-grid layout-${monitor.layout}`;
   $("monitor-empty").hidden = !!state.cameras.length;
   $("monitor-grid").hidden = !state.cameras.length;
-  setText("monitor-page-label", cameras.length === 1 ? t("1 camera") : t("{count} cameras", {count: number(cameras.length)}));
+  const rotation = cameraRotation?.state();
+  setText("monitor-page-label", rotation?.seconds && rotation.pages > 1 ? t("Page {current} / {total}", {current: number(rotation.page + 1), total: number(rotation.pages)}) : cameras.length === 1 ? t("1 camera") : t("{count} cameras", {count: number(cameras.length)}));
   $("monitor-previous").disabled = true;
   $("monitor-next").disabled = true;
   $("monitor-previous").hidden = true;
@@ -2011,11 +2081,7 @@ window.addEventListener("pageshow", (event) => {
   else if (network.view === "layout") liveLayout?.open();
 });
 
-const now = new Date();
-const today = new Date(now); today.setHours(0, 0, 0, 0);
-$("search-start").value = localInput(today);
-$("search-end").value = localInput(new Date(now.getTime() + 60000));
-syncArchiveFilters();
+resetArchiveTimes();
 
 window.addEventListener("nvr-settings-tabchange", renderSystemDashboard);
 
@@ -2037,6 +2103,14 @@ window.addEventListener("nvr-recording-settingschange", (event) => {
   if (!state.authenticated || !Number.isInteger(duration) || duration < 60 || duration > 7200) return;
   state.recordingDuration = duration; state.recordingSettingsRevision += 1;
   if (state.system) { state.system.segment_seconds = duration; renderSystem(); }
+});
+
+window.addEventListener("nvr-general-settingschange", (event) => {
+  if (!state.authenticated) return;
+  if (!applyGeneralPreferences(event.detail)) return;
+  state.generalSettingsRevision += 1;
+  if (network.view === "monitor") renderMonitor();
+  renderSystemDashboard();
 });
 
 window.addEventListener("nvr-languagechange", () => {

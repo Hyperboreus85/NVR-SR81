@@ -13,8 +13,8 @@
   let recordingEpoch = 0, recordingLoadFailed = false;
   let languageActions = [], packActions = [];
   let resources = null, resourcesKnown = false;
-  let archiveBusy = false, maintenanceBusy = false;
-  function blocked() { return busy || archiveBusy || maintenanceBusy; }
+  let archiveBusy = false, maintenanceBusy = false, generalBusy = false;
+  function blocked() { return busy || archiveBusy || maintenanceBusy || generalBusy; }
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -375,12 +375,13 @@
   window.addEventListener("nvr-languagechange", relabel);
   window.addEventListener("nvr-archive-busychange", (event) => { archiveBusy = !!event.detail.busy; updateActions(); });
   window.addEventListener("nvr-system-busychange", (event) => { maintenanceBusy = !!event.detail.busy; updateActions(); });
+  window.addEventListener("nvr-general-busychange", (event) => { generalBusy = !!event.detail.busy; updateActions(); });
   window.addEventListener("nvr-languageschange", renderLanguages);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated;
     authEpoch += 1; fileEpoch += 1; operationEpoch += 1; openEpoch += 1; languageEpoch += 1; recordingEpoch += 1;
     selection = null; reading = busy = false; system = live = null;
-    archiveBusy = maintenanceBusy = false;
+    archiveBusy = maintenanceBusy = generalBusy = false;
     resources = null; resourcesKnown = false;
     recording = null; recordingDraft = ""; recordingLoading = recordingSaving = recordingLoadFailed = false;
     message("settings-error"); message("settings-notice"); message("settings-recording-error"); relabel();

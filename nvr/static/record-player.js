@@ -97,6 +97,8 @@
       const instant = new Date(timestamp * 1000);
       if (!Number.isFinite(instant.getTime())) return "—";
       const locale = this._locale(), key = `${locale}:${date}:${seconds}`;
+      const clock = typeof window !== "undefined" && window.NvrRecorderClockInstance;
+      if (clock) return clock.format(instant, {hour: "2-digit", minute: "2-digit", ...(seconds ? {second: "2-digit"} : {}), ...(date ? {year: "numeric", month: "short", day: "2-digit"} : {})}, locale);
       if (!this.formatters.has(key)) {
         const options = {hour: "2-digit", minute: "2-digit", hourCycle: "h23", ...(seconds ? {second: "2-digit"} : {}), ...(date ? {year: "numeric", month: "short", day: "2-digit"} : {})};
         try { this.formatters.set(key, new Intl.DateTimeFormat(locale, options)); }

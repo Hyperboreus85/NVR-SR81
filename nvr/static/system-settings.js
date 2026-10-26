@@ -13,7 +13,7 @@
   let capability = null, loading = false, submitting = false, externalBusy = false;
   let controller = null, selectedAction = null, opener = null, waiting = null, connectionChecked = false;
   let errorSource = null, noticeSource = null;
-  let settingsBusy = false, archiveBusy = false, announcedBusy = false;
+  let settingsBusy = false, archiveBusy = false, generalBusy = false, announcedBusy = false;
 
   function source(error, fallback) { return {key: error?.message || fallback, params: error?.i18nParams}; }
   function valid(ticket, request) { return authenticated && ticket === authEpoch && request === requestEpoch; }
@@ -134,12 +134,13 @@
     if (event.detail.tab === "system") load();
     else if (!submitting) { abortRequest(); loading = false; closeDialog(); render(); }
   });
-  window.addEventListener("nvr-settings-busychange", (event) => { settingsBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy; render(); });
-  window.addEventListener("nvr-archive-busychange", (event) => { archiveBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy; render(); });
+  window.addEventListener("nvr-settings-busychange", (event) => { settingsBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy; render(); });
+  window.addEventListener("nvr-archive-busychange", (event) => { archiveBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy; render(); });
+  window.addEventListener("nvr-general-busychange", (event) => { generalBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy; render(); });
   window.addEventListener("nvr-languagechange", render);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated; authEpoch += 1; abortRequest();
-    loading = submitting = externalBusy = settingsBusy = archiveBusy = false; capability = waiting = null; connectionChecked = false; errorSource = noticeSource = null;
+    loading = submitting = externalBusy = settingsBusy = archiveBusy = generalBusy = false; capability = waiting = null; connectionChecked = false; errorSource = noticeSource = null;
     closeDialog(); render();
   });
   window.NvrSystemSettings = Object.freeze({open: () => load(), relabel: render});

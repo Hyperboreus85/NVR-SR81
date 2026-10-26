@@ -6,20 +6,22 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#202020">
   <title>SR81 NVR System</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.16.1">
-  <script defer src="/static/i18n.js?v=0.16.1"></script>
-  <script defer src="/static/live-player.js?v=0.16.1"></script>
-  <script defer src="/static/motion-track.js?v=0.16.1"></script>
-  <script defer src="/static/live-layout.js?v=0.16.1"></script>
-  <script defer src="/static/record-player.js?v=0.16.1"></script>
-  <script defer src="/static/camera-editor.js?v=0.16.1"></script>
-  <script defer src="/static/system-telemetry.js?v=0.16.1"></script>
-  <script defer src="/static/system-dashboard.js?v=0.16.1"></script>
-  <script defer src="/static/system-history.js?v=0.16.1"></script>
-  <script defer src="/static/app.js?v=0.16.1"></script>
-  <script defer src="/static/system-settings.js?v=0.16.1"></script>
-  <script defer src="/static/archive-settings.js?v=0.16.1"></script>
-  <script defer src="/static/settings.js?v=0.16.1"></script>
+  <link rel="stylesheet" href="/static/style.css?v=0.17.0">
+  <script defer src="/static/i18n.js?v=0.17.0"></script>
+  <script defer src="/static/live-player.js?v=0.17.0"></script>
+  <script defer src="/static/motion-track.js?v=0.17.0"></script>
+  <script defer src="/static/live-layout.js?v=0.17.0"></script>
+  <script defer src="/static/record-player.js?v=0.17.0"></script>
+  <script defer src="/static/camera-editor.js?v=0.17.0"></script>
+  <script defer src="/static/system-telemetry.js?v=0.17.0"></script>
+  <script defer src="/static/recorder-preferences.js?v=0.17.0"></script>
+  <script defer src="/static/system-dashboard.js?v=0.17.0"></script>
+  <script defer src="/static/system-history.js?v=0.17.0"></script>
+  <script defer src="/static/app.js?v=0.17.0"></script>
+  <script defer src="/static/system-settings.js?v=0.17.0"></script>
+  <script defer src="/static/archive-settings.js?v=0.17.0"></script>
+  <script defer src="/static/general-settings.js?v=0.17.0"></script>
+  <script defer src="/static/settings.js?v=0.17.0"></script>
 </head>
 <body>
   <div id="loading-screen" class="loading-screen" role="status"><span class="loading-spinner"></span><span data-i18n="Connecting to recorder…">Connecting to recorder…</span></div>
@@ -59,7 +61,7 @@
 
   <div id="app" class="app-shell sr81-shell" hidden>
     <aside class="sidebar app-rail">
-      <a class="brand rail-brand" href="#" aria-label="SR81 NVR System"><img class="sr81-wordmark" src="/static/sr81-logo.svg?v=0.16.1" width="56" height="24" alt="SR81 NVR System"><span id="version" class="rail-version" aria-label="Application version" data-i18n-aria-label="Application version">—</span></a>
+      <a class="brand rail-brand" href="#" aria-label="SR81 NVR System"><img class="sr81-wordmark" src="/static/sr81-logo.svg?v=0.17.0" width="56" height="24" alt="SR81 NVR System"><span id="version" class="rail-version" aria-label="Application version" data-i18n-aria-label="Application version">—</span></a>
       <nav class="workspace-nav" aria-label="Main navigation" data-i18n-aria-label="Main navigation"><button id="nav-monitor" class="workspace-nav-item active" aria-current="page" data-i18n-title="Live" title="Live"><svg><use href="#i-monitor"/></svg><span data-i18n="Live">Live</span></button><button id="nav-recorder" class="workspace-nav-item" data-i18n-title="Record" title="Record"><svg><use href="#i-record"/></svg><span data-i18n="Record">Record</span></button><button id="nav-cameras" class="workspace-nav-item" data-i18n-title="Cameras" title="Cameras"><svg><use href="#i-camera"/></svg><span data-i18n="Cameras">Cameras</span></button><button id="nav-network" class="workspace-nav-item" data-i18n-title="Network" title="Network"><svg><use href="#i-network"/></svg><span data-i18n="Network">Network</span></button><button id="nav-settings" class="workspace-nav-item" data-i18n-title="Settings" title="Settings"><svg><use href="#i-settings"/></svg><span data-i18n="Settings">Settings</span></button></nav>
       <div class="rail-bottom"><button id="logout" class="workspace-nav-item rail-logout" title="Sign out" data-i18n-title="Sign out"><svg><use href="#i-exit"/></svg><span data-i18n="Sign out">Sign out</span></button></div>
     </aside>
@@ -136,7 +138,13 @@
         </section>
         <section id="settings-view" hidden aria-label="Settings" data-i18n-aria-label="Settings">
           <div id="settings-error" class="banner error" role="alert" hidden></div><div id="settings-notice" class="banner settings-notice" role="status" hidden></div>
-          <section id="settings-general-panel" aria-labelledby="settings-tab-general" data-settings-panel="general" class="settings-panel panel" role="tabpanel"><div class="settings-metrics"><div><span data-i18n="Application version">Application version</span><strong id="settings-version">—</strong></div><div><span data-i18n="Free archive disk space">Free archive disk space</span><strong id="settings-disk-free">—</strong></div><div><span data-i18n="Live streams on server">Live streams on server</span><strong id="settings-live-streams">—</strong></div><div><span data-i18n="Compatible conversions on server">Compatible conversions on server</span><strong id="settings-live-transcodes">—</strong></div><div><span data-i18n="Recording file duration">Recording file duration</span><strong id="settings-segment-duration">—</strong></div></div><div class="settings-preference"><div><h3 data-i18n="Default monitor layout">Default monitor layout</h3><p data-i18n="Saved in this browser.">Saved in this browser.</p></div><label><span class="visually-hidden" data-i18n="Default monitor layout">Default monitor layout</span><select id="settings-monitor-layout"><option value="1" data-i18n="1 camera">1 camera</option><option value="4" data-i18n="4 cameras">4 cameras</option><option value="9" data-i18n="9 cameras">9 cameras</option><option value="16" data-i18n="16 cameras">16 cameras</option></select></label></div></section>
+          <section id="settings-general-panel" aria-labelledby="settings-tab-general" data-settings-panel="general" class="settings-panel panel" role="tabpanel">
+            <form id="general-settings-form" class="general-settings-form">
+              <div class="general-identity-row"><label class="general-name-field"><span data-i18n="Recorder name">Recorder name</span><input id="general-recorder-name" type="text" maxlength="80" autocomplete="off" spellcheck="false" aria-describedby="general-name-help" disabled><small id="general-name-help" data-i18n="Leave blank to use the system hostname.">Leave blank to use the system hostname.</small></label><dl class="general-system-identity"><div><dt data-i18n="Hostname">Hostname</dt><dd id="general-hostname">—</dd></div><div><dt data-i18n="IP addresses">IP addresses</dt><dd id="general-addresses">—</dd></div></dl></div>
+              <div class="general-preferences"><label class="general-zone-field"><span data-i18n="Time zone">Time zone</span><select id="general-timezone" disabled></select></label><div class="general-country-field"><span data-i18n="Country (time zone)">Country (time zone)</span><strong id="general-country" title="Derived from the time zone." data-i18n-title="Derived from the time zone.">—</strong></div><label><span data-i18n="Time format">Time format</span><select id="general-hour-format" disabled></select></label><label><span data-i18n="Live rotation">Live rotation</span><select id="general-rotation" aria-describedby="general-rotation-help" disabled></select><small id="general-rotation-help" data-i18n="Rotates Live pages; recording continues.">Rotates Live pages; recording continues.</small></label></div>
+              <div class="general-settings-actions"><p data-i18n="Saved on this recorder for all users.">Saved on this recorder for all users.</p><span id="general-status" role="status" aria-live="polite"></span><button id="general-save" type="submit" class="button primary" disabled><span data-i18n="Save general settings">Save general settings</span></button></div><div class="general-settings-feedback"><p id="general-error" class="form-error" role="alert" hidden></p><p id="general-notice" class="general-notice" role="status" hidden></p><button id="general-retry" type="button" class="button secondary small-button" hidden><span data-i18n="Retry">Retry</span></button></div>
+            </form>
+            <div class="settings-metrics"><div><span data-i18n="Application version">Application version</span><strong id="settings-version">—</strong></div><div><span data-i18n="Free archive disk space">Free archive disk space</span><strong id="settings-disk-free">—</strong></div><div><span data-i18n="Live streams on server">Live streams on server</span><strong id="settings-live-streams">—</strong></div><div><span data-i18n="Compatible conversions on server">Compatible conversions on server</span><strong id="settings-live-transcodes">—</strong></div><div><span data-i18n="Recording file duration">Recording file duration</span><strong id="settings-segment-duration">—</strong></div></div><div class="settings-preference"><div><h3 data-i18n="Default monitor layout">Default monitor layout</h3><p data-i18n="Saved in this browser.">Saved in this browser.</p></div><label><span class="visually-hidden" data-i18n="Default monitor layout">Default monitor layout</span><select id="settings-monitor-layout"><option value="1" data-i18n="1 camera">1 camera</option><option value="4" data-i18n="4 cameras">4 cameras</option><option value="9" data-i18n="9 cameras">9 cameras</option><option value="16" data-i18n="16 cameras">16 cameras</option></select></label></div></section>
           <section id="settings-languages-panel" aria-labelledby="settings-tab-languages" data-settings-panel="languages" class="settings-panel panel compact-languages" role="tabpanel" hidden>
             <div class="settings-language-choice"><div class="language-choice-copy"><h2 data-i18n="Interface language">Interface language</h2><p data-i18n="Saved in this browser.">Saved in this browser.</p></div><label class="visually-hidden" for="settings-language" data-i18n="Interface language">Interface language</label><select id="settings-language"></select></div>
             <div id="settings-language-list" class="language-cards" hidden aria-hidden="true"></div>

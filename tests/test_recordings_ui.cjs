@@ -10,6 +10,7 @@ const vm = require("node:vm");
 const source = readFileSync(join(__dirname, "../nvr/static/app.js"), "utf8");
 const recordPlayerSource = readFileSync(join(__dirname, "../nvr/static/record-player.js"), "utf8");
 const motionSource = readFileSync(join(__dirname, "../nvr/static/motion-track.js"), "utf8");
+const preferencesSource = readFileSync(join(__dirname, "../nvr/static/recorder-preferences.js"), "utf8");
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return {promise, resolve, reject}; }
 
@@ -78,8 +79,23 @@ function camera(id) {
 }
 const snapshot = (size = 4, ids = ["a", "b", "c", "d"]) => ({version: 1, size, slots: Array.from({length: 16}, (_, index) => ids[index] || null)});
 const clone = (value) => JSON.parse(JSON.stringify(value));
+const generalSettings = (extra = {}) => ({recorder_name: "Fixture recorder", timezone: "UTC", effective_timezone: "UTC", hour_format: "24", rotation_seconds: 0, ...extra});
+class BrowserUTCDate extends Date {
+  constructor(...args) {
+    if (args.length > 1) super(Date.UTC(...args));
+    else if (typeof args[0] === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?$/.test(args[0])) super(args[0] + "Z");
+    else super(...args);
+  }
+  getFullYear() { return this.getUTCFullYear(); }
+  getMonth() { return this.getUTCMonth(); }
+  getDate() { return this.getUTCDate(); }
+  getHours() { return this.getUTCHours(); }
+  getMinutes() { return this.getUTCMinutes(); }
+  getTimezoneOffset() { return 0; }
+}
 
-function environment({cameras = [camera("a"), camera("b")], recordings = [], saved = snapshot(), legacySize = null, handler} = {}) {
+function environment({cameras = [camera("a"), camera("b")], recordings = [], saved = snapshot(), legacySize = null, handler,
+                      preferences = true, general = generalSettings(), browserUTC = false} = {}) {
   const nodes = new Map(), windowEvents = new Map(), documentEvents = new Map(), calls = [], players = [], layouts = [], timers = new Map();
   const storage = new Map(legacySize === null ? [] : [["nvr.monitor.layout", String(legacySize)]]);
   const ready = deferred(); let timer = 0, language = "en", settingsOpens = 0;
@@ -123,6 +139,7 @@ function environment({cameras = [camera("a"), camera("b")], recordings = [], sav
     : path === "/api/cameras" ? cameras
     : path === "/api/system" ? {version: "test", recordings_bytes: 0, segment_seconds: 1800, ffmpeg_available: true, disk: {total: 100000, free: 90000, used: 10000}}
     : path === "/api/live/status" ? {active_streams: 0, max_streams: 16, active_transcodes: 0, max_transcodes: 2, streams: []}
+    : path === "/api/settings/general" ? general
     : path === "/api/logout" ? {authenticated: false}
     : path.startsWith("/api/recordings?") ? recordings
     : path.endsWith("/waveform") ? {duration: recordings.find((item) => item.id === path.split("/")[3])?.duration || 90, sample_seconds: .5, peaks: [.1, .9, .2]}
@@ -137,12 +154,14 @@ function environment({cameras = [camera("a"), camera("b")], recordings = [], sav
     async fetch(path, options = {}) { calls.push({path, options}); const value = await (handler ? handler(path, options, defaults) : defaults(path)); return value instanceof Response ? value : new Response(JSON.stringify(value), {status: 200}); },
   });
   context.window = context; context.devicePixelRatio = 1; context.scrollTo = () => {};
+  if (browserUTC) context.Date = BrowserUTCDate;
   context.NvrLivePlayer = LivePlayer; context.NvrLiveLayout = LiveLayout;
   context.NvrSettings = {open() { settingsOpens += 1; }};
   context.NvrI18n = {ready: ready.promise, locale: () => language, getLanguage: () => language,
     t: (key, params = {}) => (language === "en" ? String(key) : "IT: " + key).replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (token, name) => Object.hasOwn(params, name) ? String(params[name]) : token)};
   context.addEventListener = (type, listener) => { if (!windowEvents.has(type)) windowEvents.set(type, []); windowEvents.get(type).push(listener); };
   context.dispatchEvent = (event) => { for (const listener of windowEvents.get(event.type) || []) listener(event); return true; };
+  if (preferences) vm.runInContext(preferencesSource, context, {filename: "recorder-preferences.js"});
   vm.runInContext(recordPlayerSource, context, {filename: "record-player.js"});
   vm.runInContext(motionSource, context, {filename: "motion-track.js"});
   vm.runInContext(source, context, {filename: "app.js"});
@@ -156,7 +175,7 @@ function environment({cameras = [camera("a"), camera("b")], recordings = [], sav
 }
 
 const day = "2026-10-25";
-const startAt = (hour = 12, minute = 0) => new Date(2026, 9, 25, hour, minute).getTime() / 1000;
+const startAt = (hour = 12, minute = 0) => Date.UTC(2026, 9, 25, hour, minute) / 1000;
 const recording = (id, startedAt = startAt(), duration = 90, audio = "aac") => ({id, camera_id: "a", started_at: startedAt, duration, size: 4096, video_codec: "h264", audio_codec: audio});
 async function settle() { await flush(); await flush(); }
 async function search(env, {date = day, from = "00:00", to = "00:00"} = {}) {
@@ -169,17 +188,17 @@ async function metadata(env, duration) {
   await env.node("player").fire("loadedmetadata"); await env.node("player").fire("seeked"); await settle();
 }
 
-test("Record filters submit the selected local date and advance an overnight end by one calendar day", async () => {
+test("Record filters submit the selected recorder UTC date and advance an overnight end by one calendar day", async () => {
   const env = environment(); await env.boot();
   await search(env, {from: "22:00", to: "02:00"});
   const query = new URL(env.calls.filter((call) => call.path.startsWith("/api/recordings?")).at(-1).path, "http://local").searchParams;
   assert.equal(query.get("camera_id"), "a");
-  assert.equal(Number(query.get("start")), new Date(2026, 9, 25, 22).getTime() / 1000);
-  assert.equal(Number(query.get("end")), new Date(2026, 9, 26, 2).getTime() / 1000);
+  assert.equal(Number(query.get("start")), Date.UTC(2026, 9, 25, 22) / 1000);
+  assert.equal(Number(query.get("end")), Date.UTC(2026, 9, 26, 2) / 1000);
   await search(env);
   const fullDay = new URL(env.calls.filter((call) => call.path.startsWith("/api/recordings?")).at(-1).path, "http://local").searchParams;
-  assert.equal(Number(fullDay.get("start")), new Date(2026, 9, 25).getTime() / 1000);
-  assert.equal(Number(fullDay.get("end")), new Date(2026, 9, 26).getTime() / 1000);
+  assert.equal(Number(fullDay.get("start")), Date.UTC(2026, 9, 25) / 1000);
+  assert.equal(Number(fullDay.get("end")), Date.UTC(2026, 9, 26) / 1000);
 });
 
 test("an invalid newer filter aborts the previous query and ignores a late successful result", async () => {
@@ -338,4 +357,55 @@ test("new video preparation starts before any audio or motion request and switch
   assert.equal(env.calls.some((call) => /\/pending\/(waveform|motion)/.test(call.path)), false);
   assert.equal(env.calls.some((call) => call.path.endsWith("/newer/waveform")), true);
   assert.equal(env.calls.some((call) => call.path.includes("/newer/motion?")), true);
+});
+
+test("Rome archive searches use recorder time against a UTC browser, including both overnight DST changes", async () => {
+  const env = environment({browserUTC: true, general: generalSettings({timezone: "Europe/Rome", effective_timezone: "Europe/Rome"})});
+  await env.boot();
+  assert.equal(env.evaluate('new Date("2026-10-24T22:00").toISOString()'), "2026-10-24T22:00:00.000Z");
+  const lastQuery = () => new URL(env.calls.filter((call) => call.path.startsWith("/api/recordings?")).at(-1).path, "http://local").searchParams;
+  await search(env, {date: "2026-10-24", from: "22:00", to: "04:00"});
+  assert.equal(Number(lastQuery().get("start")), Date.UTC(2026, 9, 24, 20) / 1000);
+  assert.equal(Number(lastQuery().get("end")), Date.UTC(2026, 9, 25, 3) / 1000);
+  await search(env, {date: "2026-03-28", from: "22:00", to: "04:00"});
+  assert.equal(Number(lastQuery().get("start")), Date.UTC(2026, 2, 28, 21) / 1000);
+  assert.equal(Number(lastQuery().get("end")), Date.UTC(2026, 2, 29, 2) / 1000);
+  const count = env.calls.filter((call) => call.path.startsWith("/api/recordings?")).length;
+  await search(env, {date: "2026-03-28", from: "22:00", to: "02:30"});
+  assert.equal(env.calls.filter((call) => call.path.startsWith("/api/recordings?")).length, count);
+  assert.equal(env.node("archive-error").hidden, false);
+});
+
+test("12/24 preferences relabel selected-video and timeline clocks without changing playback or absolute search", async () => {
+  const started = Date.UTC(2026, 9, 26, 19) / 1000;
+  const prefs = generalSettings({timezone: "Europe/Rome", effective_timezone: "Europe/Rome", hour_format: "12"});
+  const env = environment({browserUTC: true, general: prefs, recordings: [recording("clock", started, 90)]});
+  await env.boot(); await search(env, {date: "2026-10-26", from: "20:00", to: "20:02"});
+  await env.node("recordings-list").children[0].fire("click"); await metadata(env, 90);
+  env.node("player").currentTime = 30; await env.node("player").fire("timeupdate");
+  assert.match(env.node("record-absolute-time").textContent, /08:00:30\s*PM/);
+  assert.match(env.node("record-time-axis").children[0].textContent, /08:00(?::00)?\s*PM/);
+  assert.match(env.node("timeline-ruler").children[0].textContent, /08:00\s*PM/);
+  const source = env.node("player").src, range = env.evaluate("JSON.stringify(state.range)");
+  await env.windowEvent("nvr-general-settingschange", {detail: {...prefs, hour_format: "24"}});
+  assert.match(env.node("record-absolute-time").textContent, /20:00:30/);
+  assert.match(env.node("record-time-axis").children[0].textContent, /^20:00(?::00)?$/);
+  assert.equal(env.node("timeline-ruler").children[0].textContent, "20:00");
+  assert.equal(env.node("player").src, source); assert.equal(env.node("player").currentTime, 30);
+  assert.equal(env.evaluate("JSON.stringify(state.range)"), range);
+});
+
+test("a stale General GET cannot undo the newer saved preferences event", async () => {
+  const late = deferred(); let waiting = false;
+  const env = environment({browserUTC: true, handler(path, options, fallback) {
+    return waiting && path === "/api/settings/general" ? late.promise : fallback(path);
+  }});
+  await env.boot(); waiting = true;
+  const refresh = env.evaluate("refresh(true, true)"); await settle();
+  await env.windowEvent("nvr-general-settingschange", {detail: generalSettings({recorder_name: "Updated name", timezone: "Europe/Rome", effective_timezone: "Europe/Rome", hour_format: "12"})});
+  late.resolve(generalSettings()); await refresh; await settle();
+  assert.equal(env.evaluate("state.general.recorder_name"), "Updated name");
+  assert.equal(env.evaluate("recorderClock.timezone"), "Europe/Rome");
+  assert.equal(env.evaluate("recorderClock.hourFormat"), "12");
+  assert.equal(env.document.title, "Updated name · SR81 NVR");
 });

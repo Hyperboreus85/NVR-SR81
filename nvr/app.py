@@ -21,6 +21,7 @@ from .camera_config import public_camera_connection, resolve_camera_streams
 from .discovery import DiscoveryError, discover, list_interfaces, scan_network
 from .live import LiveError, LiveManager
 from .languages import LanguageError, LanguageManager, MAX_PACK_BYTES
+from .general_preferences import GeneralPreferenceError, GeneralPreferences
 from .media import MediaError, MediaManager
 from .maintenance import MaintenanceError, MaintenanceManager
 from .telemetry_history import TelemetryHistory
@@ -52,6 +53,14 @@ class LeasedFileResponse(FileResponse):
 class RecordingPreferencesInput(BaseModel):
     model_config = {"extra": "forbid"}
     segment_minutes: int = Field(strict=True, ge=1, le=120)
+
+
+class GeneralPreferencesInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    recorder_name: str = Field(strict=True, max_length=80)
+    timezone: str = Field(strict=True, min_length=1, max_length=128)
+    hour_format: Literal["24", "12"]
+    rotation_seconds: int = Field(strict=True, ge=0, le=300)
 
 
 class MaintenanceActionInput(BaseModel):
@@ -118,7 +127,7 @@ class NetworkScanInput(BaseModel):
 
 def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager,
                maintenance_factory=MaintenanceManager, telemetry_factory=SystemTelemetry,
-               capacity_factory=RecordingCapacity, history_factory=TelemetryHistory):
+               capacity_factory=RecordingCapacity, history_factory=TelemetryHistory, general_factory=GeneralPreferences):
     settings = settings or Settings()
     if settings.password and len(settings.password) < 12:
         raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
@@ -131,6 +140,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     realtime = live_factory(settings)
     maintenance = maintenance_factory()
     telemetry = telemetry_factory(settings.recordings_dir)
+    general = general_factory(store, telemetry)
     history = history_factory(settings.data_dir, telemetry)
     capacity = capacity_factory(settings, store, media)
     media_jobs = asyncio.Semaphore(2)
@@ -178,6 +188,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     app.state.realtime = realtime
     app.state.maintenance = maintenance
     app.state.telemetry = telemetry
+    app.state.general = general
     app.state.history = history
     app.state.capacity = capacity
     app.state.languages = languages
@@ -221,6 +232,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
 
     @app.exception_handler(LanguageError)
     async def invalid_language_pack(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
+
+    @app.exception_handler(GeneralPreferenceError)
+    async def invalid_general_preferences(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
 
     def camera_or_404(camera_id):
@@ -627,6 +642,30 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             raise HTTPException(504, "The camera did not finish returning its profiles. Try again or check its ONVIF services.") from None
         except (ValueError, RuntimeError, OSError):
             raise HTTPException(422, "ONVIF unavailable. Check the endpoint, credentials and camera clock.") from None
+
+    @app.get("/api/settings/general")
+    def get_general_preferences():
+        return general.read()
+
+    @app.put("/api/settings/general")
+    async def save_general_preferences(data: GeneralPreferencesInput, request: Request):
+        async def apply():
+            async with mutation_lock:
+                # Authorization can expire while another setting is being saved.
+                if not auth.valid(request.cookies.get("nvr_session")):
+                    raise HTTPException(401, "Authentication required")
+                return await asyncio.to_thread(general.save, data.model_dump())
+
+        # Finish an admitted save even if its browser disconnects; shutdown
+        # waits for the worker before closing the recorder's shared state.
+        operation = asyncio.create_task(apply(), name="nvr-general-preferences")
+        recording_updates.add(operation)
+        def finished(task):
+            recording_updates.discard(task)
+            if not task.cancelled():
+                task.exception()
+        operation.add_done_callback(finished)
+        return await asyncio.shield(operation)
 
     @app.get("/api/settings/recording")
     def get_recording_preferences():
