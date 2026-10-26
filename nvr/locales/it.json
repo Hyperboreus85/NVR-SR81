@@ -1016,6 +1016,14 @@
     "Waiting for saved history.": "In attesa dello storico salvato.",
     "System history controls unavailable.": "Controlli dello storico di sistema non disponibili.",
     "History collection is temporarily unavailable. Saved samples are still shown.": "La raccolta dello storico è temporaneamente non disponibile. I campioni già salvati restano visibili.",
-    "No recent saved sample. Check the recorder.": "Nessun campione recente salvato. Verifica il recorder."
+    "No recent saved sample. Check the recorder.": "Nessun campione recente salvato. Verifica il recorder.",
+    "Saved in this browser.": "Salvato in questo browser.",
+    "Import a JSON language file.": "Importa un file lingua JSON.",
+    "Translate the template, then install the JSON file.": "Traduci il modello, poi installa il file JSON.",
+    "Missing translations use English.": "Le traduzioni mancanti usano l’inglese.",
+    "All cameras · 1–120 min · 30 min recommended.": "Tutte le telecamere · 1–120 min · 30 min consigliati.",
+    "Saving closes current files. Existing recordings stay.": "Il salvataggio chiude i file in corso e conserva le registrazioni esistenti.",
+    "File lengths vary with camera keyframes.": "La durata dei file dipende dai keyframe della telecamera.",
+    "Long files take longer to finish and analyze.": "I file lunghi richiedono più tempo per chiusura e analisi."
   }
 }

@@ -1016,6 +1016,14 @@
     "Waiting for saved history.": "Waiting for saved history.",
     "System history controls unavailable.": "System history controls unavailable.",
     "History collection is temporarily unavailable. Saved samples are still shown.": "History collection is temporarily unavailable. Saved samples are still shown.",
-    "No recent saved sample. Check the recorder.": "No recent saved sample. Check the recorder."
+    "No recent saved sample. Check the recorder.": "No recent saved sample. Check the recorder.",
+    "Saved in this browser.": "Saved in this browser.",
+    "Import a JSON language file.": "Import a JSON language file.",
+    "Translate the template, then install the JSON file.": "Translate the template, then install the JSON file.",
+    "Missing translations use English.": "Missing translations use English.",
+    "All cameras · 1–120 min · 30 min recommended.": "All cameras · 1–120 min · 30 min recommended.",
+    "Saving closes current files. Existing recordings stay.": "Saving closes current files. Existing recordings stay.",
+    "File lengths vary with camera keyframes.": "File lengths vary with camera keyframes.",
+    "Long files take longer to finish and analyze.": "Long files take longer to finish and analyze."
   }
 }

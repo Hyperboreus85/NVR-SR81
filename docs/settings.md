@@ -2,7 +2,7 @@
 
 Le impostazioni raccolgono **General**, **Languages**, **Recording** e **System** nella barra superiore, come Live e Record. Inglese e italiano sono inclusi; nuovi pacchetti JSON si installano e si selezionano in Languages. La grafica usa pannelli compatti, superfici grigio scuro, accenti ciano e dettagli oro, in linea con Record. La versione dell'applicazione compare sotto il logo e gli indicatori di sistema nella barra superiore rimangono visibili da ogni pagina autenticata.
 
-La pagina usa righe compatte per i pacchetti e raccoglie installazione e modello JSON in due riquadri affiancati sul desktop, disposti in colonna sul telefono.
+Le quattro schede si aprono direttamente sui controlli, senza titolo Settings o introduzioni duplicate. I testi essenziali spiegano preferenze, file JSON, durata delle registrazioni e azioni di sistema.
 
 ## Cambiare lingua
 

@@ -966,6 +966,9 @@ dialog.modal .modal-heading .icon-button:focus-visible{outline-offset:-2px}
 
 /* Settings uses the same dense charcoal panels as Record. */
 .sr81-shell #settings-view{max-width:none;width:100%}
+.settings-workspace .main-footer{display:none}
+.settings-workspace #settings-system-panel .system-overview-heading,.settings-workspace #settings-system-panel .system-overview-note{display:none}
+#settings-view .system-action>div>p:first-child{margin-top:0}
 #settings-view>.page-heading{margin:0 0 10px;padding:0;min-height:0;gap:8px}
 #settings-view>.page-heading>div{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px;min-width:0}
 #settings-view>.page-heading .eyebrow{display:none}
