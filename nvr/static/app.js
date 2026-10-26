@@ -70,7 +70,7 @@ function cameraEditorController() {
   return cameraEditor;
 }
 
-const systemTelemetry = {display: null, dashboard: null, data: null, timer: null, controller: null, timeout: null, epoch: 0};
+const systemTelemetry = {display: null, dashboard: null, history: null, data: null, timer: null, controller: null, timeout: null, epoch: 0};
 
 function telemetryCanUpdate() {
   return state.authenticated && !document.hidden;
@@ -85,18 +85,29 @@ function telemetryDisplay() {
 }
 
 function renderSystemDashboard() {
-  if (!state.authenticated || document.hidden || network.view !== "settings" || $("settings-system-panel")?.hidden !== false) return;
+  if (!historyCanUpdate()) { systemTelemetry.history?.close(); return; }
   if (!systemTelemetry.dashboard && window.NvrSystemDashboard && $("system-dashboard")) {
     try { systemTelemetry.dashboard = new window.NvrSystemDashboard({root: $("system-dashboard"), t, locale}); }
     catch (_) { /* Settings actions remain available if the optional overview cannot load. */ }
   }
   if (systemTelemetry.dashboard) {
+    if (!systemTelemetry.history && window.NvrSystemHistory) {
+      systemTelemetry.history = new window.NvrSystemHistory({dashboard: systemTelemetry.dashboard, api, t, isActive: historyCanUpdate});
+      systemTelemetry.history.open();
+    }
     if (systemTelemetry.data) systemTelemetry.dashboard.render(systemTelemetry.data);
     else systemTelemetry.dashboard.clear();
+    systemTelemetry.history?.onTelemetrySnapshot();
   }
 }
 
+function historyCanUpdate() {
+  return state.authenticated && !document.hidden && network.view === "settings" && $("settings-system-panel")?.hidden === false;
+}
+
 function stopSystemTelemetry() {
+  systemTelemetry.history?.close();
+  if (!state.authenticated) systemTelemetry.history?.clear();
   clearInterval(systemTelemetry.timer); systemTelemetry.timer = null;
   clearTimeout(systemTelemetry.timeout); systemTelemetry.timeout = null;
   systemTelemetry.epoch += 1;
@@ -1059,9 +1070,11 @@ function showView(view) {
   if ($("cameras-view")) $("cameras-view").hidden = view !== "cameras";
   if ($("settings-view")) $("settings-view").hidden = view !== "settings";
   setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings"})[view]));
-  if ($("current-view-label")) $("current-view-label").hidden = isLive || view === "recorder";
+  if ($("current-view-label")) $("current-view-label").hidden = isLive || view === "recorder" || view === "settings";
   if ($("live-subnav")) $("live-subnav").hidden = !isLive;
   if ($("record-subnav")) $("record-subnav").hidden = view !== "recorder";
+  if ($("settings-subnav")) $("settings-subnav").hidden = view !== "settings";
+  document.body.classList.toggle("settings-workspace", view === "settings");
   ["monitor", "layout"].forEach((name) => {
     const button = $(`live-tab-${name}`);
     if (!button) return;
@@ -2042,6 +2055,7 @@ window.addEventListener("nvr-languagechange", () => {
   cameraEditor?.relabel();
   systemTelemetry.display?.relabel();
   systemTelemetry.dashboard?.relabel();
+  systemTelemetry.history?.relabel();
   setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings"})[network.view] || "Monitor"));
   $("toggle-live").replaceChildren(icon(state.live ? "close" : "play"), document.createTextNode(t(state.live ? "Close preview" : "Open preview")));
   $("onvif-form").querySelector("button[type=submit]").textContent = t(network.modalController ? "Reading profiles…" : "Find profiles");

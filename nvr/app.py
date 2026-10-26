@@ -23,6 +23,7 @@ from .live import LiveError, LiveManager
 from .languages import LanguageError, LanguageManager, MAX_PACK_BYTES
 from .media import MediaError, MediaManager
 from .maintenance import MaintenanceError, MaintenanceManager
+from .telemetry_history import TelemetryHistory
 from .onvif import get_profiles
 from .preferences import SEGMENT_PREFERENCE_KEY, recording_preferences, restore_recording_preferences
 from .security import Auth, redact_url
@@ -117,7 +118,7 @@ class NetworkScanInput(BaseModel):
 
 def create_app(settings: Settings | None = None, media_factory=MediaManager, live_factory=LiveManager,
                maintenance_factory=MaintenanceManager, telemetry_factory=SystemTelemetry,
-               capacity_factory=RecordingCapacity):
+               capacity_factory=RecordingCapacity, history_factory=TelemetryHistory):
     settings = settings or Settings()
     if settings.password and len(settings.password) < 12:
         raise ValueError("NVR_ADMIN_PASSWORD must contain at least 12 characters")
@@ -130,6 +131,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     realtime = live_factory(settings)
     maintenance = maintenance_factory()
     telemetry = telemetry_factory(settings.recordings_dir)
+    history = history_factory(settings.data_dir, telemetry)
     capacity = capacity_factory(settings, store, media)
     media_jobs = asyncio.Semaphore(2)
     onvif_jobs = asyncio.Semaphore(2)
@@ -156,6 +158,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         try:
             await media.start()
             await realtime.start()
+            await history.start()
             yield
         finally:
             if recording_updates:
@@ -163,6 +166,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             if active_scan is not None:
                 active_scan.cancel()
                 await asyncio.gather(active_scan, return_exceptions=True)
+            await history.stop()
             await realtime.stop()
             await media.stop()
             lock.close()
@@ -174,6 +178,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     app.state.realtime = realtime
     app.state.maintenance = maintenance
     app.state.telemetry = telemetry
+    app.state.history = history
     app.state.capacity = capacity
     app.state.languages = languages
 
@@ -736,6 +741,12 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         result["storage"] = storage_overview(result.get("disk", {}))
         result["recording"] = capacity.snapshot(result.get("disk", {}))
         return result
+
+    @app.get("/api/system/history")
+    def system_history(hours: int = Query(6, ge=1, le=168)):
+        if hours not in {1, 6, 24, 168}:
+            raise HTTPException(422, "Choose a supported history period.")
+        return history.read(hours=hours)
 
     @app.get("/api/system")
     def system():

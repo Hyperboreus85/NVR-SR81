@@ -3,7 +3,7 @@ const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const {readFileSync} = require("node:fs");
 const {join} = require("node:path");
-const {NvrSystemDashboard, historyWindow, historySegments, headroom} = require("../nvr/static/system-dashboard.js");
+const {NvrSystemDashboard, historyWindow, historySegments, downsampleSegments, headroom} = require("../nvr/static/system-dashboard.js");
 
 class Element {
   constructor(tag, document) { this.tagName = tag.toUpperCase(); this.ownerDocument = document; this.children = []; this.dataset = {}; this.attributes = new Map(); this._text = ""; this.hidden = false; this.className = ""; this.title = ""; }
@@ -183,4 +183,66 @@ test("unavailable or malicious storage values cannot create warning text, execut
     assert.doesNotMatch(env.card("archive").detail.textContent, /NaN|onerror|0% free|overwrite/);
     assert.equal(all(env.root).some((node) => ["IMG", "SCRIPT"].includes(node.tagName)), false);
   }
+});
+
+test("saved six-hour history includes five-hour-old peaks and is never overwritten by the live thirty-minute snapshot", () => {
+  const env = environment(), end = 200000;
+  env.dashboard.setHistoryWindow(6);
+  env.dashboard.render(snapshot({sampled_at: end, history: {window_seconds: 1800, points: [{sampled_at: end, cpu_percent: 100}]}}));
+  assert.equal(series(env.chart("cpu").plot, "cpu").length, 0);
+  const saved = freeze({available: true, sampled_at: end, window_seconds: 21600, interval_seconds: 30,
+    points: [{sampled_at: end - 18000, cpu_percent: 97}, {sampled_at: end - 30, cpu_percent: 5}]});
+  env.dashboard.setHistory(saved);
+  assert.equal(env.chart("cpu").period.textContent, "Last 6 hours");
+  assert.match(env.chart("cpu").legend.textContent, /Peak: 97%/);
+  const first = series(env.chart("cpu").plot, "cpu")[0]; assert.ok(Number(first.getAttribute("cx")) < 200);
+  env.dashboard.render(snapshot({sampled_at: end + 5, cpu: {percent: 2}, history: {window_seconds: 1800, points: [{sampled_at: end, cpu_percent: 100}]}}));
+  assert.equal(env.dashboard.savedHistory, saved); assert.match(env.chart("cpu").legend.textContent, /Peak: 97%/);
+  assert.doesNotMatch(env.chart("cpu").legend.textContent, /100%/);
+  env.language("it"); assert.equal(env.dashboard.savedHistory, saved);
+  env.dashboard.setHistoryWindow(24); assert.equal(series(env.chart("cpu").plot, "cpu").length, 0);
+  env.dashboard.setHistory(saved); env.dashboard.clear();
+  assert.equal(env.dashboard.savedHistory, null); assert.equal(series(env.chart("cpu").plot, "cpu").length, 0);
+});
+
+test("thirty-second saved samples remain connected only within cadence and explicit unknown samples break each series", () => {
+  const env = environment(), points = [0, 30, 60, 90, 120, 240, 270].map((sampled_at) => ({sampled_at, cpu_percent: sampled_at === 60 ? null : 25, memory_percent: 50}));
+  env.dashboard.setHistoryWindow(1);
+  env.dashboard.setHistory({available: true, sampled_at: 300, window_seconds: 3600, interval_seconds: 30, points});
+  assert.equal(env.chart("cpu").period.textContent, "Last hour");
+  assert.deepEqual(series(env.chart("cpu").plot, "cpu").map((item) => item.getAttribute("data-points")), ["2", "2", "2"]);
+  assert.deepEqual(series(env.chart("memory").plot, "memory").map((item) => item.getAttribute("data-points")), ["5", "2"]);
+});
+
+test("seven-day rendering bounds SVG vertices while preserving old metric extremes and real missing periods", () => {
+  const env = environment(), end = 700000;
+  const points = Array.from({length: 20161}, (_, index) => ({sampled_at: end - 604800 + index * 30,
+    cpu_percent: index === 10 ? 100 : 20 + index % 10, memory_percent: index === 110 ? 99 : 60, swap_percent: index === 210 ? 80 : 0}));
+  const gapStart = points[10000].sampled_at, gapEnd = points[10008].sampled_at;
+  points.splice(10000, 9); points[100].cpu_percent = null;
+  const saved = freeze({available: true, sampled_at: end, window_seconds: 604800, interval_seconds: 30, points});
+  const window = historyWindow(saved), raw = historySegments(window, "cpu_percent"), reduced = downsampleSegments(raw, window);
+  assert.ok(reduced.flat().length <= 1200);
+  assert.equal(Math.max(...reduced.flat().map((point) => point.value)), 100);
+  assert.ok(reduced.every((segment) => !(segment[0].time < gapStart && segment.at(-1).time > gapEnd)));
+  assert.ok(reduced.every((segment) => !(segment[0].time < points[100].sampled_at && segment.at(-1).time > points[100].sampled_at)));
+  env.dashboard.setHistoryWindow(168); env.dashboard.setHistory(saved);
+  for (const [chart, name, peak] of [["cpu", "cpu", 100], ["memory", "memory", 99], ["memory", "swap", 80]]) {
+    const nodes = series(env.chart(chart).plot, name);
+    assert.ok(nodes.reduce((count, node) => count + Number(node.getAttribute("data-points")), 0) <= 1200);
+    assert.match(env.chart(chart).legend.textContent, new RegExp("Peak: " + peak + "%"));
+    assert.ok(nodes.every((node) => !/NaN|Infinity/.test(node.getAttribute("d") || node.getAttribute("cx"))));
+  }
+  assert.equal(env.chart("cpu").period.textContent, "Last 7 days");
+  const ticks = all(env.chart("cpu").plot).filter((node) => node.tagName === "TEXT" && node.getAttribute("y") === "170");
+  assert.equal(ticks[0].textContent, env.dashboard.timeLabel(end - 604800, true));
+  assert.equal(ticks.at(-1).textContent, env.dashboard.timeLabel(end, true));
+});
+
+test("a heavily fragmented week stays bounded without joining isolated samples across missing values", () => {
+  const end = 604800, points = Array.from({length: 20161}, (_, index) => ({sampled_at: index * 30, cpu_percent: index % 2 ? null : index === 100 ? 100 : 2}));
+  const window = historyWindow({sampled_at: end, window_seconds: end, interval_seconds: 30, points});
+  const reduced = downsampleSegments(historySegments(window, "cpu_percent"), window);
+  assert.ok(reduced.length <= 1200); assert.ok(reduced.every((segment) => segment.length === 1));
+  assert.equal(Math.max(...reduced.flat().map((point) => point.value)), 100);
 });

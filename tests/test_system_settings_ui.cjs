@@ -31,7 +31,7 @@ function environment() {
   let current = status();
   const defaultApi = async (path, options) => path === "/api/settings/system" ? current : {accepted: true, action: options.body.action, delay_seconds: 5, message: options.body.action === "restart-service" ? "The NVR service will restart in a few seconds." : "This system will reboot in a few seconds."};
   let handler = defaultApi;
-  const translations = {"Restart the NVR service?": "Riavviare il servizio NVR?", "Reboot the recorder system?": "Riavviare il sistema del registratore?", "Type {word} to confirm.": "Digita {word} per confermare.", "Local recorder machine": "Macchina locale del registratore"};
+  const translations = {"Restart the NVR service?": "Riavviare il servizio NVR?", "Reboot the recorder system?": "Riavviare il sistema del registratore?", "Local recorder machine": "Macchina locale del registratore"};
   const context = vm.createContext({console, AbortController, Promise,
     CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     setTimeout(callback) { scheduled.push(callback); }, clearTimeout() {},
@@ -49,7 +49,6 @@ function environment() {
     async auth(value) { byId("app").hidden = !value; emit("nvr-authchange", {authenticated: value}); await flush(); },
     async open() { byId("settings-view").hidden = byId("settings-system-panel").hidden = false; emit("nvr-settings-tabchange", {tab: "system"}); await flush(); },
     async language(value) { language = value; emit("nvr-languagechange"); await flush(); },
-    async type(value) { byId("system-confirm-input").value = value; await byId("system-confirm-input").fire("input"); },
     async submit() { return byId("system-confirm-form").fire("submit"); },
   };
 }
@@ -82,43 +81,44 @@ test("System loads availability only in an authenticated visible tab; unavailabl
   await env.byId("system-reboot-system").fire("click"); assert.equal(env.byId("system-confirm-dialog").open, false); assert.equal(posts(env).length, 0);
 });
 
-test("service restart requires a dedicated dialog and the exact word; cancellation and wrong words never POST", async () => {
+test("service restart uses two clicks; opening or cancelling never POSTs and the confirmation remains internal", async () => {
   const env = environment(); await env.auth(true); await env.open();
+  await env.submit(); assert.equal(posts(env).length, 0);
   const button = env.byId("system-restart-service"); await button.fire("click");
   assert.equal(env.byId("system-confirm-dialog").open, true); assert.equal(env.byId("system-confirm-title").textContent, "Restart the NVR service?");
-  assert.match(env.byId("system-confirm-description").textContent, /pause briefly/); assert.equal(env.byId("system-confirm-input").focused, 1);
-  for (const invalid of ["", "restart", "REBOOT", "RESTART "]) { await env.type(invalid); assert.equal(env.byId("system-confirm-submit").disabled, true); await env.submit(); }
+  assert.match(env.byId("system-confirm-description").textContent, /pause briefly/); assert.equal(env.byId("system-confirm-cancel").focused, 1);
+  assert.equal(env.byId("system-confirm-submit").disabled, false);
   assert.equal(posts(env).length, 0); await env.byId("system-confirm-cancel").fire("click"); assert.equal(env.byId("system-confirm-dialog").open, false); assert.ok(button.focused);
-  await button.fire("click"); await env.type("RESTART"); await env.submit();
+  await button.fire("click"); await env.submit();
   assert.equal(posts(env).length, 1); assert.equal(posts(env)[0].path, "/api/settings/system/action");
   assert.equal(posts(env)[0].options.body.action, "restart-service"); assert.equal(posts(env)[0].options.body.confirmation, "RESTART");
   assert.equal(env.byId("system-confirm-dialog").open, false); assert.equal(env.byId("system-restart-service").disabled, true); assert.equal(env.byId("system-reboot-system").disabled, true);
   assert.equal(env.byId("system-wait-box").hidden, false); assert.equal(env.scheduled.length, 0); assert.equal(env.reloads(), 0);
 });
 
-test("reboot clearly targets the recorder machine; language changes preserve typed confirmation and never send requests", async () => {
+test("reboot clearly targets the recorder machine; relabeling preserves the selected action and never sends it", async () => {
   const env = environment(); await env.auth(true); env.setStatus(env.status({target: "machine"})); await env.open();
-  await env.byId("system-reboot-system").fire("click"); await env.type("REBOOT"); const before = env.calls.length;
+  await env.byId("system-reboot-system").fire("click"); const before = env.calls.length;
   await env.language("it"); assert.equal(env.calls.length, before);
   assert.equal(env.byId("system-confirm-title").textContent, "Riavviare il sistema del registratore?"); assert.equal(env.byId("system-confirm-target").textContent, "Macchina locale del registratore");
-  assert.equal(env.byId("system-confirm-input").value, "REBOOT"); assert.equal(env.byId("system-confirm-hint").textContent, "Digita REBOOT per confermare.");
+  assert.equal(env.byId("system-confirm-submit").disabled, false); assert.equal(posts(env).length, 0);
   await env.submit(); assert.equal(posts(env).length, 1); assert.equal(posts(env)[0].options.body.action, "reboot-system"); assert.equal(posts(env)[0].options.body.confirmation, "REBOOT");
 });
 
 test("in-flight settings operations and repeated clicks cannot race a restart; an uncertain response is never retried", async () => {
   const env = environment(); await env.auth(true); await env.open();
   env.emit("nvr-settings-busychange", {busy: true}); await env.byId("system-restart-service").fire("click"); assert.equal(env.byId("system-confirm-dialog").open, false);
-  env.emit("nvr-settings-busychange", {busy: false}); await env.byId("system-restart-service").fire("click"); await env.type("RESTART");
+  env.emit("nvr-settings-busychange", {busy: false}); await env.byId("system-restart-service").fire("click");
   const response = deferred(); env.handler(() => response.promise); const saving = env.submit();
   await env.submit(); await env.byId("system-confirm-cancel").fire("click"); const escape = await env.byId("system-confirm-dialog").fire("cancel");
-  assert.equal(escape.defaultPrevented, true); assert.equal(env.byId("system-confirm-dialog").open, true); assert.equal(env.byId("system-confirm-input").disabled, true); assert.equal(posts(env).length, 1);
+  assert.equal(escape.defaultPrevented, true); assert.equal(env.byId("system-confirm-dialog").open, true); assert.equal(env.byId("system-confirm-cancel").disabled, true); assert.equal(posts(env).length, 1);
   response.reject(Error("Cannot reach the server. Check your local network connection.")); await saving; await flush();
   assert.equal(env.byId("system-confirm-dialog").open, false); assert.equal(env.byId("system-restart-service").disabled, true);
   assert.match(env.byId("system-notice").textContent, /not be sent again automatically/); assert.equal(posts(env).length, 1); assert.equal(env.scheduled.length, 0);
 });
 
 test("after an accepted action only manual read-only reconnect and explicit page reload are offered", async () => {
-  const env = environment(); await env.auth(true); await env.open(); await env.byId("system-restart-service").fire("click"); await env.type("RESTART"); await env.submit();
+  const env = environment(); await env.auth(true); await env.open(); await env.byId("system-restart-service").fire("click"); await env.submit();
   await env.byId("system-reload").fire("click"); assert.equal(env.reloads(), 0);
   await env.byId("system-reconnect").fire("click");
   assert.equal(env.calls.at(-1).path, "/api/settings/system"); assert.equal(env.calls.at(-1).options.method, undefined);
@@ -154,14 +154,14 @@ test("newer availability requests win and leaving System or logging out aborts l
 });
 
 test("an old session's accepted response cannot close or unlock a new session's confirmation", async () => {
-  const env = environment(); await env.auth(true); await env.open(); await env.byId("system-restart-service").fire("click"); await env.type("RESTART");
+  const env = environment(); await env.auth(true); await env.open(); await env.byId("system-restart-service").fire("click");
   const old = deferred(), latest = deferred(); let writes = 0;
   env.handler((path, options) => path === "/api/settings/system/action" ? (++writes === 1 ? old.promise : latest.promise) : env.defaultApi(path, options));
   const first = env.submit(); const firstSignal = posts(env)[0].options.signal;
   await env.auth(false); assert.equal(firstSignal.aborted, true); assert.equal(env.byId("system-confirm-dialog").open, false);
-  await env.auth(true); await env.open(); await env.byId("system-reboot-system").fire("click"); await env.type("REBOOT"); const second = env.submit();
+  await env.auth(true); await env.open(); await env.byId("system-reboot-system").fire("click"); const second = env.submit();
   old.resolve({accepted: true, action: "restart-service", delay_seconds: 5}); await first;
-  assert.equal(env.byId("system-confirm-dialog").open, true); assert.equal(env.byId("system-confirm-input").disabled, true); assert.equal(env.byId("system-notice").hidden, true);
+  assert.equal(env.byId("system-confirm-dialog").open, true); assert.equal(env.byId("system-confirm-cancel").disabled, true); assert.equal(env.byId("system-notice").hidden, true);
   latest.resolve({accepted: true, action: "reboot-system", delay_seconds: 5}); await second;
   assert.equal(env.byId("system-confirm-dialog").open, false); assert.equal(env.byId("system-wait-box").hidden, false); assert.equal(posts(env).length, 2);
 });
@@ -170,8 +170,8 @@ test("server reason text remains inert and the native confirmation has accessibl
   const env = environment(); await env.auth(true); const markup = '<img src=x onerror="throw Error(1)">'; env.setStatus(env.status({reason: markup})); await env.open();
   assert.equal(env.byId("system-reason").textContent, markup);
   const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8");
-  assert.match(html, /<dialog id="system-confirm-dialog"[^>]+aria-labelledby="system-confirm-title"[^>]+aria-describedby="system-confirm-description system-confirm-hint"/);
-  assert.match(html, /<input id="system-confirm-input"[^>]+autocomplete="off"[^>]+required/);
+  assert.match(html, /<dialog id="system-confirm-dialog"[^>]+aria-labelledby="system-confirm-title"[^>]+aria-describedby="system-confirm-description"/);
+  assert.doesNotMatch(html, /id="system-confirm-(input|hint)"/); assert.doesNotMatch(source, /system-confirm-(input|hint)|Type \{word\} to confirm/);
   for (const id of ["system-restart-service", "system-reboot-system", "system-reconnect", "system-reload"]) assert.match(html, new RegExp('<button id="' + id + '" type="button"'));
   const assets = [...html.matchAll(/(?:href|src)="(\/static\/[^\"]+)"/g)].map((match) => match[1]);
   const version = readFileSync(join(__dirname, "../pyproject.toml"), "utf8").match(/^version = "([^"]+)"/m)[1];

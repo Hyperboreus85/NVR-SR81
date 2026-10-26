@@ -6,8 +6,8 @@
   if (!panel || !dialog) return;
   const i18n = window.NvrI18n, t = (key, params) => i18n.t(key, params);
   const actions = {
-    "restart-service": {capability: "service_restart", word: "RESTART", title: "Restart the NVR service?", label: "Restart service", description: "Recording and live viewing will pause briefly while the NVR service restarts."},
-    "reboot-system": {capability: "system_reboot", word: "REBOOT", title: "Reboot the recorder system?", label: "Reboot system", description: "Recording and live viewing will be unavailable while the recorder system restarts. This may take a few minutes."},
+    "restart-service": {capability: "service_restart", confirmation: "RESTART", title: "Restart the NVR service?", label: "Restart service", description: "Recording and live viewing will pause briefly while the NVR service restarts."},
+    "reboot-system": {capability: "system_reboot", confirmation: "REBOOT", title: "Reboot the recorder system?", label: "Reboot system", description: "Recording and live viewing will be unavailable while the recorder system restarts. This may take a few minutes."},
   };
   let authenticated = !byId("app").hidden, authEpoch = 0, requestEpoch = 0;
   let capability = null, loading = false, submitting = false, externalBusy = false;
@@ -50,15 +50,12 @@
       byId("system-confirm-title").textContent = t(action.title);
       byId("system-confirm-description").textContent = t(action.description);
       byId("system-confirm-target").textContent = targetLabel();
-      byId("system-confirm-hint").textContent = t("Type {word} to confirm.", {word: action.word});
-      byId("system-confirm-input").placeholder = action.word;
       byId("system-confirm-submit").dataset.action = selectedAction;
       byId("system-confirm-submit").textContent = t(submitting ? "Sending request…" : action.label);
     }
-    byId("system-confirm-input").disabled = submitting;
     byId("system-confirm-cancel").disabled = submitting;
     byId("system-confirm-close").disabled = submitting;
-    byId("system-confirm-submit").disabled = !action || !canAction(selectedAction) || byId("system-confirm-input").value !== action.word;
+    byId("system-confirm-submit").disabled = !dialog.open || !action || !canAction(selectedAction);
   }
   function checkedStatus(value) {
     if (!value || typeof value.service_restart !== "boolean" || typeof value.system_reboot !== "boolean" || !["container", "machine", "unavailable"].includes(value.target) || value.pending_action !== null && !["restart-service", "reboot-system"].includes(value.pending_action) || !Number.isInteger(value.retry_after) || value.retry_after < 0 || value.retry_after > 60 || !Number.isInteger(value.delay_seconds) || value.delay_seconds < 0 || value.delay_seconds > 60 || value.reason !== null && typeof value.reason !== "string") throw new Error("System status is unavailable. Check the connection and try again.");
@@ -88,24 +85,24 @@
     }
   }
   function closeDialog() {
-    const previous = opener; opener = null; selectedAction = null; byId("system-confirm-input").value = "";
+    const previous = opener; opener = null; selectedAction = null;
     if (dialog.open) dialog.close();
     if (authenticated && previous) previous.focus();
   }
   function confirmAction(action, button) {
     if (!canAction(action)) return;
-    selectedAction = action; opener = button; byId("system-confirm-input").value = ""; render();
-    dialog.showModal(); byId("system-confirm-input").focus();
+    selectedAction = action; opener = button;
+    dialog.showModal(); render(); byId("system-confirm-cancel").focus();
   }
   async function submit(event) {
     event.preventDefault();
     const action = selectedAction, definition = actions[action];
-    if (!dialog.open || !definition || !canAction(action) || byId("system-confirm-input").value !== definition.word) return;
+    if (!dialog.open || !definition || !canAction(action)) return;
     abortRequest();
     const ticket = authEpoch, request = requestEpoch, current = new AbortController();
     controller = current; submitting = true; errorSource = noticeSource = null; render();
     try {
-      const result = await api("/api/settings/system/action", {method: "POST", body: {action, confirmation: definition.word}, signal: current.signal});
+      const result = await api("/api/settings/system/action", {method: "POST", body: {action, confirmation: definition.confirmation}, signal: current.signal});
       if (!valid(ticket, request)) return;
       if (!result || result.accepted !== true || result.action !== action || !Number.isInteger(result.delay_seconds) || result.delay_seconds < 0 || result.delay_seconds > 60) throw new Error("The action response could not be confirmed. Check the connection before trying again.");
       waiting = {action}; connectionChecked = false;
@@ -130,10 +127,9 @@
   byId("system-restart-service").addEventListener("click", (event) => confirmAction("restart-service", event.currentTarget || byId("system-restart-service")));
   byId("system-reboot-system").addEventListener("click", (event) => confirmAction("reboot-system", event.currentTarget || byId("system-reboot-system")));
   byId("system-confirm-form").addEventListener("submit", submit);
-  byId("system-confirm-input").addEventListener("input", render);
   for (const id of ["system-confirm-close", "system-confirm-cancel"]) byId(id).addEventListener("click", () => { if (!submitting) { closeDialog(); render(); } });
   dialog.addEventListener("cancel", (event) => { if (submitting) event.preventDefault(); });
-  dialog.addEventListener("close", () => { selectedAction = null; byId("system-confirm-input").value = ""; render(); });
+  dialog.addEventListener("close", () => { selectedAction = null; render(); });
   window.addEventListener("nvr-settings-tabchange", (event) => {
     if (event.detail.tab === "system") load();
     else if (!submitting) { abortRequest(); loading = false; closeDialog(); render(); }

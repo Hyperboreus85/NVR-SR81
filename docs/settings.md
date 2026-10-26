@@ -1,6 +1,6 @@
 # Impostazioni, registrazione e lingue
 
-Le impostazioni raccolgono **General**, **Languages**, **Recording** e **System**. Inglese e italiano sono inclusi; nuovi pacchetti JSON si installano e si selezionano in Languages. La grafica usa pannelli compatti, superfici grigio scuro, accenti ciano e dettagli oro, in linea con Record. La versione dell'applicazione compare sotto il logo e gli indicatori di sistema nella barra superiore rimangono visibili da ogni pagina autenticata.
+Le impostazioni raccolgono **General**, **Languages**, **Recording** e **System** nella barra superiore, come Live e Record. Inglese e italiano sono inclusi; nuovi pacchetti JSON si installano e si selezionano in Languages. La grafica usa pannelli compatti, superfici grigio scuro, accenti ciano e dettagli oro, in linea con Record. La versione dell'applicazione compare sotto il logo e gli indicatori di sistema nella barra superiore rimangono visibili da ogni pagina autenticata.
 
 La pagina usa righe compatte per i pacchetti e raccoglie installazione e modello JSON in due riquadri affiancati sul desktop, disposti in colonna sul telefono.
 
@@ -18,13 +18,13 @@ Le sorgenti e i parametri delle singole telecamere si gestiscono in **Cameras / 
 
 ## Manutenzione del sistema
 
-**Settings → System** mostra una panoramica del recorder: hostname, IP locali, versione, sistema operativo, tempi di attività, carico CPU, temperatura disponibile, RAM, swap, spazio dei dischi e tempo stimato prima della pulizia dell'archivio. I grafici mostrano i campioni degli ultimi 30 minuti e i relativi picchi, senza riempire i periodi mancanti. [Come leggere le misure e la stima di spazio](telemetry.md).
+**Settings → System** mostra una panoramica del recorder: hostname, IP locali, versione, sistema operativo, tempi di attività, carico CPU, temperatura disponibile, RAM, swap, spazio dei dischi e tempo stimato prima della pulizia dell'archivio. I grafici mostrano lo storico salvato ogni 30 secondi, anche senza login, con intervalli di 1 ora, 6 ore, 24 ore o 7 giorni. I riavvii conservano i campioni; i periodi mancanti restano vuoti. [Come leggere le misure e la stima di spazio](telemetry.md).
 
 Per l'archivio compare un avviso con meno del **10% libero**. Sotto il **5%**, la rotazione automatica rimuove i filmati completati idonei più vecchi fino a recuperare almeno il 5%; i file aperti o protetti da operazioni in corso vengono saltati. Se lo spazio resta insufficiente, la registrazione si sospende. Il disco del sistema riceve soltanto una segnalazione: non vengono rimossi file del sistema operativo. [Conservazione e spazio libero](recordings.md#conservazione-e-spazio-libero).
 
 Per riavviare il recorder aprire **Settings → System**. Il riavvio del servizio richiede una conferma esplicita; il riavvio del sistema operativo locale è disponibile solo se abilitato dall'amministratore Linux. Entrambi interrompono temporaneamente la registrazione. [Disponibilità e conferme della manutenzione](maintenance.md).
 
-Nella stessa pagina, **Delete all recordings / Elimina tutte le registrazioni** mostra il riepilogo dell'archivio e richiede di digitare `DELETE`. È una cancellazione dei filmati locali, non una formattazione del disco: telecamere, impostazioni e file estranei vengono conservati. Se sono in corso riproduzioni, download o analisi, non viene avviata: chiuderli o attendere che terminino, poi riprovare. Durante l'operazione l'acquisizione si interrompe temporaneamente e viene ripristinata al termine. Salvare prima una copia dei video da conservare e controllare l'esito mostrato. [Dettagli e protezioni della cancellazione](recordings.md#eliminare-tutte-le-registrazioni).
+Nella stessa pagina, **Delete all recordings / Cancella tutte le registrazioni** mostra il riepilogo dell'archivio. Un primo clic apre il dialogo; un secondo clic su **Delete all recordings** conferma, oppure **Cancel** annulla. Non occorre digitare parole. È una cancellazione dei filmati locali, non una formattazione del disco: telecamere, impostazioni e file estranei vengono conservati. Se sono in corso riproduzioni, download o analisi, non viene avviata: chiuderli o attendere che terminino, poi riprovare. Durante l'operazione l'acquisizione si interrompe temporaneamente e viene ripristinata al termine. Salvare prima una copia dei video da conservare e controllare l'esito mostrato. [Dettagli e protezioni della cancellazione](recordings.md#eliminare-tutte-le-registrazioni).
 
 ## Durata dei file di registrazione
 

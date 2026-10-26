@@ -998,6 +998,24 @@
     "Stop playback and wait for media processing to finish before clearing recordings.": "Stop playback and wait for media processing to finish before clearing recordings.",
     "Archive cleanup is unavailable for this storage configuration.": "Archive cleanup is unavailable for this storage configuration.",
     "Archive cleanup failed. Check storage permissions and try again.": "Archive cleanup failed. Check storage permissions and try again.",
-    "Recording paused for archive cleanup.": "Recording paused for archive cleanup."
+    "Recording paused for archive cleanup.": "Recording paused for archive cleanup.",
+    "Choose a supported history period.": "Choose a supported history period.",
+    "History time range": "History time range",
+    "Last hour": "Last hour",
+    "Last 6 hours": "Last 6 hours",
+    "Last 24 hours": "Last 24 hours",
+    "Last 7 days": "Last 7 days",
+    "Refresh history": "Refresh history",
+    "Last {days} days": "Last {days} days",
+    "Last {hours} hours": "Last {hours} hours",
+    "{title}: {period}.": "{title}: {period}.",
+    "Loading saved history…": "Loading saved history…",
+    "Saved history unavailable. Try again.": "Saved history unavailable. Try again.",
+    "No saved samples in this period.": "No saved samples in this period.",
+    "Saved samples are collected every 30 seconds.": "Saved samples are collected every 30 seconds.",
+    "Waiting for saved history.": "Waiting for saved history.",
+    "System history controls unavailable.": "System history controls unavailable.",
+    "History collection is temporarily unavailable. Saved samples are still shown.": "History collection is temporarily unavailable. Saved samples are still shown.",
+    "No recent saved sample. Check the recorder.": "No recent saved sample. Check the recorder."
   }
 }

@@ -289,7 +289,9 @@ class SystemTelemetry:
         if interval <= 0 or any(current < old for current, old in zip(counters, previous[2])):
             result["reason"] = "counter_reset"
             return result
-        if interval > 30:
+        # Background history samples every 30 seconds even without a browser.
+        # Scheduling and I/O jitter must not invalidate those genuine deltas.
+        if interval > 90:
             result["reason"] = "sample_gap"
             return result
         if scope == "container":

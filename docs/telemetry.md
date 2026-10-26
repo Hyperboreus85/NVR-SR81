@@ -2,13 +2,17 @@
 
 La barra superiore, presente in tutte le pagine dopo l'accesso, mostra CPU e temperatura, RAM e swap, occupazione e spazio libero dei dischi, tempo stimato prima della pulizia dell'archivio per spazio. La versione dell'applicazione si trova sotto il logo SR81. I valori riguardano il sistema operativo che esegue il recorder, non il solo processo web. I controlli **Layout**, pausa/ripresa e schermo intero rimangono sulla destra della barra del Live.
 
-**Settings → System** raccoglie gli stessi dati in schede più dettagliate, con identificazione del sistema e grafici degli ultimi 30 minuti. Le altre sezioni delle impostazioni mantengono le funzioni esistenti con la stessa grafica compatta di Record.
+**Settings → System** raccoglie gli stessi dati in schede più dettagliate, con identificazione del sistema e grafici dello storico salvato. I sottomenu **General**, **Languages**, **Recording** e **System** sono nella barra superiore, come in Live e Record.
 
 ## Aggiornamento e storico
 
 Un'unica richiesta aggiorna i dati ogni cinque secondi, qualunque sia la pagina aperta. Non vengono aperti flussi video aggiuntivi per mostrare questi valori. Quando la scheda del browser passa in secondo piano, le richieste si fermano; errori, attese e disconnessione cancellano i valori correnti per evitare di presentarli come aggiornati.
 
-Il recorder conserva in memoria un massimo di 30 minuti di campioni CPU, RAM, swap e temperatura, raccolti quando viene consultato. Non ricostruisce valori dei periodi non osservati. I grafici rispettano gli orari reali dei campioni e interrompono la linea nei periodi senza dati. I picchi si riferiscono soltanto ai campioni disponibili nella finestra visualizzata. Un riavvio del servizio azzera questo storico; non viene scritto un archivio permanente delle risorse.
+Il servizio raccoglie un campione di CPU, RAM, swap e temperatura ogni **30 secondi**, anche senza login e senza browser aperti. I dati numerici vengono salvati nel database locale `NVR_DATA_DIR/system-history.sqlite3` e conservati per **sette giorni**. Non vengono salvati hostname, indirizzi, credenziali o immagini. La raccolta usa lo stesso lettore locale delle risorse, senza nuove dipendenze o invii esterni.
+
+In System il selettore offre **1 ora, 6 ore, 24 ore e 7 giorni**; la vista iniziale mostra le ultime sei ore. I picchi si riferiscono ai campioni effettivi nell'intervallo scelto; i grafici mantengono gli orari reali, interrompono le linee dove mancano misure e riducono i punti disegnati conservando gli estremi. Il browser rilegge lo storico al massimo ogni 30 secondi soltanto quando questa pagina è visibile. La raccolta del servizio continua indipendentemente dal browser.
+
+Un riavvio conserva i campioni già salvati. Durante uno spegnimento non vengono raccolte misure e il relativo intervallo rimane vuoto. Lo storico inizia dall'installazione di questa funzione: non può ricostruire cinque ore precedenti se non erano state misurate. Un problema del database viene segnalato nello storico senza interrompere le registrazioni video. Per una copia coerente del database, fermare il servizio oppure utilizzare la funzione di backup di SQLite; includere il file nella copia di sicurezza dei dati locali.
 
 ## Identificazione del sistema
 

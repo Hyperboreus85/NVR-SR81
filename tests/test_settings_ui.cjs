@@ -24,7 +24,7 @@ class Element {
   async fire(type, event = {}) { for (const listener of this.listeners.get(type) || []) await listener({type, target: this, preventDefault() {}, ...event}); }
   click() {}
   remove() { if (this.parent) this.parent.children = this.parent.children.filter((item) => item !== this); }
-  focus() {}
+  focus() { this.focused = (this.focused || 0) + 1; }
 }
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return {promise, resolve, reject}; }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -104,7 +104,7 @@ function environment() {
   const file = (raw, name = "fr.json") => ({name, size: Buffer.byteLength(raw, "utf8"), text: async () => raw});
   const choose = async (value) => { byId("settings-pack-file").files = value ? [value] : []; await byId("settings-pack-file").fire("change"); };
   const button = (locale, action, container = "settings-pack-list") => walk(byId(container)).find((item) => item.dataset.locale === locale && item.dataset.action === action);
-  return {context, byId, calls, blobs, revoked, timers, downloads, storage, emitted, pack, file, choose, auth, button, stored, defaultApi, recordingSettings,
+  return {context, byId, calls, tabs, panels, blobs, revoked, timers, downloads, storage, emitted, pack, file, choose, auth, button, stored, defaultApi, recordingSettings,
     handler(value) { handler = value; }, refreshHandler(value) { refreshHandler = value; }, refreshCount: () => refreshCount};
 }
 
@@ -407,6 +407,23 @@ test("the recorder updates its duration immediately and ignores an older in-flig
   assert.equal(state.system.segment_seconds, 3600);
 });
 
+test("topbar Settings tabs retain keyboard navigation, active state and an unsaved recording draft", async () => {
+  const env = environment(); await env.auth(true); await env.context.NvrSettings.open();
+  await env.tabs[2].fire("click");
+  env.byId("settings-recording-minutes").value = "60"; await env.byId("settings-recording-minutes").fire("change");
+  const requests = env.calls.length;
+  await env.tabs[2].fire("keydown", {key: "ArrowRight"});
+  assert.equal(env.tabs[3].getAttribute("aria-selected"), "true"); assert.equal(env.tabs[3].tabIndex, 0); assert.ok(env.tabs[3].focused);
+  assert.equal(env.panels[3].hidden, false); assert.equal(env.panels[2].hidden, true);
+  await env.tabs[3].fire("keydown", {key: "ArrowRight"}); assert.equal(env.tabs[0].getAttribute("aria-selected"), "true");
+  await env.tabs[0].fire("keydown", {key: "End"}); assert.equal(env.tabs[3].getAttribute("aria-selected"), "true");
+  await env.tabs[3].fire("keydown", {key: "Home"}); assert.equal(env.tabs[0].getAttribute("aria-selected"), "true");
+  await env.tabs[0].fire("keydown", {key: "ArrowLeft"}); assert.equal(env.tabs[3].getAttribute("aria-selected"), "true");
+  await env.tabs[3].fire("keydown", {key: "ArrowLeft"}); assert.equal(env.tabs[2].getAttribute("aria-selected"), "true");
+  assert.equal(env.byId("settings-recording-minutes").value, "60"); assert.equal(env.calls.length, requests);
+  assert.equal(env.emitted.filter((event) => event.type === "nvr-settings-tabchange").at(-1).detail.tab, "recording");
+});
+
 test("Settings has exactly General, Languages, Recording and System, with JSON controls confined to Languages", () => {
   const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8");
   const stack = [], elements = [], ids = new Map();
@@ -429,6 +446,15 @@ test("Settings has exactly General, Languages, Recording and System, with JSON c
   }
   assert.equal(stack.length, 0);
   assert.deepEqual(elements.filter((item) => item.attributes["data-settings-tab"]).map((item) => item.attributes["data-settings-tab"]), ["general", "languages", "recording", "system"]);
+  const topbar = html.slice(html.indexOf('<header class="topbar">'), html.indexOf('</header>') + '</header>'.length);
+  assert.ok(topbar.includes('id="settings-subnav"')); assert.equal(ids.get("settings-subnav").attributes.role, "tablist");
+  assert.equal(ids.get("settings-subnav").ancestors.includes("settings-view"), false);
+  assert.equal(html.includes('class="settings-tabs"'), false);
+  for (const name of ["general", "languages", "recording", "system"]) {
+    const button = ids.get("settings-tab-" + name), panel = ids.get("settings-" + name + "-panel");
+    assert.ok(button.ancestors.includes("settings-subnav")); assert.equal(button.attributes.role, "tab");
+    assert.equal(button.attributes["aria-controls"], panel.attributes.id); assert.equal(panel.attributes["aria-labelledby"], button.attributes.id);
+  }
   assert.deepEqual(elements.filter((item) => item.attributes["data-settings-panel"]).map((item) => item.attributes["data-settings-panel"]), ["general", "languages", "recording", "system"]);
   for (const id of ["settings-language", "settings-language-list", "settings-pack-file", "settings-pack-preview", "settings-pack-name", "settings-pack-locale", "settings-pack-coverage", "settings-pack-install", "settings-pack-selection", "settings-pack-template", "settings-pack-list"]) {
     assert.ok(ids.get(id)?.ancestors.includes("settings-languages-panel"), id + " must belong to the Languages page");

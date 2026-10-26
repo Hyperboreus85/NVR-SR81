@@ -9,7 +9,9 @@
   const text = (value) => typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 300) : "";
   const defaults = (key, params = {}) => (global.NvrI18n?.t(key, params) || key).replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token);
   const storageUI = global.NvrSystemTelemetry || (typeof module !== "undefined" && module.exports ? require("./system-telemetry.js").NvrSystemTelemetry : null);
-  const MAX_GAP_SECONDS = 15;
+  const MAX_HISTORY_POINTS = 22000;
+  const MAX_SERIES_VERTICES = 1200;
+  const HISTORY_HOURS = [1, 6, 24, 168];
   const COLORS = {cpu: "var(--accent)", memory: "var(--motion)", swap: "var(--system-swap)", temperature: "var(--system-temperature)"};
 
   function metricPercent(metric) {
@@ -40,24 +42,44 @@
     return approximate ? t("≈ {duration}", {duration: result}) : result;
   }
   function historyWindow(snapshot) {
-    const history = snapshot?.history, raw = Array.isArray(history?.points) ? history.points.slice(-2048) : [];
+    const history = snapshot?.history || snapshot, raw = Array.isArray(history?.points) ? history.points.slice(-MAX_HISTORY_POINTS) : [];
     const times = raw.filter((point) => timestamp(point?.sampled_at)).map((point) => point.sampled_at);
     const end = timestamp(snapshot?.sampled_at) ? snapshot.sampled_at : times.length ? Math.max(...times) : null;
-    const window = positive(history?.window_seconds) && history.window_seconds <= 86400 ? history.window_seconds : 1800;
+    const window = positive(history?.window_seconds) && history.window_seconds <= 604800 ? history.window_seconds : 1800;
+    const interval = positive(history?.interval_seconds) && history.interval_seconds <= 300 ? history.interval_seconds : 5;
     const points = new Map();
     if (end !== null) for (const point of raw) if (timestamp(point?.sampled_at) && point.sampled_at >= end - window && point.sampled_at <= end) points.set(point.sampled_at, point);
-    return {start: end === null ? null : end - window, end, seconds: window, points: [...points.values()].sort((a, b) => a.sampled_at - b.sampled_at)};
+    return {start: end === null ? null : end - window, end, seconds: window, interval, points: [...points.values()].sort((a, b) => a.sampled_at - b.sampled_at)};
   }
   function historySegments(window, field, validate = percentage) {
     const segments = []; let current = [], previous = null;
     for (const point of window.points) {
       const value = point[field];
       if (!validate(value)) { if (current.length) segments.push(current); current = []; previous = null; continue; }
-      if (previous !== null && point.sampled_at - previous > MAX_GAP_SECONDS) { if (current.length) segments.push(current); current = []; }
+      if (previous !== null && point.sampled_at - previous > (positive(window.interval) ? window.interval : 5) * 3) { if (current.length) segments.push(current); current = []; }
       current.push({time: point.sampled_at, value}); previous = point.sampled_at;
     }
     if (current.length) segments.push(current);
     return segments;
+  }
+  function downsampleSegments(segments, window, budget = MAX_SERIES_VERTICES) {
+    if (segments.reduce((count, segment) => count + segment.length, 0) <= budget) return segments;
+    const bucketCount = Math.max(1, Math.floor(budget / 4)), buckets = new Map();
+    segments.forEach((segment, segmentId) => segment.forEach((point) => {
+      const index = Math.max(0, Math.min(bucketCount - 1, Math.floor((point.time - window.start) / window.seconds * bucketCount)));
+      const sample = {point, segmentId}, bucket = buckets.get(index);
+      if (!bucket) buckets.set(index, {first: sample, last: sample, min: sample, max: sample});
+      else { bucket.last = sample; if (point.value < bucket.min.point.value) bucket.min = sample; if (point.value > bucket.max.point.value) bucket.max = sample; }
+    }));
+    const chosen = new Map();
+    for (const bucket of buckets.values()) for (const sample of Object.values(bucket)) chosen.set(sample.point.time, sample);
+    const result = []; let current = [], previousId = null;
+    for (const sample of [...chosen.values()].sort((a, b) => a.point.time - b.point.time)) {
+      if (previousId !== null && sample.segmentId !== previousId) { result.push(current); current = []; }
+      current.push(sample.point); previousId = sample.segmentId;
+    }
+    if (current.length) result.push(current);
+    return result;
   }
 
   class NvrSystemDashboard {
@@ -65,7 +87,7 @@
       if (!root?.ownerDocument?.createElement) throw new Error("System dashboard unavailable.");
       this.root = root; this.document = root.ownerDocument; this.t = t;
       this.locale = typeof locale === "function" ? locale : () => locale || global.NvrI18n?.locale() || "en";
-      this.snapshot = null; this.cards = new Map(); this.charts = new Map();
+      this.snapshot = null; this.savedHistory = undefined; this.historyHours = 6; this.cards = new Map(); this.charts = new Map();
       this.build(); this.clear();
     }
     element(tag, className, value) {
@@ -89,6 +111,13 @@
         const label = this.element("h4", "system-card-label"), value = this.element("strong", "system-card-value"), detail = this.element("div", "system-card-detail");
         card.append(label, value, detail); grid.append(card); this.cards.set(key, {card, label, value, detail});
       }
+      const controls = this.element("div", "system-history-controls"), label = this.element("label", "system-history-label"), select = this.element("select");
+      select.id = "system-history-window";
+      label.setAttribute("for", select.id);
+      const refresh = this.element("button", "button secondary small-button"); refresh.type = "button"; refresh.id = "system-history-refresh";
+      const status = this.element("span", "system-history-status"); status.id = "system-history-status"; status.setAttribute("role", "status");
+      this.historyControls = {root: controls, label, select, refresh, status};
+      controls.append(label, select, refresh, status);
       const charts = this.element("div", "system-charts-grid");
       for (const key of ["cpu", "memory"]) {
         const card = this.element("section", "system-chart-card"); card.dataset.chart = key;
@@ -98,7 +127,7 @@
         card.append(heading, legend, plot, empty); charts.append(card); this.charts.set(key, {card, title, period, legend, plot, empty});
       }
       this.note = this.element("p", "system-card-detail system-overview-note");
-      this.root.replaceChildren(heading, grid, charts, this.note);
+      this.root.replaceChildren(heading, grid, controls, charts, this.note);
     }
     number(value, digits = 1) {
       try { return value.toLocaleString(this.locale(), {maximumFractionDigits: digits}); }
@@ -137,13 +166,27 @@
       }
     }
     render(snapshot) { this.snapshot = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? snapshot : null; this.relabel(); }
-    clear() { this.snapshot = null; this.relabel(); }
+    clear() { this.snapshot = null; if (this.savedHistory !== undefined) this.savedHistory = null; this.relabel(); }
+    setHistoryWindow(hours) {
+      if (!HISTORY_HOURS.includes(hours)) return false;
+      if (hours === this.historyHours && this.savedHistory !== undefined) return true;
+      if (hours !== this.historyHours || this.savedHistory === undefined) this.savedHistory = null;
+      this.historyHours = hours; this.relabel(); return true;
+    }
+    setHistory(history) { this.savedHistory = history && typeof history === "object" && !Array.isArray(history) ? history : null; this.relabel(); }
     relabel() {
       const data = this.snapshot, t = this.t;
       this.root.dataset.state = data ? "ready" : "waiting"; this.title.textContent = t("System overview");
       this.scope.textContent = data?.scope === "container" ? t("NVR container") : data?.scope === "machine" ? t("Local recorder machine") : t("Waiting for system data.");
       this.note.textContent = t("Estimated time before space-based cleanup at the recent recording rate. Retention may remove files earlier.");
-      const history = historyWindow(data), points = history.points;
+      const history = historyWindow(this.savedHistory === undefined ? data : this.savedHistory || {sampled_at: data?.sampled_at, window_seconds: this.historyHours * 3600, interval_seconds: 30, points: []}), points = history.points;
+      const controls = this.historyControls;
+      controls.root.hidden = this.savedHistory === undefined;
+      controls.label.textContent = t("History time range"); controls.select.setAttribute("aria-label", t("History time range"));
+      controls.select.replaceChildren(...HISTORY_HOURS.map((hours, index) => {
+        const option = this.element("option", "", t(["Last hour", "Last 6 hours", "Last 24 hours", "Last 7 days"][index])); option.value = String(hours); return option;
+      }));
+      controls.select.value = String(this.historyHours); controls.refresh.textContent = t("Refresh history");
       const identity = data?.identity || {}, uptime = data?.uptime || {}, cpu = data?.cpu || {}, memory = data?.memory || {}, swap = data?.swap || {}, disk = data?.disk || {}, recording = data?.recording || {};
       const addresses = Array.isArray(identity.addresses) ? identity.addresses.slice(0, 8).map(text).filter(Boolean) : [];
       this.card("recorder", "Recorder", text(identity.hostname) || null, [text(data?.version) ? t("Application version: {value}.", {value: text(data.version)}) : "", addresses.length ? t("IP addresses: {value}.", {value: addresses.join(" · ")}) : ""]);
@@ -169,22 +212,24 @@
       this.chart("cpu", "CPU history", [{name: "CPU", key: "cpu", field: "cpu_percent"}], history);
       this.chart("memory", "RAM and swap history", [{name: "RAM", key: "memory", field: "memory_percent"}, {name: "Swap", key: "swap", field: "swap_percent"}], history);
     }
-    timeLabel(value) {
-      try { return new Intl.DateTimeFormat(this.locale(), {hour: "2-digit", minute: "2-digit", hourCycle: "h23"}).format(new Date(value * 1000)); }
+    timeLabel(value, withDate = false) {
+      try { return new Intl.DateTimeFormat(this.locale(), {hour: "2-digit", minute: "2-digit", hourCycle: "h23", ...(withDate ? {day: "2-digit", month: "2-digit"} : {})}).format(new Date(value * 1000)); }
       catch (_) { return "—"; }
     }
     chart(key, title, series, window) {
       const node = this.charts.get(key), t = this.t, minutes = this.number(window.seconds / 60, 0);
-      node.title.textContent = t(title); node.period.textContent = t("Last {minutes} minutes", {minutes});
+      const label = {3600: "Last hour", 21600: "Last 6 hours", 86400: "Last 24 hours", 604800: "Last 7 days"}[window.seconds];
+      const period = label ? t(label) : window.seconds >= 86400 ? t("Last {days} days", {days: this.number(window.seconds / 86400, 0)}) : window.seconds >= 3600 ? t("Last {hours} hours", {hours: this.number(window.seconds / 3600, 0)}) : t("Last {minutes} minutes", {minutes});
+      node.title.textContent = t(title); node.period.textContent = period;
       node.legend.replaceChildren(); node.plot.replaceChildren(); node.empty.textContent = t("Waiting for samples.");
-      const svg = this.svgElement("svg", {viewBox: "0 0 640 180", role: "img", "aria-label": t("{title} over the last {minutes} minutes.", {title: t(title), minutes})});
+      const svg = this.svgElement("svg", {viewBox: "0 0 640 180", role: "img", "aria-label": window.seconds < 3600 ? t("{title} over the last {minutes} minutes.", {title: t(title), minutes}) : t("{title}: {period}.", {title: t(title), period})});
       svg.append(this.svgElement("desc", {}, t("Only measured samples are shown. Gaps remain empty.")));
       const left = 38, top = 12, width = 590, height = 134;
       for (const value of [0, 25, 50, 75, 100]) {
         const y = top + height * (1 - value / 100);
         svg.append(this.svgElement("line", {x1: left, x2: left + width, y1: y, y2: y, class: "system-chart-grid"}), this.svgElement("text", {x: left - 6, y: y + 4, "text-anchor": "end", class: "system-chart-tick"}, this.number(value, 0) + "%"));
       }
-      if (window.end !== null) for (const fraction of [0, .5, 1]) svg.append(this.svgElement("text", {x: left + width * fraction, y: 170, "text-anchor": fraction === 0 ? "start" : fraction === 1 ? "end" : "middle", class: "system-chart-tick"}, this.timeLabel(window.start + window.seconds * fraction)));
+      if (window.end !== null) for (const fraction of [0, .5, 1]) svg.append(this.svgElement("text", {x: left + width * fraction, y: 170, "text-anchor": fraction === 0 ? "start" : fraction === 1 ? "end" : "middle", class: "system-chart-tick"}, this.timeLabel(window.start + window.seconds * fraction, window.seconds >= 86400)));
       let measured = false;
       for (const item of series) {
         const segments = historySegments(window, item.field), values = segments.flatMap((segment) => segment.map((point) => point.value));
@@ -192,7 +237,7 @@
         legend.append(swatch, this.element("span", "", t(item.name)));
         if (values.length) legend.append(this.element("span", "system-chart-peak", t("Peak: {value}.", {value: this.percent(Math.max(...values))})));
         node.legend.append(legend);
-        for (const segment of segments) {
+        for (const segment of downsampleSegments(segments, window)) {
           measured = true;
           const position = (point) => [left + (point.time - window.start) / window.seconds * width, top + (1 - point.value / 100) * height];
           if (segment.length === 1) {
@@ -207,5 +252,5 @@
     }
   }
   global.NvrSystemDashboard = NvrSystemDashboard;
-  if (typeof module !== "undefined" && module.exports) module.exports = {NvrSystemDashboard, historyWindow, historySegments, headroom, durationLabel};
+  if (typeof module !== "undefined" && module.exports) module.exports = {NvrSystemDashboard, historyWindow, historySegments, downsampleSegments, headroom, durationLabel};
 })(typeof window !== "undefined" ? window : globalThis);

@@ -64,7 +64,7 @@ I filmati eliminati non sono più consultabili. Scaricare e conservare separatam
 
 ## Eliminare tutte le registrazioni
 
-In **Settings → System**, **Delete all recordings / Elimina tutte le registrazioni** permette di svuotare l'archivio locale. Controllare il numero di registrazioni e lo spazio indicati, quindi digitare esattamente `DELETE` nella conferma. I filmati eliminati non sono recuperabili dall'NVR: scaricare prima quelli da conservare.
+In **Settings → System**, **Delete all recordings / Cancella tutte le registrazioni** permette di svuotare l'archivio locale. Il primo clic apre un riepilogo del numero di registrazioni e dello spazio occupato. Un secondo clic su **Delete all recordings** conferma; **Cancel** annulla. Non occorre digitare parole. I filmati eliminati non sono recuperabili dall'NVR: scaricare prima quelli da conservare.
 
 Se ci sono riproduzioni, download o analisi in corso, l'operazione viene rifiutata prima di fermare la registrazione o eliminare file. Chiuderli o attendere che terminino, poi riprovare.
 

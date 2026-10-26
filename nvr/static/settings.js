@@ -34,8 +34,10 @@
   function validOperation(ticket, operation) { return validAuth(ticket) && operation === operationEpoch; }
 
   function selectTab(value) {
+    const tabs = [...document.querySelectorAll("[data-settings-tab]")];
+    if (!tabs.some((button) => button.dataset.settingsTab === value)) return;
     tab = value;
-    document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+    tabs.forEach((button) => {
       const active = button.dataset.settingsTab === tab;
       button.classList.toggle("active", active);
       button.setAttribute("aria-selected", String(active));

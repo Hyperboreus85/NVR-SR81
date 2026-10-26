@@ -63,7 +63,7 @@ function camera(id) {
 const snapshot = (size = 4, ids = ["a", "b", "c", "d"]) => ({version: 1, size, slots: Array.from({length: 16}, (_, index) => ids[index] || null)});
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
-function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), legacySize = null, handler, telemetry = false} = {}) {
+function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), legacySize = null, handler, telemetry = false, history = false} = {}) {
   const nodes = new Map(), windowEvents = new Map(), documentEvents = new Map(), calls = [], players = [], layouts = [], timers = new Map();
   const storage = new Map(legacySize === null ? [] : [["nvr.monitor.layout", String(legacySize)]]);
   const ready = deferred(); let timer = 0, language = "en", settingsOpens = 0;
@@ -119,7 +119,7 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
   });
   context.window = context; context.devicePixelRatio = 1; context.scrollTo = () => {};
   context.NvrLivePlayer = LivePlayer; context.NvrLiveLayout = LiveLayout;
-  const telemetryViews = [], dashboardViews = [];
+  const telemetryViews = [], dashboardViews = [], historyViews = [];
   if (telemetry) context.NvrSystemTelemetry = class {
     constructor(options) { this.options=options; this.data=null; this.renders=0; this.clears=0; this.relabels=0; telemetryViews.push(this); }
     render(value) { this.data=value; this.renders+=1; }
@@ -132,13 +132,21 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
     clear() { this.data=null; this.clears+=1; }
     relabel() { this.relabels+=1; }
   };
+  if (history) context.NvrSystemHistory = class {
+    constructor(options) { this.options=options; this.opens=0; this.closes=0; this.clears=0; this.ticks=0; this.relabels=0; historyViews.push(this); }
+    open() { this.opens++; }
+    close() { this.closes++; }
+    clear() { this.clears++; }
+    relabel() { this.relabels++; }
+    onTelemetrySnapshot() { if (this.options.isActive()) this.ticks++; }
+  };
   context.NvrSettings = {open() { settingsOpens += 1; }};
   context.NvrI18n = {ready: ready.promise, locale: () => language, getLanguage: () => language,
     t: (key, params = {}) => (language === "en" ? String(key) : "IT: " + key).replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (token, name) => Object.hasOwn(params, name) ? String(params[name]) : token)};
   context.addEventListener = (type, listener) => { if (!windowEvents.has(type)) windowEvents.set(type, []); windowEvents.get(type).push(listener); };
   context.dispatchEvent = (event) => { for (const listener of windowEvents.get(event.type) || []) listener(event); return true; };
   vm.runInContext(source, context, {filename: "app.js"});
-  return {node, calls, players, layouts, layoutButtons, context, ready, document, storage, telemetryViews, dashboardViews, timers,
+  return {node, calls, players, layouts, layoutButtons, context, ready, document, storage, telemetryViews, dashboardViews, historyViews, timers,
     async boot() { ready.resolve(); await flush(); await flush(); },
     evaluate: (expression) => vm.runInContext(expression, context),
     async documentEvent(type, details = {}) { for (const listener of documentEvents.get(type) || []) await listener({type, ...details}); },
@@ -181,6 +189,7 @@ test("Layout stops monitor players, retains the editor instance and opens no per
 
 test("leaving Live for camera configuration or settings releases streams and returning restores the wall", async () => {
   const env = environment(); await env.boot();
+  assert.equal(env.node("settings-subnav").hidden, true);
   await env.node("nav-cameras").fire("click");
   assert.equal(env.players.every((item) => !item.active), true);
   assert.equal(env.node("live-subnav").hidden, true);
@@ -191,6 +200,15 @@ test("leaving Live for camera configuration or settings releases streams and ret
   assert.equal(env.players.every((item) => !item.active), true);
   assert.equal(env.settingsOpens(), 1);
   assert.equal(env.node("settings-view").hidden, false);
+  assert.equal(env.node("settings-subnav").hidden, false);
+  assert.equal(env.node("live-subnav").hidden, true); assert.equal(env.node("record-subnav").hidden, true);
+  assert.equal(env.node("current-view-label").hidden, true);
+  env.language("it"); await env.windowEvent("nvr-languagechange");
+  assert.equal(env.node("settings-subnav").hidden, false); assert.equal(env.node("current-view-label").hidden, true);
+  await env.node("nav-recorder").fire("click");
+  assert.equal(env.node("settings-subnav").hidden, true); assert.equal(env.node("record-subnav").hidden, false);
+  await env.node("nav-monitor").fire("click");
+  assert.equal(env.node("settings-subnav").hidden, true); assert.equal(env.node("live-subnav").hidden, false);
 });
 
 test("background and pagehide stop live resources, while a visible page can resume the monitor", async () => {
@@ -409,6 +427,38 @@ test("a late Main probe cannot overwrite the selected Third probe or unlock its 
 
 const telemetrySample = (usage=25) => ({sampled_at:1000,scope:'container',cpu:{percent:usage},memory:{},swap:{},disk:{}});
 const telemetryCalls = (env) => env.calls.filter((call)=>call.path==='/api/system/telemetry');
+
+test("saved history follows the System tab and shared telemetry; backgrounding pauses reads and logout clears private data", async()=>{
+  const env=environment({telemetry:true,history:true,handler(path,options,fallback){
+    return path==='/api/system/telemetry'?telemetrySample(20):fallback(path);
+  }});
+  env.node('settings-system-panel').hidden=true;
+  await env.boot();
+  assert.equal(env.historyViews.length,0);
+  await env.node('nav-settings').fire('click');
+  assert.equal(env.historyViews.length,0);
+  env.node('settings-system-panel').hidden=false;
+  await env.windowEvent('nvr-settings-tabchange',{detail:{tab:'system'}});
+  assert.equal(env.historyViews.length,1);
+  const history=env.historyViews[0], ticks=history.ticks;
+  assert.equal(history.options.isActive(),true);
+  await env.evaluate('loadSystemTelemetry()');
+  assert.ok(history.ticks>ticks);
+  env.node('settings-system-panel').hidden=true;
+  await env.windowEvent('nvr-settings-tabchange',{detail:{tab:'general'}});
+  assert.equal(history.options.isActive(),false);
+  const stopped=history.ticks;
+  await env.evaluate('loadSystemTelemetry()');
+  assert.equal(history.ticks,stopped); assert.ok(history.closes>0);
+  env.node('settings-system-panel').hidden=false;
+  await env.windowEvent('nvr-settings-tabchange',{detail:{tab:'system'}});
+  env.document.hidden=true; await env.documentEvent('visibilitychange');
+  assert.equal(history.options.isActive(),false); assert.equal(history.clears,0);
+  env.document.hidden=false; await env.documentEvent('visibilitychange'); await flush();
+  assert.equal(history.options.isActive(),true);
+  await env.node('logout').fire('click');
+  assert.equal(history.clears,1); assert.equal(history.options.isActive(),false);
+});
 
 test("System polling is shared across every visible authenticated page and remains single-flight while video is paused", async()=>{
   const pending=deferred(); let first=true;

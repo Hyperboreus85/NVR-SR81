@@ -48,10 +48,9 @@
     byId("archive-clear-open").disabled = !canDelete();
     for (const id of ["archive-refresh", "archive-confirm-refresh"]) byId(id).disabled = !authenticated || loading || submitting || externalBusy();
     byId("archive-confirm-refresh").hidden = !mustCheck && !uncertain && !status?.clearing;
-    for (const id of ["archive-confirm-input", "archive-clear-cancel", "archive-clear-close"]) byId(id).disabled = submitting;
-    byId("archive-clear-submit").disabled = !dialog.open || !canDelete() || byId("archive-confirm-input").value !== "DELETE";
+    for (const id of ["archive-clear-cancel", "archive-clear-close"]) byId(id).disabled = submitting;
+    byId("archive-clear-submit").disabled = !dialog.open || !canDelete();
     byId("archive-clear-submit").textContent = t(submitting ? "Deleting recordings…" : "Delete all recordings");
-    byId("archive-confirm-hint").textContent = t("Type {word} to confirm.", {word: "DELETE"});
     banner("archive-settings-error", dialog.open ? null : errorSource);
     banner("archive-confirm-error", dialog.open ? errorSource : null);
     let notice = noticeSource;
@@ -72,7 +71,6 @@
   function abortRequest() { controller?.abort(); controller = null; requestEpoch += 1; }
   async function load() {
     if (!authenticated || submitting || !visible() || externalBusy()) return false;
-    if (dialog.open && (mustCheck || uncertain || status?.clearing)) byId("archive-confirm-input").value = "";
     abortRequest();
     const ticket = authEpoch, request = requestEpoch, current = new AbortController();
     controller = current; loading = true; errorSource = null; render();
@@ -98,7 +96,7 @@
     }
   }
   function closeDialog() {
-    const previous = opener; opener = null; byId("archive-confirm-input").value = "";
+    const previous = opener; opener = null;
     if (dialog.open) dialog.close();
     if (authenticated && visible() && previous) previous.focus();
   }
@@ -108,11 +106,11 @@
     // Refresh the summary before requesting irreversible confirmation.
     if (!await load() || ticket !== authEpoch || !canDelete() || !visible()) return;
     result = null; errorSource = noticeSource = null; opener = byId("archive-clear-open");
-    byId("archive-confirm-input").value = ""; dialog.showModal(); render(); byId("archive-confirm-input").focus();
+    dialog.showModal(); render(); byId("archive-clear-cancel").focus();
   }
   async function submit(event) {
     event.preventDefault();
-    if (!dialog.open || !canDelete() || byId("archive-confirm-input").value !== "DELETE") return;
+    if (!dialog.open || !canDelete()) return;
     abortRequest();
     const ticket = authEpoch, request = requestEpoch, current = new AbortController();
     controller = current; submitting = true; errorSource = noticeSource = null; result = null; render();
@@ -129,7 +127,6 @@
         // A lost or malformed response may follow a completed deletion. Never retry the POST.
         const refused = Number.isInteger(error?.status) && error.status >= 400 && error.status < 500;
         uncertain = !refused; mustCheck = true; status = null;
-        byId("archive-confirm-input").value = "";
         errorSource = source(error, "The deletion response could not be confirmed. Check archive status before continuing.");
         noticeSource = {key: refused ? "The deletion request was refused. Check archive status before confirming again." : "This request will not be sent again automatically. Check archive status before continuing."};
       }
@@ -147,10 +144,9 @@
   byId("archive-confirm-refresh").addEventListener("click", load);
   byId("archive-clear-open").addEventListener("click", confirmAction);
   byId("archive-clear-form").addEventListener("submit", submit);
-  byId("archive-confirm-input").addEventListener("input", render);
   for (const id of ["archive-clear-cancel", "archive-clear-close"]) byId(id).addEventListener("click", () => { if (!submitting) { closeDialog(); render(); } });
   dialog.addEventListener("cancel", (event) => { if (submitting) event.preventDefault(); });
-  dialog.addEventListener("close", () => { byId("archive-confirm-input").value = ""; render(); });
+  dialog.addEventListener("close", render);
   window.addEventListener("nvr-settings-tabchange", (event) => { if (event.detail.tab === "system") load(); else close(); });
   window.addEventListener("nvr-settings-busychange", (event) => { settingsBusy = !!event.detail.busy; render(); });
   window.addEventListener("nvr-system-busychange", (event) => { systemBusy = !!event.detail.busy; render(); });

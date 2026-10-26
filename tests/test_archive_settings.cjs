@@ -32,7 +32,7 @@ function environment() {
   let current = status();
   const defaultApi = async (path) => path === "/api/settings/archive" ? current : result();
   let handler = defaultApi;
-  const translations = {"Type {word} to confirm.": "Digita {word} per confermare.", "Delete all recordings": "Elimina tutte le registrazioni", "Archive ready": "Archivio pronto"};
+  const translations = {"Delete all recordings": "Elimina tutte le registrazioni", "Archive ready": "Archivio pronto"};
   const context = vm.createContext({console, AbortController, Promise,
     setTimeout(callback) { timers.push(callback); }, setInterval(callback) { timers.push(callback); }, clearTimeout() {}, clearInterval() {},
     api(path, options = {}) { calls.push({path, options}); return handler(path, options); },
@@ -49,7 +49,6 @@ function environment() {
     handler(value) { handler = value; }, setStatus(value) { current = value; },
     async auth(value) { byId("app").hidden = !value; emit("nvr-authchange", {authenticated: value}); await flush(); },
     async open() { byId("settings-view").hidden = byId("settings-system-panel").hidden = false; emit("nvr-settings-tabchange", {tab: "system"}); await flush(); },
-    async type(value) { byId("archive-confirm-input").value = value; await byId("archive-confirm-input").fire("input"); },
     async confirm() { await byId("archive-clear-open").fire("click"); },
     async submit() { return byId("archive-clear-form").fire("submit"); },
     async language(value) { language = value; emit("nvr-languagechange"); await flush(); },
@@ -68,18 +67,18 @@ test("archive counts load only for an authenticated System tab, independently of
   assert.equal(env.calls.some((call) => call.path.includes("/settings/system")), false);
 });
 
-test("opening a fresh summary never deletes and only the exact DELETE word enables the irreversible action", async () => {
+test("archive deletion uses two clicks; a fresh summary and cancellation never perform the deletion", async () => {
   const env = environment(); await env.auth(true); await env.open(); env.setStatus(env.status({recordings_count: 21, recordings_bytes: 3e9})); await env.confirm();
   assert.equal(env.calls.length, 2); assert.equal(env.byId("archive-clear-dialog").open, true);
-  assert.equal(env.byId("archive-confirm-count").textContent, "21"); assert.equal(env.byId("archive-confirm-bytes").textContent, "3 GB"); assert.ok(env.byId("archive-confirm-input").focused);
-  for (const word of ["", "delete", "Delete", "DELETE ", " DELETE", "RESTART"]) { await env.type(word); assert.equal(env.byId("archive-clear-submit").disabled, true); await env.submit(); }
-  assert.equal(posts(env).length, 0); assert.equal(env.events.filter((event) => event.type === "nvr-archive-beforeclear").length, 0); await env.type("DELETE"); assert.equal(env.byId("archive-clear-submit").disabled, false);
-  await env.byId("archive-clear-cancel").fire("click"); assert.equal(env.byId("archive-clear-dialog").open, false); assert.equal(env.byId("archive-confirm-input").value, ""); assert.ok(env.byId("archive-clear-open").focused);
-  await env.confirm(); await env.type("DELETE"); const escaped = await env.byId("archive-clear-dialog").fire("cancel"); assert.equal(escaped.defaultPrevented, false); assert.equal(posts(env).length, 0);
+  assert.equal(env.byId("archive-confirm-count").textContent, "21"); assert.equal(env.byId("archive-confirm-bytes").textContent, "3 GB"); assert.ok(env.byId("archive-clear-cancel").focused);
+  assert.equal(posts(env).length, 0); assert.equal(env.events.filter((event) => event.type === "nvr-archive-beforeclear").length, 0); assert.equal(env.byId("archive-clear-submit").disabled, false);
+  await env.byId("archive-clear-cancel").fire("click"); assert.equal(env.byId("archive-clear-dialog").open, false); assert.ok(env.byId("archive-clear-open").focused);
+  await env.submit(); assert.equal(posts(env).length, 0);
+  await env.confirm(); const escaped = await env.byId("archive-clear-dialog").fire("cancel"); assert.equal(escaped.defaultPrevented, false); assert.equal(posts(env).length, 0);
 });
 
 test("one confirmed request reports actual deleted bytes and skipped files, emits refresh, and performs only one follow-up GET", async () => {
-  const env = environment(); await env.auth(true); await env.open(); await env.confirm(); await env.type("DELETE");
+  const env = environment(); await env.auth(true); await env.open(); await env.confirm();
   env.handler(async (path) => {
     if (path === "/api/settings/archive/clear") {
       assert.equal(env.events.filter((event) => event.type === "nvr-archive-beforeclear").length, 1);
@@ -97,9 +96,9 @@ test("one confirmed request reports actual deleted bytes and skipped files, emit
 });
 
 test("submitting locks duplicate clicks and native dialog cancellation, without extra busy feedback events", async () => {
-  const env = environment(); await env.auth(true); await env.open(); await env.confirm(); await env.type("DELETE");
+  const env = environment(); await env.auth(true); await env.open(); await env.confirm();
   const pending = deferred(); env.handler((path) => path === "/api/settings/archive/clear" ? pending.promise : env.defaultApi(path)); const sending = env.submit();
-  assert.equal(env.byId("archive-clear-submit").disabled, true); assert.equal(env.byId("archive-confirm-input").disabled, true); assert.equal(env.byId("archive-refresh").disabled, true);
+  assert.equal(env.byId("archive-clear-submit").disabled, true); assert.equal(env.byId("archive-clear-cancel").disabled, true); assert.equal(env.byId("archive-refresh").disabled, true);
   await env.submit(); await env.byId("archive-clear-cancel").fire("click"); const escaped = await env.byId("archive-clear-dialog").fire("cancel");
   assert.equal(escaped.defaultPrevented, true); assert.equal(env.byId("archive-clear-dialog").open, true); assert.equal(posts(env).length, 1);
   assert.equal(env.events.filter((event) => event.type === "nvr-archive-beforeclear").length, 1);
@@ -113,30 +112,28 @@ test("other settings or maintenance operations block archive mutation without ec
     env.emit(event, {busy: true}); await env.confirm(); assert.equal(env.byId("archive-clear-dialog").open, false); assert.equal(env.byId("archive-clear-open").disabled, true);
     env.emit(event, {busy: false}); assert.equal(env.byId("archive-clear-open").disabled, false);
   }
-  assert.deepEqual(busyEvents(env), []); await env.confirm(); await env.type("DELETE"); env.emit("nvr-system-busychange", {busy: true}); await env.submit(); assert.equal(posts(env).length, 0);
+  assert.deepEqual(busyEvents(env), []); await env.confirm(); env.emit("nvr-system-busychange", {busy: true}); await env.submit(); assert.equal(posts(env).length, 0);
 });
 
-test("a safe 409 refusal remains visible in the dialog and requires status refresh plus fresh typing before another explicit attempt", async () => {
-  const env = environment(); await env.auth(true); await env.open(); await env.confirm(); await env.type("DELETE");
+test("a safe 409 refusal remains visible and requires status refresh before another explicit confirmation", async () => {
+  const env = environment(); await env.auth(true); await env.open(); await env.confirm();
   const reason = 'A recording is in use. Stop playback before deleting recordings.';
   env.handler(async () => { throw Object.assign(Error(reason), {status: 409}); }); await env.submit();
   assert.equal(posts(env).length, 1); assert.equal(env.byId("archive-clear-dialog").open, true); assert.equal(env.byId("archive-confirm-error").textContent, reason);
-  assert.equal(env.byId("archive-confirm-input").value, ""); assert.equal(env.byId("archive-clear-submit").disabled, true); assert.match(env.byId("archive-confirm-notice").textContent, /was refused/);
-  await env.type("DELETE"); await env.submit(); assert.equal(posts(env).length, 1); assert.deepEqual(busyEvents(env), [true, false]);
+  assert.equal(env.byId("archive-clear-submit").disabled, true); assert.match(env.byId("archive-confirm-notice").textContent, /was refused/); await env.submit(); assert.equal(posts(env).length, 1); assert.deepEqual(busyEvents(env), [true, false]);
   env.handler(env.defaultApi); await env.byId("archive-confirm-refresh").fire("click"); assert.equal(env.calls.at(-1).options.method, undefined);
-  assert.equal(env.byId("archive-confirm-error").hidden, true); assert.equal(env.byId("archive-confirm-input").value, ""); assert.equal(env.byId("archive-clear-submit").disabled, true); await env.type("DELETE"); await env.submit(); assert.equal(posts(env).length, 2);
+  assert.equal(env.byId("archive-confirm-error").hidden, true); assert.equal(env.byId("archive-clear-submit").disabled, false); assert.equal(posts(env).length, 1); await env.submit(); assert.equal(posts(env).length, 2);
 });
 
 test("network loss or malformed success is never retried; manual GET recovery requires a new explicit confirmation", async () => {
   for (const fail of [async () => { throw Error("Cannot reach the server."); }, async () => ({deleted_recordings: 20}), async () => { throw Object.assign(Error("Cleanup unavailable."), {status: 503}); }]) {
-    const env = environment(); await env.auth(true); await env.open(); await env.confirm(); await env.type("DELETE"); env.handler(fail); await env.submit();
-    assert.equal(posts(env).length, 1); assert.equal(env.byId("archive-clear-dialog").open, true); assert.equal(env.byId("archive-confirm-input").value, "");
-    assert.match(env.byId("archive-confirm-notice").textContent, /not be sent again automatically/); assert.equal(env.byId("archive-clear-open").disabled, true); assert.deepEqual(busyEvents(env), [true]);
-    await env.type("DELETE"); await env.submit(); await env.confirm(); await flush(); assert.equal(posts(env).length, 1); assert.equal(env.timers.length, 0);
+    const env = environment(); await env.auth(true); await env.open(); await env.confirm(); env.handler(fail); await env.submit();
+    assert.equal(posts(env).length, 1); assert.equal(env.byId("archive-clear-dialog").open, true);
+    assert.match(env.byId("archive-confirm-notice").textContent, /not be sent again automatically/); assert.equal(env.byId("archive-clear-open").disabled, true); assert.deepEqual(busyEvents(env), [true]); await env.submit(); await env.confirm(); await flush(); assert.equal(posts(env).length, 1); assert.equal(env.timers.length, 0);
     env.handler(async () => env.status({clearing: true})); await env.byId("archive-confirm-refresh").fire("click");
     assert.equal(env.byId("archive-clear-submit").disabled, true); assert.deepEqual(busyEvents(env), [true]);
     env.handler(env.defaultApi); await env.byId("archive-confirm-refresh").fire("click"); assert.deepEqual(busyEvents(env), [true, false]);
-    assert.equal(env.byId("archive-confirm-input").value, ""); assert.equal(env.byId("archive-clear-submit").disabled, true);
+    assert.equal(env.byId("archive-clear-submit").disabled, false);
     assert.match(env.byId("archive-confirm-notice").textContent, /previous request outcome is unknown/); assert.equal(posts(env).length, 1);
   }
 });
@@ -158,9 +155,9 @@ test("status errors and nonfinite or incomplete counts stay unknown and allow re
   env.handler(env.defaultApi); await env.byId("archive-refresh").fire("click"); assert.equal(env.byId("archive-clear-open").disabled, false); assert.equal(env.byId("archive-settings-error").hidden, true); assert.equal(posts(env).length, 0);
 });
 
-test("language changes preserve confirmation text, summary and pending state without API calls", async () => {
-  const env = environment(); await env.auth(true); await env.open(); await env.confirm(); await env.type("DELETE"); const count = env.calls.length; await env.language("it");
-  assert.equal(env.calls.length, count); assert.equal(env.byId("archive-confirm-input").value, "DELETE"); assert.equal(env.byId("archive-confirm-hint").textContent, "Digita DELETE per confermare.");
+test("language changes preserve the confirmation dialog, summary and pending state without API calls", async () => {
+  const env = environment(); await env.auth(true); await env.open(); await env.confirm(); const count = env.calls.length; await env.language("it");
+  assert.equal(env.calls.length, count); assert.equal(env.byId("archive-clear-dialog").open, true); assert.equal(posts(env).length, 0);
   assert.equal(env.byId("archive-clear-submit").textContent, "Elimina tutte le registrazioni"); assert.equal(env.byId("archive-confirm-bytes").textContent, "2,5 GB"); assert.equal(env.byId("archive-clear-submit").disabled, false);
 });
 
@@ -175,24 +172,24 @@ test("newest status wins and leaving the tab prevents a late summary request fro
 });
 
 test("logout aborts stale requests and an old session cannot close or unlock a new session's pending confirmation", async () => {
-  const env = environment(); await env.auth(true); await env.open(); await env.confirm(); await env.type("DELETE");
+  const env = environment(); await env.auth(true); await env.open(); await env.confirm();
   const old = deferred(), latest = deferred(); let writes = 0;
   env.handler((path) => path === "/api/settings/archive/clear" ? (++writes === 1 ? old.promise : latest.promise) : env.defaultApi(path)); const first = env.submit(); const firstSignal = posts(env)[0].options.signal;
   await env.auth(false); assert.equal(firstSignal.aborted, true); assert.equal(env.byId("archive-clear-dialog").open, false); assert.equal(env.byId("archive-count").textContent, "—");
-  await env.auth(true); await env.open(); await env.confirm(); await env.type("DELETE"); const second = env.submit();
-  old.resolve(env.result()); await first; assert.equal(env.byId("archive-clear-dialog").open, true); assert.equal(env.byId("archive-confirm-input").disabled, true); assert.equal(env.byId("archive-settings-notice").hidden, true);
+  await env.auth(true); await env.open(); await env.confirm(); const second = env.submit();
+  old.resolve(env.result()); await first; assert.equal(env.byId("archive-clear-dialog").open, true); assert.equal(env.byId("archive-clear-cancel").disabled, true); assert.equal(env.byId("archive-settings-notice").hidden, true);
   assert.equal(env.events.filter((event) => event.type === "nvr-archive-cleared").length, 0);
   latest.resolve(env.result()); await second; assert.equal(env.byId("archive-clear-dialog").open, false); assert.equal(env.events.filter((event) => event.type === "nvr-archive-cleared").length, 1);
 });
 
 test("server errors stay inert, and the dedicated accessible dialog keeps the compact header and local script order", async () => {
-  const env = environment(); await env.auth(true); await env.open(); await env.confirm(); await env.type("DELETE"); const text = '<img src=x onerror="bad()">';
+  const env = environment(); await env.auth(true); await env.open(); await env.confirm(); const text = '<img src=x onerror="bad()">';
   env.handler(async () => { throw Object.assign(Error(text), {status: 409}); }); await env.submit(); assert.equal(env.byId("archive-confirm-error").textContent, text);
   const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8"), css = readFileSync(join(__dirname, "../nvr/static/style.css"), "utf8");
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]); assert.equal(ids.length, new Set(ids).size);
   assert.match(html, /id="archive-error" class="inline-error"/); assert.match(html, /id="archive-settings-error" class="banner error"/);
-  assert.match(html, /<dialog id="archive-clear-dialog"[^>]*aria-labelledby="archive-clear-title"[^>]*aria-describedby="archive-confirm-description archive-confirm-hint"/);
-  assert.match(html, /<input id="archive-confirm-input"[^>]*autocomplete="off"[^>]*required/);
+  assert.match(html, /<dialog id="archive-clear-dialog"[^>]*aria-labelledby="archive-clear-title"[^>]*aria-describedby="archive-confirm-description"/);
+  assert.doesNotMatch(html, /id="archive-confirm-(input|hint)"/); assert.doesNotMatch(source, /archive-confirm-(input|hint)|Type \{word\} to confirm/);
   assert.match(html, /This cannot be undone\. Camera settings are preserved; the disk is not formatted\./);
   assert.match(css, /dialog\.modal \.modal-heading\{[^}]*height:20px!important/);
   assert.ok(html.indexOf('id="archive-settings"') > html.indexOf('id="settings-system-panel"'));

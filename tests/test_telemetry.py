@@ -95,6 +95,21 @@ def test_cgroup2_reports_whole_container_not_nvr_service_or_host(tmp_path, monke
     assert result["memory"]["source"] == "cgroup-v2:accounted"
 
 
+def test_background_cpu_samples_remain_valid_at_thirty_seconds_with_jitter(tmp_path, monkeypatch):
+    root, clock, collector = environment(tmp_path, monkeypatch, True)
+    group = cgroup2(root)
+    assert collector.snapshot()["cpu"]["percent"] is None
+    clock.value += 30.1
+    write(group, "cpu.stat", "usage_usec 31100000")
+    result = collector.snapshot()
+    assert result["cpu"]["percent"] == 50
+    assert result["cpu"]["sample_seconds"] == 30.1 and result["cpu"]["reason"] is None
+    clock.value += 91
+    write(group, "cpu.stat", "usage_usec 122100000")
+    result = collector.snapshot()
+    assert result["cpu"]["percent"] is None and result["cpu"]["reason"] == "sample_gap"
+
+
 def test_visible_ancestor_limits_and_cpuset_apply_without_using_ancestor_usage(tmp_path, monkeypatch):
     root, clock, collector = environment(tmp_path, monkeypatch, True)
     group = cgroup2(root, "/lxc/181")
@@ -265,7 +280,7 @@ def test_cpu_samples_cache_reset_missing_counters_and_stale_gap(tmp_path, monkey
     assert collector.snapshot()["sampled_at"] == 1700000100
     clock.value += .8; write(group, "cpu.stat", "usage_usec 0")
     assert collector.snapshot()["cpu"]["reason"] == "counter_reset"
-    clock.value += 31; write(group, "cpu.stat", "usage_usec 100000")
+    clock.value += 91; write(group, "cpu.stat", "usage_usec 100000")
     assert collector.snapshot()["cpu"]["reason"] == "sample_gap"
     clock.value += 1; write(group, "cpu.stat", "usage_usec 300000")
     assert collector.snapshot()["cpu"]["percent"] == 10

@@ -998,6 +998,24 @@
     "Stop playback and wait for media processing to finish before clearing recordings.": "Interrompi riproduzioni e download e attendi la fine delle elaborazioni prima di cancellare le registrazioni.",
     "Archive cleanup is unavailable for this storage configuration.": "La pulizia dell’archivio non è disponibile con questa configurazione dei dischi.",
     "Archive cleanup failed. Check storage permissions and try again.": "Pulizia dell’archivio non riuscita. Verifica i permessi del disco e riprova.",
-    "Recording paused for archive cleanup.": "Registrazione sospesa per la pulizia dell’archivio."
+    "Recording paused for archive cleanup.": "Registrazione sospesa per la pulizia dell’archivio.",
+    "Choose a supported history period.": "Scegli un intervallo supportato per lo storico.",
+    "History time range": "Intervallo dello storico",
+    "Last hour": "Ultima ora",
+    "Last 6 hours": "Ultime 6 ore",
+    "Last 24 hours": "Ultime 24 ore",
+    "Last 7 days": "Ultimi 7 giorni",
+    "Refresh history": "Aggiorna storico",
+    "Last {days} days": "Ultimi {days} giorni",
+    "Last {hours} hours": "Ultime {hours} ore",
+    "{title}: {period}.": "{title}: {period}.",
+    "Loading saved history…": "Caricamento dello storico salvato…",
+    "Saved history unavailable. Try again.": "Storico salvato non disponibile. Riprova.",
+    "No saved samples in this period.": "Nessun campione salvato in questo intervallo.",
+    "Saved samples are collected every 30 seconds.": "I campioni vengono salvati ogni 30 secondi.",
+    "Waiting for saved history.": "In attesa dello storico salvato.",
+    "System history controls unavailable.": "Controlli dello storico di sistema non disponibili.",
+    "History collection is temporarily unavailable. Saved samples are still shown.": "La raccolta dello storico è temporaneamente non disponibile. I campioni già salvati restano visibili.",
+    "No recent saved sample. Check the recorder.": "Nessun campione recente salvato. Verifica il recorder."
   }
 }

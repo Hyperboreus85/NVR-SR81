@@ -13,6 +13,13 @@ class QuietMedia:
     async def stop(self): pass
 
 
+class QuietHistory:
+    """Isolate live endpoint request counts from the independent sampler."""
+    def __init__(self, *args): pass
+    async def start(self): pass
+    async def stop(self): pass
+
+
 class Collector:
     def __init__(self,recordings_dir): self.directory=recordings_dir; self.calls=0
     def snapshot(self):
@@ -32,7 +39,7 @@ class Capacity:
 
 def test_telemetry_requires_login_and_returns_uncached_samples_without_polling_settings(tmp_path):
     settings=Settings(data_dir=tmp_path/'data',recordings_dir=tmp_path/'recordings',password='telemetry-test-password')
-    app=create_app(settings,media_factory=QuietMedia,telemetry_factory=Collector,capacity_factory=Capacity)
+    app=create_app(settings,media_factory=QuietMedia,telemetry_factory=Collector,capacity_factory=Capacity,history_factory=QuietHistory)
     collector=app.state.telemetry
     assert collector.directory==settings.recordings_dir and collector.calls==0
     with TestClient(app) as client:
@@ -77,7 +84,7 @@ def test_archive_policy_is_consistent_in_both_apis_and_never_authorizes_os_clean
                           'root':{'total':1000000,'free':20000},'shared_filesystem':False}
             return data
     settings=Settings(data_dir=tmp_path/'data',recordings_dir=tmp_path/'recordings',password='telemetry-test-password')
-    app=create_app(settings,media_factory=QuietMedia,telemetry_factory=ChangingCollector)
+    app=create_app(settings,media_factory=QuietMedia,telemetry_factory=ChangingCollector,history_factory=QuietHistory)
     with TestClient(app) as client:
         assert client.get('/api/system/telemetry').status_code==401
         assert client.post('/api/login',json={'password':settings.password},headers={'X-NVR-Request':'1'}).status_code==200

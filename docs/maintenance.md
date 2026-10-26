@@ -2,9 +2,9 @@
 
 In **Settings → System**, un amministratore può riavviare il servizio NVR. Il riavvio del sistema è disponibile solo quando è stato abilitato dall'amministratore Linux durante l'installazione.
 
-**Restart service** riavvia NVR-SR81. Il recorder chiude i file in corso, interrompe le dirette e riparte; durante questa pausa manca la registrazione. I video già completati rimangono nell'archivio. Per confermare occorre scrivere esattamente `RESTART`.
+**Restart service** riavvia NVR-SR81. Il recorder chiude i file in corso, interrompe le dirette e riparte; durante questa pausa manca la registrazione. I video già completati rimangono nell'archivio. Il primo clic apre il dialogo; il secondo clic su **Restart service** conferma, oppure **Cancel** annulla.
 
-**Reboot system** riavvia l'intero sistema operativo in cui è installata l'applicazione e interrompe anche gli altri servizi presenti. Se NVR-SR81 gira in un container Proxmox, riguarda quel container; il nodo Proxmox esterno non viene controllato. Per confermare occorre scrivere esattamente `REBOOT`.
+**Reboot system** riavvia l'intero sistema operativo in cui è installata l'applicazione e interrompe anche gli altri servizi presenti. Se NVR-SR81 gira in un container Proxmox, riguarda quel container; il nodo Proxmox esterno non viene controllato. Il dialogo offre **Reboot system** per confermare oppure **Cancel** per annullare. Nessuna delle azioni richiede di digitare parole.
 
 L'azione viene programmata con un ritardo di circa cinque secondi. Il messaggio di accettazione indica che il sistema ha ricevuto la richiesta, non che il riavvio sia già terminato. Attendere il ritorno del recorder e riconnettersi. L'applicazione non ripete automaticamente una richiesta di riavvio; un intervallo di sicurezza impedisce richieste duplicate per un minuto, anche attraverso un riavvio del servizio.
 
