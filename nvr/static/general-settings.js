@@ -8,11 +8,12 @@
   const fields = {recorder_name: "general-recorder-name", timezone: "general-timezone", hour_format: "general-hour-format", rotation_seconds: "general-rotation"};
   let authenticated = !byId("app").hidden, authEpoch = 0, requestEpoch = 0, editRevision = 0;
   let data = null, draft = null, identity = null, loading = false, saving = false, failed = false;
-  let controller = null, settingsBusy = false, systemBusy = false, archiveBusy = false, publishedBusy = false;
+  let controller = null, settingsBusy = false, systemBusy = false, archiveBusy = false, usersBusy = false, publishedBusy = false;
   let errorSource = null, noticeSource = null, optionsSignature = "";
   const visible = () => !byId("settings-view").hidden && !panel.hidden;
   const valid = (ticket, request) => authenticated && ticket === authEpoch && request === requestEpoch;
-  const externalBusy = () => settingsBusy || systemBusy || archiveBusy;
+  const externalBusy = () => settingsBusy || systemBusy || archiveBusy || usersBusy;
+  const allowed = () => window.NvrAccess ? window.NvrAccess.can("settings") : true;
   const cleanText = (value, maximum = 300) => typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, maximum) : "";
   const controlCharacters = (value) => /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value);
   const zone = (value) => typeof value === "string" && value.length <= 128 && /^[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/.test(value);
@@ -71,7 +72,7 @@
     for (const [key, id] of Object.entries(fields)) {
       const value = draft ? String(draft[key]) : "";
       if (byId(id).value !== value) byId(id).value = value;
-      byId(id).disabled = !authenticated || !data || saving || externalBusy();
+      byId(id).disabled = !authenticated || !allowed() || !data || saving || externalBusy();
     }
     const source = identity || data?.system;
     byId("general-recorder-name").placeholder = source?.hostname || "NVR-SR81";
@@ -80,7 +81,7 @@
     byId("general-country").textContent = countryLabel();
     byId("general-status").textContent = t(saving ? "Saving general settings…" : loading ? "Loading general settings…" : externalBusy() ? "Wait for the current settings operation to finish."
       : !data ? "General settings have not loaded." : dirty() ? "Unsaved changes" : "Saved on this recorder.");
-    byId("general-save").disabled = !authenticated || !data || loading || saving || externalBusy() || !dirty() || !!draftError();
+    byId("general-save").disabled = !authenticated || !allowed() || !data || loading || saving || externalBusy() || !dirty() || !!draftError();
     byId("general-save").textContent = t(saving ? "Saving…" : "Save general settings");
     byId("general-retry").hidden = !failed; byId("general-retry").disabled = !authenticated || loading || saving || externalBusy();
     form.setAttribute("aria-busy", String(loading || saving));
@@ -91,7 +92,7 @@
   function abortRequest() { controller?.abort(); controller = null; requestEpoch += 1; }
   function eventDetail() { return {...settings(data), effective_timezone: data.effective_timezone, country_codes: [...data.country_codes], system: {...data.system, addresses: [...data.system.addresses], country_codes: [...data.system.country_codes]}}; }
   async function open() {
-    if (!authenticated || saving || !visible() || externalBusy()) return;
+    if (!authenticated || !allowed() || saving || !visible() || externalBusy()) return;
     abortRequest();
     const ticket = authEpoch, request = requestEpoch, revision = editRevision, preserve = dirty(), current = new AbortController();
     controller = current; loading = true; failed = false; errorSource = null; render();
@@ -107,7 +108,7 @@
   }
   async function save(event) {
     event.preventDefault();
-    if (!authenticated || !visible() || loading || saving || externalBusy() || !data || !dirty()) return;
+    if (!authenticated || !allowed() || !visible() || loading || saving || externalBusy() || !data || !dirty()) return;
     const error = draftError(); if (error) { errorSource = {key: error}; render(); return; }
     abortRequest();
     const ticket = authEpoch, request = requestEpoch, current = new AbortController(), payload = {...draft, recorder_name: draft.recorder_name.trim()};
@@ -131,7 +132,7 @@
   }
   function relabel() { optionsSignature = ""; render(); }
   for (const [key, id] of Object.entries(fields)) byId(id).addEventListener(key === "recorder_name" ? "input" : "change", () => {
-    if (!authenticated || !data || saving || externalBusy()) return;
+    if (!authenticated || !allowed() || !data || saving || externalBusy()) return;
     draft ||= settings(data);
     const value = byId(id).value; draft[key] = key === "rotation_seconds" ? /^\d+$/.test(value) ? Number(value) : NaN : value;
     editRevision += 1; errorSource = noticeSource = null; render();
@@ -143,10 +144,11 @@
     else if (!saving) { abortRequest(); loading = false; render(); }
   });
   for (const [event, update] of [["nvr-settings-busychange", (value) => { settingsBusy = value; }], ["nvr-system-busychange", (value) => { systemBusy = value; }], ["nvr-archive-busychange", (value) => { archiveBusy = value; }]]) window.addEventListener(event, (value) => { update(!!value.detail.busy); render(); });
+  window.addEventListener("nvr-users-busychange", (event) => { usersBusy = !!event.detail.busy; render(); });
   window.addEventListener("nvr-languagechange", relabel);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated; authEpoch += 1; abortRequest(); editRevision += 1;
-    data = draft = identity = errorSource = noticeSource = null; loading = saving = failed = settingsBusy = systemBusy = archiveBusy = false; optionsSignature = ""; render();
+    data = draft = identity = errorSource = noticeSource = null; loading = saving = failed = settingsBusy = systemBusy = archiveBusy = usersBusy = false; optionsSignature = ""; render();
   });
   window.NvrGeneralSettings = Object.freeze({open, relabel, setIdentity});
   render(); Promise.resolve(i18n.ready).then(relabel).catch(() => {});

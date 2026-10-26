@@ -7,12 +7,13 @@
   const i18n = window.NvrI18n, t = (key, params) => i18n.t(key, params);
   let authenticated = !byId("app").hidden, authEpoch = 0, requestEpoch = 0;
   let status = null, result = null, loading = false, submitting = false, uncertain = false, mustCheck = false;
-  let settingsBusy = false, systemBusy = false, generalBusy = false, publishedBusy = false, controller = null, opener = null;
+  let settingsBusy = false, systemBusy = false, generalBusy = false, usersBusy = false, publishedBusy = false, controller = null, opener = null;
   let errorSource = null, noticeSource = null;
 
   const valid = (ticket, request) => authenticated && ticket === authEpoch && request === requestEpoch;
   const visible = () => !byId("settings-view").hidden && !panel.hidden;
-  const externalBusy = () => settingsBusy || systemBusy || generalBusy;
+  const externalBusy = () => settingsBusy || systemBusy || generalBusy || usersBusy;
+  const allowed = () => window.NvrAccess ? window.NvrAccess.can("archive_delete") && window.NvrAccess.user()?.camera_scope === "all" : true;
   const safeInteger = (value) => Number.isSafeInteger(value) && value >= 0;
   function number(value, digits = 0) {
     try { return value.toLocaleString(i18n.locale?.() || "en", {maximumFractionDigits: digits}); }
@@ -33,8 +34,9 @@
     publishedBusy = busy;
     window.dispatchEvent(new CustomEvent("nvr-archive-busychange", {detail: {busy}}));
   }
-  function canDelete() { return authenticated && !!status && !status.clearing && !loading && !submitting && !uncertain && !mustCheck && !externalBusy(); }
+  function canDelete() { return authenticated && allowed() && !!status && !status.clearing && !loading && !submitting && !uncertain && !mustCheck && !externalBusy(); }
   function render() {
+    root.hidden = !allowed();
     const count = status ? number(status.recordings_count) : "—", size = status ? bytes(status.recordings_bytes) : "—";
     for (const id of ["archive-count", "archive-confirm-count"]) byId(id).textContent = count;
     for (const id of ["archive-bytes", "archive-confirm-bytes"]) byId(id).textContent = size;
@@ -70,7 +72,7 @@
   }
   function abortRequest() { controller?.abort(); controller = null; requestEpoch += 1; }
   async function load() {
-    if (!authenticated || submitting || !visible() || externalBusy()) return false;
+    if (!authenticated || !allowed() || submitting || !visible() || externalBusy()) return false;
     abortRequest();
     const ticket = authEpoch, request = requestEpoch, current = new AbortController();
     controller = current; loading = true; errorSource = null; render();
@@ -151,10 +153,12 @@
   window.addEventListener("nvr-settings-busychange", (event) => { settingsBusy = !!event.detail.busy; render(); });
   window.addEventListener("nvr-system-busychange", (event) => { systemBusy = !!event.detail.busy; render(); });
   window.addEventListener("nvr-general-busychange", (event) => { generalBusy = !!event.detail.busy; render(); });
+  window.addEventListener("nvr-users-busychange", (event) => { usersBusy = !!event.detail.busy; render(); });
+  window.addEventListener("nvr-accesschange", render);
   window.addEventListener("nvr-languagechange", render);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated; authEpoch += 1; abortRequest();
-    loading = submitting = uncertain = mustCheck = settingsBusy = systemBusy = generalBusy = false; status = result = errorSource = noticeSource = null;
+    loading = submitting = uncertain = mustCheck = settingsBusy = systemBusy = generalBusy = usersBusy = false; status = result = errorSource = noticeSource = null;
     closeDialog(); render();
   });
   window.NvrArchiveSettings = Object.freeze({open: load, relabel: render, close});

@@ -66,7 +66,7 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 const generalSettings = (extra = {}) => ({recorder_name: "Fixture recorder", timezone: "UTC", effective_timezone: "UTC", hour_format: "24", rotation_seconds: 0, ...extra});
 
 function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapshot(), legacySize = null, handler, telemetry = false, history = false,
-                      preferences = true, general = generalSettings()} = {}) {
+                      preferences = true, general = generalSettings(), user} = {}) {
   const nodes = new Map(), windowEvents = new Map(), documentEvents = new Map(), calls = [], players = [], layouts = [], timers = new Map();
   const storage = new Map(legacySize === null ? [] : [["nvr.monitor.layout", String(legacySize)]]);
   const ready = deferred(); let timer = 0, language = "en", settingsOpens = 0;
@@ -111,11 +111,11 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
     }
     save(value) { this.saved = clone(value); this.options.onSave(this.getSaved()); }
   }
-  const defaults = (path) => path === "/api/session" ? {authenticated: true}
+  const defaults = (path) => path === "/api/session" ? {authenticated: true, ...(user ? {user} : {})}
     : path === "/api/cameras" ? cameras
     : path === "/api/system" ? {version: "test", recordings_bytes: 0, segment_seconds: 1800, ffmpeg_available: true, disk: {total: 100000, free: 90000, used: 10000}}
     : path === "/api/live/status" ? {active_streams: 0, max_streams: 16, active_transcodes: 0, max_transcodes: 2, streams: []}
-    : path === "/api/settings/general" ? general
+    : path === "/api/settings/general" || path === "/api/preferences" ? general
     : path === "/api/logout" ? {authenticated: false}
     : path.startsWith("/api/recordings") ? []
     : path === "/api/onvif/interfaces" ? [] : {};
@@ -155,6 +155,7 @@ function environment({cameras = ["a", "b", "c", "d"].map(camera), saved = snapsh
   context.addEventListener = (type, listener) => { if (!windowEvents.has(type)) windowEvents.set(type, []); windowEvents.get(type).push(listener); };
   context.dispatchEvent = (event) => { for (const listener of windowEvents.get(event.type) || []) listener(event); return true; };
   if (preferences) vm.runInContext(preferencesSource, context, {filename: "recorder-preferences.js"});
+  if (user) vm.runInContext(readFileSync(join(__dirname, "../nvr/static/access.js"), "utf8"), context, {filename: "access.js"});
   vm.runInContext(source, context, {filename: "app.js"});
   return {node, calls, players, layouts, layoutButtons, context, ready, document, storage, telemetryViews, dashboardViews, historyViews, timers,
     async boot() { ready.resolve(); await flush(); await flush(); },
@@ -634,4 +635,47 @@ test("actual rotation pauses for monitor pause, hidden tab and tile fullscreen b
   assert.equal(env.evaluate("cameraRotation.state().active"), false);
   await env.node("logout").fire("click");
   assert.equal(env.evaluate("cameraRotation.state().seconds"), 0);
+});
+
+const limitedUser = (permissions) => ({id: "viewer-fixture", username: "viewer", display_name: "Viewer", role: "user", enabled: true,
+  builtin: false, permissions, camera_scope: "selected", camera_ids: ["a"]});
+
+test("a Live-only account opens only its wall and does not request archive, system or settings APIs", async () => {
+  const env = environment({user: limitedUser(["live"]), cameras: [camera("a")]});
+  await env.boot();
+  assert.equal(env.node("monitor-view").hidden, false);
+  for (const id of ["nav-recorder", "nav-cameras", "nav-network", "nav-settings", "header-metrics", "edit-camera", "add-first-camera"]) assert.equal(env.node(id).hidden, true, id);
+  assert.equal(env.calls.some(({path}) => path.startsWith("/api/recordings") || path.startsWith("/api/system") || path.startsWith("/api/settings")), false);
+  assert.equal(env.calls.some(({path}) => path === "/api/preferences"), true);
+  assert.equal(env.evaluate("monitor.tiles.get('a').archiveButton.hidden"), true);
+  await env.node("nav-recorder").fire("click"); await env.node("nav-cameras").fire("click");
+  assert.equal(env.evaluate("network.view"), "monitor");
+  assert.equal(env.node("camera-dialog").open || false, false);
+  await env.evaluate("openCameraDialog()");
+  assert.equal(env.node("camera-dialog").open || false, false);
+});
+
+test("an archive-only account starts in Record, while an unassigned account exposes no camera or system requests", async () => {
+  const archive = environment({user: limitedUser(["recordings"]), cameras: [camera("a")]}); await archive.boot();
+  assert.equal(archive.node("recorder-view").hidden, false);
+  assert.equal(archive.node("nav-monitor").hidden, true);
+  assert.equal(archive.players.length, 0);
+  assert.equal(archive.calls.some(({path}) => path.startsWith("/api/live/") || path.startsWith("/api/system")), false);
+  assert.equal(archive.calls.some(({path}) => path.startsWith("/api/recordings?")), true);
+  const none = environment({user: limitedUser([])}); await none.boot();
+  assert.equal(none.node("no-access-view").hidden, false);
+  assert.equal(none.node("monitor-view").hidden, true);
+  assert.equal(none.evaluate("state.cameras.length"), 0);
+  assert.deepEqual(none.calls.map(({path}) => path), ["/api/session", "/api/preferences"]);
+});
+
+test("changing one's password clears media and access before showing the sign-in form", async () => {
+  const env = environment({user: limitedUser(["live"]), cameras: [camera("a")]}); await env.boot();
+  await env.windowEvent("nvr-password-changed");
+  assert.equal(env.players.every((player) => player.destroyed), true);
+  assert.equal(env.evaluate("state.user"), null);
+  assert.equal(env.context.NvrAccess.user(), null);
+  assert.equal(env.node("app").hidden, true);
+  assert.equal(env.node("login-screen").hidden, false);
+  assert.equal(env.node("login-error").textContent, "Password changed. Sign in again.");
 });

@@ -1,8 +1,8 @@
 # Impostazioni, registrazione e lingue
 
-Le impostazioni raccolgono **General**, **Languages**, **Recording** e **System** nella barra superiore, come Live e Record. Inglese e italiano sono inclusi; nuovi pacchetti JSON si installano e si selezionano in Languages. La grafica usa pannelli compatti, superfici grigio scuro, accenti ciano e dettagli oro, in linea con Record. La versione dell'applicazione compare sotto il logo e gli indicatori di sistema nella barra superiore rimangono visibili da ogni pagina autenticata.
+Le impostazioni raccolgono **General**, **Languages**, **Recording**, **System** e **Users** nella barra superiore, come Live e Record. Inglese e italiano sono inclusi; nuovi pacchetti JSON si installano e si selezionano in Languages. La grafica usa pannelli compatti, superfici grigio scuro, accenti ciano e dettagli oro, in linea con Record. La versione dell'applicazione compare sotto il logo e gli indicatori di sistema nella barra superiore rimangono visibili da ogni pagina per le utenze autorizzate alle informazioni di sistema.
 
-Le quattro schede si aprono direttamente sui controlli, senza titolo Settings o introduzioni duplicate. I testi essenziali spiegano preferenze, file JSON, durata delle registrazioni e azioni di sistema.
+Le schede si aprono direttamente sui controlli, senza titolo Settings o introduzioni duplicate. Le utenze autorizzate vedono solo le sezioni disponibili. **Users** è riservata agli amministratori e gestisce account, permessi per funzione, telecamere assegnate e cambio della propria password. [Utenti e accessi](users.md).
 
 ## Cambiare lingua
 
@@ -79,6 +79,6 @@ Un pacchetto installato può essere rimosso dopo conferma. Rimuovendo una sostit
 
 ## Conservazione e aggiornamento
 
-I file inclusi sono `nvr/locales/en.json` e `nvr/locales/it.json`. I pacchetti installati sono salvati atomicamente in `NVR_DATA_DIR/languages/<locale>.json`, normalmente `/var/lib/nvr-sr81/languages` sul container. Includere questa directory nel backup della configurazione. Installazione e rimozione richiedono l'accesso amministratore.
+I file inclusi sono `nvr/locales/en.json` e `nvr/locales/it.json`. I pacchetti installati sono salvati atomicamente in `NVR_DATA_DIR/languages/<locale>.json`, normalmente `/var/lib/nvr-sr81/languages` sul container. Includere questa directory nel backup della configurazione. Installazione e rimozione richiedono il permesso Settings o un account amministratore.
 
 Le personalizzazioni italiane salvate dalla versione 0.4 vengono migrate una volta in un file italiano installato, mantenendo il vecchio dato nel database per eventuali ripristini. I cataloghi JavaScript e i vecchi endpoint dell'editor non sono più usati. I testi inglesi rimangono chiavi stabili; per aggiornare una lingua si installa un nuovo file con lo stesso codice.

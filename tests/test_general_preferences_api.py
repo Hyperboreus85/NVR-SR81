@@ -138,15 +138,15 @@ async def async_login(client):
 
 def observe_auth(app, monkeypatch):
     observed = asyncio.Event()
-    valid = app.state.auth.valid
+    principal = app.state.auth.principal
 
     def check(token):
-        accepted = valid(token)
-        if accepted:
+        accepted = principal(token)
+        if accepted is not None:
             observed.set()
         return accepted
 
-    monkeypatch.setattr(app.state.auth, "valid", check)
+    monkeypatch.setattr(app.state.auth, "principal", check)
     return observed
 
 

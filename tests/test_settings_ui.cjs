@@ -47,7 +47,7 @@ function environment() {
   const nodes = new Map(), calls = [], events = new Map(), emitted = [], blobs = new Map(), revoked = [], timers = [], downloads = [], storage = new Map();
   const byId = (id) => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   byId("app").hidden = true;
-  const tabs = ["general", "languages", "recording", "system"].map((name) => Object.assign(new Element("button"), {dataset: {settingsTab: name}}));
+  const tabs = ["general", "languages", "recording", "system", "users"].map((name) => Object.assign(new Element("button"), {dataset: {settingsTab: name}}));
   const panels = tabs.map((item) => Object.assign(new Element(), {dataset: {settingsPanel: item.dataset.settingsTab}}));
   const keys = ["Hello", "Device {number}", "Empty"];
   const pack = (locale = "fr", translations = {Hello: "Bonjour"}, extra = {}) => ({format: "nvr-sr81.language-pack", version: 1, locale, name: "French", native_name: "Français", translations, ...extra});
@@ -62,6 +62,9 @@ function environment() {
     CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
   });
   context.window = context;
+  let actor = {id: "builtin-admin", role: "admin", builtin: true, permissions: []};
+  context.NvrAccess = {can: (name) => actor?.role === "admin" || actor?.permissions.includes(name) === true, isAdmin: () => actor?.role === "admin", user: () => actor,
+    storageKey: (key) => actor?.builtin ? key : key + ".user." + (actor?.id || "anonymous")};
   context.confirm = () => true;
   context.addEventListener = (type, callback) => { if (!events.has(type)) events.set(type, []); events.get(type).push(callback); };
   context.dispatchEvent = (event) => { emitted.push(event); for (const callback of events.get(event.type) || []) callback(event); return true; };
@@ -105,7 +108,8 @@ function environment() {
   const choose = async (value) => { byId("settings-pack-file").files = value ? [value] : []; await byId("settings-pack-file").fire("change"); };
   const button = (locale, action, container = "settings-pack-list") => walk(byId(container)).find((item) => item.dataset.locale === locale && item.dataset.action === action);
   return {context, byId, calls, tabs, panels, blobs, revoked, timers, downloads, storage, emitted, pack, file, choose, auth, button, stored, defaultApi, recordingSettings,
-    handler(value) { handler = value; }, refreshHandler(value) { refreshHandler = value; }, refreshCount: () => refreshCount};
+    handler(value) { handler = value; }, refreshHandler(value) { refreshHandler = value; }, refreshCount: () => refreshCount,
+    access(value) { actor = value; context.dispatchEvent(new context.CustomEvent("nvr-accesschange")); }};
 }
 
 test("choosing a BOM JSON file only stages it; Install sends the exact original raw text and exposes the new language", async () => {
@@ -393,7 +397,7 @@ test("the recorder updates its duration immediately and ignores an older in-flig
   const context = vm.createContext({state, network: {view: "settings"},
     api: (path) => path === "/api/system" ? previousSystem.promise : Promise.resolve([]),
     renderCameras() {}, renderSelected() {}, renderStats() {}, ensureLiveLayout() { return null; }, errorText: String,
-    applyGeneralPreferences() {},
+    applyGeneralPreferences() {}, applyAccess() {}, can: () => true,
     renderSystem() { displayed.push(state.system.segment_seconds); },
     window: {addEventListener(type, listener) { listeners.set(type, listener); }},
   });
@@ -416,16 +420,42 @@ test("topbar Settings tabs retain keyboard navigation, active state and an unsav
   await env.tabs[2].fire("keydown", {key: "ArrowRight"});
   assert.equal(env.tabs[3].getAttribute("aria-selected"), "true"); assert.equal(env.tabs[3].tabIndex, 0); assert.ok(env.tabs[3].focused);
   assert.equal(env.panels[3].hidden, false); assert.equal(env.panels[2].hidden, true);
-  await env.tabs[3].fire("keydown", {key: "ArrowRight"}); assert.equal(env.tabs[0].getAttribute("aria-selected"), "true");
-  await env.tabs[0].fire("keydown", {key: "End"}); assert.equal(env.tabs[3].getAttribute("aria-selected"), "true");
-  await env.tabs[3].fire("keydown", {key: "Home"}); assert.equal(env.tabs[0].getAttribute("aria-selected"), "true");
-  await env.tabs[0].fire("keydown", {key: "ArrowLeft"}); assert.equal(env.tabs[3].getAttribute("aria-selected"), "true");
+  await env.tabs[3].fire("keydown", {key: "ArrowRight"}); assert.equal(env.tabs[4].getAttribute("aria-selected"), "true");
+  await env.tabs[4].fire("keydown", {key: "ArrowRight"}); assert.equal(env.tabs[0].getAttribute("aria-selected"), "true");
+  await env.tabs[0].fire("keydown", {key: "End"}); assert.equal(env.tabs[4].getAttribute("aria-selected"), "true");
+  await env.tabs[4].fire("keydown", {key: "Home"}); assert.equal(env.tabs[0].getAttribute("aria-selected"), "true");
+  await env.tabs[0].fire("keydown", {key: "ArrowLeft"}); assert.equal(env.tabs[4].getAttribute("aria-selected"), "true");
+  await env.tabs[4].fire("keydown", {key: "ArrowLeft"}); assert.equal(env.tabs[3].getAttribute("aria-selected"), "true");
   await env.tabs[3].fire("keydown", {key: "ArrowLeft"}); assert.equal(env.tabs[2].getAttribute("aria-selected"), "true");
   assert.equal(env.byId("settings-recording-minutes").value, "60"); assert.equal(env.calls.length, requests);
   assert.equal(env.emitted.filter((event) => event.type === "nvr-settings-tabchange").at(-1).detail.tab, "recording");
 });
 
-test("Settings has exactly General, Languages, Recording and System, with JSON controls confined to Languages", () => {
+test("restricted Settings tabs skip forbidden reads and keyboard navigation ignores hidden admin or recorder tabs", async () => {
+  const env = environment(); env.access({id: "maintainer", role: "user", permissions: ["maintenance"]}); await env.auth(true); await env.context.NvrSettings.open();
+  assert.deepEqual(env.tabs.filter((button) => !button.hidden).map((button) => button.dataset.settingsTab), ["system"]);
+  assert.equal(env.calls.some((call) => ["/api/system", "/api/live/status", "/api/settings/recording"].includes(call.path)), false);
+  await env.tabs[3].fire("keydown", {key: "ArrowRight"}); assert.equal(env.tabs[3].getAttribute("aria-selected"), "true");
+  assert.equal(env.byId("settings-pack-template").disabled, true); assert.equal(env.byId("settings-pack-management").hidden, true);
+  env.access({id: "preferences", role: "user", permissions: ["settings"]}); env.calls.length = 0; await env.context.NvrSettings.open();
+  assert.deepEqual(env.tabs.filter((button) => !button.hidden).map((button) => button.dataset.settingsTab), ["general", "languages", "recording"]);
+  assert.equal(env.calls.some((call) => call.path === "/api/system" || call.path === "/api/live/status"), false);
+  assert.equal(env.calls.some((call) => call.path === "/api/settings/recording"), true);
+  env.access(null); env.calls.length = 0; await env.context.NvrSettings.open();
+  assert.equal(env.tabs.every((button) => button.hidden), true); assert.equal(env.panels.every((panel) => panel.hidden), true); assert.equal(env.calls.length, 0);
+});
+
+test("monitor preferences use the current account storage key and Users mutations lock writes without feedback", async () => {
+  const env = environment(); await env.auth(true); env.access({id: "custom-admin", role: "admin", permissions: []});
+  env.byId("settings-monitor-layout").value = "9"; await env.byId("settings-monitor-layout").fire("change");
+  assert.equal(env.storage.get("nvr.monitor.layout.user.custom-admin"), "9"); assert.equal(env.storage.has("nvr.monitor.layout"), false);
+  env.context.dispatchEvent(new env.context.CustomEvent("nvr-users-busychange", {detail: {busy: true}}));
+  assert.equal(env.byId("settings-pack-template").disabled, true);
+  assert.equal(env.emitted.filter((event) => event.type === "nvr-settings-busychange").at(-1).detail.busy, false);
+  env.context.dispatchEvent(new env.context.CustomEvent("nvr-users-busychange", {detail: {busy: false}})); assert.equal(env.byId("settings-pack-template").disabled, false);
+});
+
+test("Settings has General, Languages, Recording, System and admin-only Users, with JSON controls confined to Languages", () => {
   const html = readFileSync(join(__dirname, "../nvr/static/index.html"), "utf8");
   const stack = [], elements = [], ids = new Map();
   const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
@@ -446,17 +476,17 @@ test("Settings has exactly General, Languages, Recording and System, with JSON c
     if (!voidTags.has(tag) && !/\/\s*$/.test(token[3])) stack.push(entry);
   }
   assert.equal(stack.length, 0);
-  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-tab"]).map((item) => item.attributes["data-settings-tab"]), ["general", "languages", "recording", "system"]);
+  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-tab"]).map((item) => item.attributes["data-settings-tab"]), ["general", "languages", "recording", "system", "users"]);
   const topbar = html.slice(html.indexOf('<header class="topbar">'), html.indexOf('</header>') + '</header>'.length);
   assert.ok(topbar.includes('id="settings-subnav"')); assert.equal(ids.get("settings-subnav").attributes.role, "tablist");
   assert.equal(ids.get("settings-subnav").ancestors.includes("settings-view"), false);
   assert.equal(html.includes('class="settings-tabs"'), false);
-  for (const name of ["general", "languages", "recording", "system"]) {
+  for (const name of ["general", "languages", "recording", "system", "users"]) {
     const button = ids.get("settings-tab-" + name), panel = ids.get("settings-" + name + "-panel");
     assert.ok(button.ancestors.includes("settings-subnav")); assert.equal(button.attributes.role, "tab");
     assert.equal(button.attributes["aria-controls"], panel.attributes.id); assert.equal(panel.attributes["aria-labelledby"], button.attributes.id);
   }
-  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-panel"]).map((item) => item.attributes["data-settings-panel"]), ["general", "languages", "recording", "system"]);
+  assert.deepEqual(elements.filter((item) => item.attributes["data-settings-panel"]).map((item) => item.attributes["data-settings-panel"]), ["general", "languages", "recording", "system", "users"]);
   for (const id of ["settings-language", "settings-language-list", "settings-pack-file", "settings-pack-preview", "settings-pack-name", "settings-pack-locale", "settings-pack-coverage", "settings-pack-install", "settings-pack-selection", "settings-pack-template", "settings-pack-list"]) {
     assert.ok(ids.get(id)?.ancestors.includes("settings-languages-panel"), id + " must belong to the Languages page");
   }

@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import re
 import sqlite3
+import time
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -13,7 +14,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
 
 from . import __version__
 from .config import Settings
@@ -28,12 +28,14 @@ from .telemetry_history import TelemetryHistory
 from .onvif import get_profiles
 from .preferences import SEGMENT_PREFERENCE_KEY, recording_preferences, restore_recording_preferences
 from .security import Auth, redact_url
+from .accounts import AccountError
 from .store import Store
 from .telemetry import SystemTelemetry
 from .system_status import RecordingCapacity
 from .storage_policy import archive_storage_status, storage_overview
 
 LIVE_AUTH_CHECK_SECONDS = 15
+PERMISSION_KEYS = ("live", "recordings", "download", "cameras", "network", "settings", "system", "maintenance", "archive_delete")
 
 
 class LeasedFileResponse(FileResponse):
@@ -48,6 +50,49 @@ class LeasedFileResponse(FileResponse):
             await super().__call__(scope, receive, send)
         finally:
             await self.lease.__aexit__(None, None, None)
+
+
+class RevocableStreamingResponse(StreamingResponse):
+    """Release a live subscription on revocation, even under backpressure."""
+
+    def __init__(self, content, *, check, **kwargs):
+        super().__init__(content, **kwargs)
+        self.check = check
+
+    async def __call__(self, scope, receive, send):
+        started = ended = False
+        async def recorded_send(message):
+            nonlocal started, ended
+            if message["type"] == "http.response.start":
+                started = True
+            elif message["type"] == "http.response.body" and not message.get("more_body", False):
+                ended = True
+            await send(message)
+        async def watch():
+            while True:
+                await asyncio.sleep(LIVE_AUTH_CHECK_SECONDS)
+                try:
+                    self.check()
+                except HTTPException:
+                    return
+        delivery = asyncio.create_task(super().__call__(scope, receive, recorded_send))
+        watcher = asyncio.create_task(watch())
+        revoked = False
+        try:
+            done, _ = await asyncio.wait((delivery, watcher), return_when=asyncio.FIRST_COMPLETED)
+            revoked = watcher in done and delivery not in done
+            if not revoked:
+                await delivery
+        finally:
+            for task in (delivery, watcher):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(delivery, watcher, return_exceptions=True)
+            if hasattr(self.body_iterator, "aclose"):
+                await self.body_iterator.aclose()
+        if revoked and started and not ended:
+            with contextlib.suppress(OSError, RuntimeError, asyncio.TimeoutError):
+                await asyncio.wait_for(send({"type": "http.response.body", "body": b"", "more_body": False}), 1)
 
 
 class RecordingPreferencesInput(BaseModel):
@@ -105,7 +150,40 @@ class CameraInput(BaseModel):
 
 
 class LoginInput(BaseModel):
-    password: str = Field(max_length=1024)
+    model_config = {"extra": "forbid"}
+    username: str = Field(default="admin", strict=True, min_length=1, max_length=64)
+    password: str = Field(strict=True, max_length=1024)
+
+
+class UserCreateInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    username: str = Field(strict=True, min_length=1, max_length=32)
+    password: str = Field(strict=True, min_length=12, max_length=1024)
+    display_name: str | None = Field(default=None, strict=True, max_length=80)
+    role: Literal["admin", "user"] = "user"
+    permissions: list[Annotated[str, Field(strict=True, max_length=32)]] = Field(default_factory=list, max_length=9)
+    camera_scope: Literal["all", "selected"] = "selected"
+    camera_ids: list[Annotated[str, Field(strict=True, min_length=1, max_length=128)]] = Field(default_factory=list, max_length=32)
+    enabled: bool = Field(default=True, strict=True)
+
+
+class UserUpdateInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    username: str | None = Field(default=None, strict=True, min_length=1, max_length=32)
+    password: str | None = Field(default=None, strict=True, min_length=12, max_length=1024)
+    display_name: str | None = Field(default=None, strict=True, max_length=80)
+    role: Literal["admin", "user"] | None = None
+    permissions: list[Annotated[str, Field(strict=True, max_length=32)]] | None = Field(default=None, max_length=9)
+    camera_scope: Literal["all", "selected"] | None = None
+    camera_ids: list[Annotated[str, Field(strict=True, min_length=1, max_length=128)]] | None = Field(default=None, max_length=32)
+    enabled: bool | None = Field(default=None, strict=True)
+
+
+class OwnPasswordInput(BaseModel):
+    model_config = {"extra": "forbid"}
+    current_password: str = Field(strict=True, max_length=1024)
+    new_password: str = Field(strict=True, min_length=12, max_length=1024)
+    confirm_password: str = Field(strict=True, min_length=12, max_length=1024)
 
 
 class OnvifInput(BaseModel):
@@ -193,22 +271,93 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     app.state.capacity = capacity
     app.state.languages = languages
 
+    def token_of(request):
+        return request if isinstance(request, str) else request.cookies.get("nvr_session")
+
+    def require_access(request, permissions=(), *, any_permissions=(), camera_id=None, all_cameras=False, admin=False,
+                       missing="Camera not found"):
+        token = token_of(request)
+        user = auth.principal(token)
+        if user is None:
+            raise HTTPException(401, "Authentication required")
+        if admin and user["role"] != "admin":
+            raise HTTPException(403, "Permission denied")
+        grants = set(user["permissions"])
+        def permitted(permission):
+            return (permission in grants and (permission != "download" or "recordings" in grants)
+                    and (permission != "archive_delete" or user["camera_scope"] == "all"))
+        if any(not permitted(permission) for permission in permissions):
+            raise HTTPException(403, "Permission denied")
+        if any_permissions and not any(permitted(permission) for permission in any_permissions):
+            raise HTTPException(403, "Permission denied")
+        if all_cameras and user["camera_scope"] != "all":
+            raise HTTPException(403, "Permission denied")
+        if camera_id is not None and user["camera_scope"] != "all" and camera_id not in user["camera_ids"]:
+            raise HTTPException(404, missing)
+        return user
+
+    def authorize_http(request):
+        path, method = request.url.path, request.method
+        if path in {"/api/logout", "/api/preferences"} and method == ("POST" if path.endswith("logout") else "GET"):
+            return require_access(request)
+        if path == "/api/users" and method in {"GET", "POST"} or path == "/api/users/me/password" and method == "POST" or re.fullmatch(r"/api/users/[^/]+", path) and method in {"PUT", "DELETE"}:
+            return require_access(request, admin=True)
+        if path == "/api/cameras":
+            if method == "GET":
+                return require_access(request, any_permissions=("live", "recordings", "cameras"))
+            if method == "POST":
+                return require_access(request, ("cameras",), all_cameras=True)
+        camera_path = re.fullmatch(r"/api/cameras/([^/]+)(?:/(probe|snapshot|live|live\.mp4))?", path)
+        if camera_path:
+            camera_id, action = camera_path.groups()
+            if action is None and method in {"PUT", "DELETE"} or action == "probe" and method == "POST":
+                return require_access(request, ("cameras",), camera_id=camera_id)
+            if action in {"snapshot", "live", "live.mp4"} and method == "GET":
+                return require_access(request, ("live",), camera_id=camera_id)
+        if path == "/api/live/status" and method == "GET":
+            return require_access(request, any_permissions=("live", "system"))
+        if path == "/api/recordings" and method == "GET":
+            return require_access(request, ("recordings",), camera_id=request.query_params.get("camera_id"), missing="Recording not found")
+        recording_path = re.fullmatch(r"/api/recordings/([^/]+)/(download|download\.mp4|playback|thumbnail|waveform|motion)", path)
+        if recording_path and method == "GET":
+            permissions = ("recordings", "download") if recording_path.group(2).startswith("download") else ("recordings",)
+            user = require_access(request, permissions)
+            recording = store.get_recording(recording_path.group(1))
+            if recording is None or user["camera_scope"] != "all" and recording["camera_id"] not in user["camera_ids"]:
+                raise HTTPException(404, "Recording not found")
+            return user
+        if path == "/api/onvif/interfaces" and method == "GET" or path in {"/api/onvif/cancel", "/api/onvif/discover", "/api/onvif/scan", "/api/onvif/profiles"} and method == "POST":
+            return require_access(request, ("network",))
+        if path in {"/api/settings/general", "/api/settings/recording"} and method in {"GET", "PUT"} or path == "/api/languages/template" and method == "GET" or path == "/api/languages/install" and method == "POST" or re.fullmatch(r"/api/languages/[^/]+", path) and method == "DELETE":
+            return require_access(request, ("settings",))
+        if path in {"/api/system", "/api/system/telemetry", "/api/system/history"} and method == "GET":
+            return require_access(request, ("system",))
+        if path == "/api/settings/system" and method == "GET" or path == "/api/settings/system/action" and method == "POST":
+            return require_access(request, ("maintenance",))
+        if path == "/api/settings/archive" and method == "GET" or path == "/api/settings/archive/clear" and method == "POST":
+            return require_access(request, ("archive_delete",), all_cameras=True)
+        require_access(request)
+        raise HTTPException(404, "Not found")
+
     @app.middleware("http")
     async def access_control(request: Request, call_next):
         if request.url.path.startswith("/api/"):
             if request.method not in {"GET", "HEAD", "OPTIONS"}:
                 if request.headers.get("x-nvr-request") != "1":
-                    return JSONResponse({"detail": "Invalid request"}, status_code=403)
+                    return JSONResponse({"detail": "Invalid request"}, status_code=403, headers={"Cache-Control": "no-store"})
                 origin = request.headers.get("origin")
                 if origin and origin != str(request.base_url).rstrip("/"):
-                    return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
-            public = request.url.path in {"/api/session", "/api/login"}
+                    return JSONResponse({"detail": "Origin not allowed"}, status_code=403, headers={"Cache-Control": "no-store"})
+            public = request.url.path == "/api/session" and request.method == "GET" or request.url.path == "/api/login" and request.method == "POST"
             if request.method == "GET":
                 language_path = re.fullmatch(r"/api/languages/([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)", request.url.path)
                 public = public or request.url.path == "/api/languages" or bool(
                     language_path and len(language_path.group(1)) <= 35)
-            if not public and not auth.valid(request.cookies.get("nvr_session")):
-                return JSONResponse({"detail": "Authentication required"}, status_code=401)
+            if not public:
+                try:
+                    authorize_http(request)
+                except HTTPException as error:
+                    return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers={"Cache-Control": "no-store"})
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -238,22 +387,39 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     async def invalid_general_preferences(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
 
-    def camera_or_404(camera_id):
+    @app.exception_handler(AccountError)
+    async def invalid_account(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
+
+    def camera_or_404(camera_id, request=None, permission=None):
+        if request is not None:
+            require_access(request, (permission,) if permission else (), camera_id=camera_id)
         camera = store.get_camera(camera_id)
         if camera is None:
             raise HTTPException(404, "Camera not found")
         return camera
 
-    def recording_or_404(recording_id):
+    def recording_or_404(recording_id, request=None, *, download=False):
         recording = store.get_recording(recording_id)
         if recording is None:
             raise HTTPException(404, "Recording not found")
+        if request is not None:
+            require_access(request, ("recordings", "download") if download else ("recordings",),
+                           camera_id=recording["camera_id"], missing="Recording not found")
         path = (settings.recordings_dir / recording["path"]).resolve()
         if not path.is_relative_to(settings.recordings_dir) or not path.is_file():
             raise HTTPException(404, "Recording file unavailable")
         return recording, path
 
-    def public_camera(camera):
+    def public_camera(camera, request=None, user=None):
+        user = user or (require_access(request) if request is not None else None)
+        if user is not None and "cameras" not in user["permissions"]:
+            status = media.camera_status(camera["id"])
+            safe_status = {key: value for key, value in status.items() if key in {"state", "last_segment_at"}}
+            return {key: value for key, value in camera.items() if key in {"id", "name", "enabled", "audio_mode", "retention_days", "live_stream"}} | {
+                "status": safe_status,
+                "streams": {name: {"configured": bool(camera.get(key))} for name, key in (("main", "url"), ("sub", "preview_url"), ("third", "third_url"))},
+            }
         return {key: value for key, value in camera.items() if key not in {"url", "preview_url", "third_url"}} | {
             "source": redact_url(camera["url"]),
             "preview_source": redact_url(camera["preview_url"]),
@@ -287,32 +453,92 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
 
     @app.get("/api/session")
     def session(request: Request):
-        return {"authenticated": auth.valid(request.cookies.get("nvr_session"))}
+        user = auth.principal(request.cookies.get("nvr_session"))
+        return {"authenticated": user is not None, "user": user}
 
     @app.post("/api/login")
     async def login(data: LoginInput, request: Request):
         host = request.client.host if request.client else "local"
         async with login_jobs:
-            accepted = await asyncio.to_thread(auth.check, data.password, host)
-        if not accepted:
-            raise HTTPException(401, "Invalid password or too many attempts. Wait one minute.")
-        response = JSONResponse({"authenticated": True})
-        response.set_cookie("nvr_session", auth.login(), httponly=True, secure=settings.secure_cookie,
+            token = await asyncio.to_thread(auth.authenticate, data.username, data.password, host)
+        if not token:
+            raise HTTPException(401, "Invalid username or password, or too many attempts. Wait one minute.")
+        user = auth.principal(token)
+        if user is None:
+            auth.logout(token)
+            raise HTTPException(401, "Invalid username or password, or too many attempts. Wait one minute.")
+        response = JSONResponse({"authenticated": True, "user": user})
+        response.set_cookie("nvr_session", token, httponly=True, secure=settings.secure_cookie,
                             samesite="strict", max_age=12*3600)
         return response
 
     @app.post("/api/logout")
     async def logout(request: Request):
         session_token = request.cookies.get("nvr_session")
+        auth.logout(session_token)
         await cancel_owned_scan(session_token)
-        auth.sessions.pop(session_token, None)
         response = JSONResponse({"authenticated": False})
         response.delete_cookie("nvr_session")
         return response
 
     @app.get("/api/cameras")
-    def cameras():
-        return [public_camera(camera) for camera in store.list_cameras()]
+    def cameras(request: Request):
+        user = require_access(request, any_permissions=("live", "recordings", "cameras"))
+        result = [public_camera(camera, request, user) for camera in store.list_cameras()
+                  if user["camera_scope"] == "all" or camera["id"] in user["camera_ids"]]
+        require_access(request, any_permissions=("live", "recordings", "cameras"))
+        return result
+
+    @app.get("/api/preferences")
+    def client_preferences(request: Request):
+        require_access(request)
+        values = general.read()
+        require_access(request)
+        return {key: values[key] for key in ("recorder_name", "timezone", "hour_format", "rotation_seconds", "effective_timezone")}
+
+    @app.get("/api/users")
+    def users(request: Request):
+        require_access(request, admin=True)
+        result = auth.accounts.list()
+        require_access(request, admin=True)
+        return {"users": result, "permissions": list(PERMISSION_KEYS)}
+
+    async def account_mutation(request, operation):
+        async def apply():
+            async with mutation_lock:
+                actor = require_access(request, admin=True)
+                return await asyncio.to_thread(operation, actor)
+        task = asyncio.create_task(apply(), name="nvr-user-mutation")
+        recording_updates.add(task)
+        def finished(done):
+            recording_updates.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    @app.post("/api/users", status_code=201)
+    async def create_user(data: UserCreateInput, request: Request):
+        return await account_mutation(request, lambda actor: auth.accounts.create(data.model_dump(exclude_none=True), actor["id"]))
+
+    @app.post("/api/users/me/password")
+    async def change_own_password(data: OwnPasswordInput, request: Request):
+        if data.new_password != data.confirm_password:
+            raise HTTPException(422, "The new passwords do not match.")
+        host = request.client.host if request.client else "local"
+        await account_mutation(request, lambda actor: auth.change_password(token_of(request), data.current_password, data.new_password, host))
+        response = JSONResponse({"password_changed": True, "reauthentication_required": True})
+        response.delete_cookie("nvr_session")
+        return response
+
+    @app.put("/api/users/{user_id}")
+    async def update_user(user_id: str, data: UserUpdateInput, request: Request):
+        return await account_mutation(request, lambda actor: auth.accounts.update(user_id, data.model_dump(exclude_unset=True), actor["id"]))
+
+    @app.delete("/api/users/{user_id}")
+    async def delete_user(user_id: str, request: Request):
+        await account_mutation(request, lambda actor: auth.accounts.delete(user_id, actor["id"]))
+        return {"deleted": True}
 
     @app.get("/api/languages")
     def available_languages():
@@ -320,7 +546,8 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
 
     # Keep the authenticated template route before the locale path route.
     @app.get("/api/languages/template")
-    def language_template():
+    def language_template(request: Request):
+        require_access(request, ("settings",))
         return languages.template()
 
     @app.post("/api/languages/install")
@@ -333,8 +560,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         pack = languages.parse(body)
         async with mutation_lock:
             # A streamed file upload can outlive logout or session expiry.
-            if not auth.valid(request.cookies.get("nvr_session")):
-                raise HTTPException(401, "Authentication required")
+            require_access(request, ("settings",))
             return languages.install(pack)
 
     @app.get("/api/languages/{locale}")
@@ -344,8 +570,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     @app.delete("/api/languages/{locale}")
     async def delete_language(locale: str, request: Request):
         async with mutation_lock:
-            if not auth.valid(request.cookies.get("nvr_session")):
-                raise HTTPException(401, "Authentication required")
+            require_access(request, ("settings",))
             return languages.delete(locale)
 
     def validated_camera(data, previous=None):
@@ -362,58 +587,102 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     @app.post("/api/cameras", status_code=201)
     async def add_camera(data: CameraInput, request: Request):
         async with mutation_lock:
-            if not auth.valid(request.cookies.get("nvr_session")):
-                raise HTTPException(401, "Authentication required")
+            require_access(request, ("cameras",), all_cameras=True)
             if len(store.list_cameras()) >= 32:
                 raise HTTPException(422, "This version supports up to 32 cameras")
             camera = store.save_camera(validated_camera(data))
             await media.reconcile()
             await realtime.reconcile(store.list_cameras())
-        return public_camera(camera)
+        user = require_access(request, ("cameras",), all_cameras=True)
+        return public_camera(camera, request, user)
 
     @app.put("/api/cameras/{camera_id}")
     async def update_camera(camera_id: str, data: CameraInput, request: Request):
         async with mutation_lock:
-            if not auth.valid(request.cookies.get("nvr_session")):
-                raise HTTPException(401, "Authentication required")
-            previous = camera_or_404(camera_id)
+            previous = camera_or_404(camera_id, request, "cameras")
             camera = store.save_camera(validated_camera(data, previous), camera_id)
             await media.reconcile()
             await realtime.reconcile(store.list_cameras())
-        return public_camera(camera)
+        user = require_access(request, ("cameras",), camera_id=camera_id)
+        return public_camera(camera, request, user)
 
     @app.delete("/api/cameras/{camera_id}")
-    async def delete_camera(camera_id: str):
+    async def delete_camera(camera_id: str, request: Request):
         async with mutation_lock:
-            camera_or_404(camera_id)
+            camera_or_404(camera_id, request, "cameras")
             store.delete_camera(camera_id)
             await media.reconcile()
             await realtime.reconcile(store.list_cameras())
         return {"deleted": True, "recordings_preserved": True}
 
     @app.post("/api/cameras/{camera_id}/probe")
-    async def probe(camera_id: str, stream: int = Query(1, ge=1, le=3)):
-        camera = camera_or_404(camera_id)
+    async def probe(camera_id: str, request: Request, stream: int = Query(1, ge=1, le=3)):
+        camera = camera_or_404(camera_id, request, "cameras")
         source = (camera["url"], camera.get("preview_url", ""), camera.get("third_url", ""))[stream - 1]
         if not source:
             raise HTTPException(422, "The selected stream is not configured.")
-        return await media_result(lambda: media.probe(source))
+        async def operation():
+            require_access(request, ("cameras",), camera_id=camera_id)
+            return await media.probe(source)
+        result = await media_result(operation)
+        require_access(request, ("cameras",), camera_id=camera_id)
+        return result
 
     @app.get("/api/cameras/{camera_id}/snapshot")
-    async def snapshot(camera_id: str):
+    async def snapshot(camera_id: str, request: Request):
         from fastapi.responses import Response
-        camera = camera_or_404(camera_id)
-        data = await media_result(lambda: media.snapshot(camera))
+        camera = camera_or_404(camera_id, request, "live")
+        async def operation():
+            require_access(request, ("live",), camera_id=camera_id)
+            return await media.snapshot(camera)
+        data = await media_result(operation)
+        require_access(request, ("live",), camera_id=camera_id)
         return Response(data, media_type="image/jpeg")
 
+    async def guarded_live(iterator, request, camera_id, closer=None):
+        pending = None
+        iterator = iterator.__aiter__()
+        checked_at = time.monotonic()
+        try:
+            require_access(request, ("live",), camera_id=camera_id)
+            while True:
+                pending = asyncio.create_task(anext(iterator))
+                while True:
+                    done, _ = await asyncio.wait((pending,), timeout=LIVE_AUTH_CHECK_SECONDS)
+                    if done:
+                        break
+                    require_access(request, ("live",), camera_id=camera_id)
+                    checked_at = time.monotonic()
+                try:
+                    chunk = pending.result()
+                except StopAsyncIteration:
+                    break
+                pending = None
+                if time.monotonic() - checked_at >= LIVE_AUTH_CHECK_SECONDS:
+                    require_access(request, ("live",), camera_id=camera_id)
+                    checked_at = time.monotonic()
+                yield chunk
+        except HTTPException:
+            return
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            if hasattr(iterator, "aclose"):
+                await iterator.aclose()
+            if closer is not None:
+                await closer()
+
     @app.get("/api/cameras/{camera_id}/live")
-    async def live(camera_id: str):
-        camera = camera_or_404(camera_id)
-        return StreamingResponse(media.live(camera), media_type="multipart/x-mixed-replace; boundary=frame")
+    async def live(camera_id: str, request: Request):
+        camera = camera_or_404(camera_id, request, "live")
+        return RevocableStreamingResponse(guarded_live(media.live(camera), request, camera_id),
+                                         check=lambda: require_access(request, ("live",), camera_id=camera_id),
+                                         media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.get("/api/cameras/{camera_id}/live.mp4")
-    async def live_video(camera_id: str, compatible: bool = False):
-        camera = camera_or_404(camera_id)
+    async def live_video(camera_id: str, request: Request, compatible: bool = False):
+        camera = camera_or_404(camera_id, request, "live")
         try:
             subscription = await realtime.open(camera, compatible=compatible)
         except LiveError as error:
@@ -421,21 +690,31 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             raise HTTPException(status if status in {422, 429, 503, 504} else 503, str(error)) from None
         except (OSError, asyncio.TimeoutError):
             raise HTTPException(503, "Live view unavailable. Check the camera stream.") from None
-        return StreamingResponse(
-            subscription.stream(), media_type=subscription.mime,
+        try:
+            require_access(request, ("live",), camera_id=camera_id)
+        except HTTPException:
+            await subscription.close()
+            raise
+        return RevocableStreamingResponse(
+            guarded_live(subscription.stream(), request, camera_id, subscription.close), media_type=subscription.mime,
+            check=lambda: require_access(request, ("live",), camera_id=camera_id),
             headers={"X-NVR-Live-Mode": subscription.mode, "X-Accel-Buffering": "no"},
-            background=BackgroundTask(subscription.close),
         )
 
     @app.get("/api/live/status")
-    async def live_status():
+    async def live_status(request: Request):
+        user = require_access(request, any_permissions=("live", "system"))
         current = realtime.status()
         fields = ("active_streams", "max_streams", "active_transcodes", "max_transcodes")
-        return {field: current.get(field, 0) for field in fields} | {
-            "streams": [{key: value for key, value in stream.items()
+        streams = [{key: value for key, value in stream.items()
                          if key in {"camera_id", "mode", "viewers", "state", "codec"}}
-                        for stream in current.get("streams", [])],
-        }
+                   for stream in current.get("streams", [])
+                   if user["role"] == "admin" or user["camera_scope"] == "all" or stream.get("camera_id") in user["camera_ids"]]
+        counts = {field: current.get(field, 0) for field in fields}
+        if user["role"] != "admin":
+            counts["active_streams"] = len(streams)
+            counts["active_transcodes"] = sum(stream.get("mode") == "compatible" for stream in streams)
+        return counts | {"streams": streams}
 
     @app.websocket("/api/cameras/{camera_id}/live.ws")
     async def live_socket(websocket: WebSocket, camera_id: str, compatible: bool = False):
@@ -448,8 +727,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             return
         await websocket.accept()
         session_token = websocket.cookies.get("nvr_session")
-        if not auth.valid(session_token):
-            await websocket.close(code=4401)
+        try:
+            require_access(websocket, ("live",), camera_id=camera_id)
+        except HTTPException as error:
+            await websocket.close(code=4401 if error.status_code == 401 else 4404 if error.status_code == 404 else 4403)
             return
         subscription = None
         opening = watching = sending = None
@@ -459,8 +740,10 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 try:
                     message = await asyncio.wait_for(websocket.receive(), LIVE_AUTH_CHECK_SECONDS)
                 except asyncio.TimeoutError:
-                    if not auth.valid(session_token):
-                        await websocket.close(code=4401)
+                    try:
+                        require_access(websocket, ("live",), camera_id=camera_id)
+                    except HTTPException as error:
+                        await websocket.close(code=4401 if error.status_code == 401 else 4403)
                         return
                     continue
                 if message["type"] == "websocket.disconnect":
@@ -475,13 +758,14 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 await websocket.send_bytes(fragment)
 
         try:
-            camera = camera_or_404(camera_id)
+            camera = camera_or_404(camera_id, websocket, "live")
             watching = asyncio.create_task(watch_client())
             opening = asyncio.create_task(realtime.open(camera, compatible=compatible))
             finished, _ = await asyncio.wait((opening, watching), return_when=asyncio.FIRST_COMPLETED)
             if watching in finished:
                 return
             subscription = await opening
+            require_access(websocket, ("live",), camera_id=camera_id)
             await websocket.send_json({"type": "init", "mime": subscription.mime, "mode": subscription.mode})
             sending = asyncio.create_task(send_media())
             finished, _ = await asyncio.wait((sending, watching), return_when=asyncio.FIRST_COMPLETED)
@@ -513,41 +797,58 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
                 await websocket.close()
 
     @app.get("/api/recordings")
-    def recordings(camera_id: str | None = None, start: float | None = Query(None, ge=0),
+    def recordings(request: Request, camera_id: str | None = None, start: float | None = Query(None, ge=0),
                    end: float | None = Query(None, ge=0), limit: int = Query(2000, ge=1, le=10000)):
         if start is not None and end is not None and end <= start:
             raise HTTPException(422, "Invalid time range")
-        return [{key: value for key, value in row.items() if key != "path"}
-                for row in store.list_recordings(camera_id, start, end, limit)]
+        user = require_access(request, ("recordings",), camera_id=camera_id, missing="Recording not found")
+        if user["camera_scope"] == "all" or camera_id is not None:
+            rows = store.list_recordings(camera_id, start, end, limit)
+        elif not user["camera_ids"]:
+            rows = []
+        else:
+            ids = user["camera_ids"]
+            clauses, args = ["camera_id IN (" + ",".join("?" for _ in ids) + ")"], list(ids)
+            if start is not None:
+                clauses.append("started_at+duration>?"); args.append(start)
+            if end is not None:
+                clauses.append("started_at<?"); args.append(end)
+            with store.connect() as db:
+                rows = [dict(row) for row in db.execute("SELECT * FROM recordings WHERE " + " AND ".join(clauses) + " ORDER BY started_at LIMIT ?", (*args, limit))]
+        require_access(request, ("recordings",), camera_id=camera_id, missing="Recording not found")
+        return [{key: value for key, value in row.items() if key != "path"} for row in rows]
 
     @app.get("/api/recordings/{recording_id}/download")
-    async def download(recording_id: str):
-        recording, _ = recording_or_404(recording_id)
+    async def download(recording_id: str, request: Request):
+        recording, _ = recording_or_404(recording_id, request, download=True)
         lease = media.source_lease(recording)
         path = await media_result(lease.__aenter__, archive=True)
         try:
+            require_access(request, ("recordings", "download"), camera_id=recording["camera_id"], missing="Recording not found")
             return LeasedFileResponse(path, lease=lease, media_type="video/x-matroska", filename=path.name)
         except BaseException:
             await lease.__aexit__(None, None, None)
             raise
 
     @app.get("/api/recordings/{recording_id}/playback")
-    async def playback(recording_id: str, compatible: bool = False):
-        recording, _ = recording_or_404(recording_id)
+    async def playback(recording_id: str, request: Request, compatible: bool = False):
+        recording, _ = recording_or_404(recording_id, request)
         lease = media.playback_lease(recording, compatible)
         path = await media_result(lease.__aenter__, archive=True)
         try:
+            require_access(request, ("recordings",), camera_id=recording["camera_id"], missing="Recording not found")
             return LeasedFileResponse(path, lease=lease, media_type="video/mp4")
         except BaseException:
             await lease.__aexit__(None, None, None)
             raise
 
     @app.get("/api/recordings/{recording_id}/download.mp4")
-    async def compatible_download(recording_id: str):
-        recording, _ = recording_or_404(recording_id)
+    async def compatible_download(recording_id: str, request: Request):
+        recording, _ = recording_or_404(recording_id, request, download=True)
         lease = media.download_lease(recording)
         path = await media_result(lease.__aenter__, archive=True)
         try:
+            require_access(request, ("recordings", "download"), camera_id=recording["camera_id"], missing="Recording not found")
             # Use a server-generated name, never a user-provided path or label.
             return LeasedFileResponse(path, lease=lease, media_type="video/mp4",
                                       filename=f"recording-{recording_id}-compatible.mp4")
@@ -556,26 +857,33 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             raise
 
     @app.get("/api/recordings/{recording_id}/thumbnail")
-    async def thumbnail(recording_id: str):
+    async def thumbnail(recording_id: str, request: Request):
         from fastapi.responses import Response
-        recording, _ = recording_or_404(recording_id)
+        recording, _ = recording_or_404(recording_id, request)
         data = await media_result(lambda: media.thumbnail(recording), archive=True)
+        require_access(request, ("recordings",), camera_id=recording["camera_id"], missing="Recording not found")
         return Response(data, media_type="image/jpeg")
 
     @app.get("/api/recordings/{recording_id}/waveform")
-    async def waveform(recording_id: str):
-        recording, _ = recording_or_404(recording_id)
-        return await media_result(lambda: media.waveform(recording), archive=True)
+    async def waveform(recording_id: str, request: Request):
+        recording, _ = recording_or_404(recording_id, request)
+        result = await media_result(lambda: media.waveform(recording), archive=True)
+        require_access(request, ("recordings",), camera_id=recording["camera_id"], missing="Recording not found")
+        return result
 
     @app.get("/api/recordings/{recording_id}/motion")
-    async def motion(recording_id: str, sensitivity: Literal["low", "medium", "high"] = "medium"):
-        recording, _ = recording_or_404(recording_id)
-        return await media_result(lambda: media.motion(recording, sensitivity), archive=True)
+    async def motion(recording_id: str, request: Request, sensitivity: Literal["low", "medium", "high"] = "medium"):
+        recording, _ = recording_or_404(recording_id, request)
+        result = await media_result(lambda: media.motion(recording, sensitivity), archive=True)
+        require_access(request, ("recordings",), camera_id=recording["camera_id"], missing="Recording not found")
+        return result
 
     @app.get("/api/onvif/interfaces")
-    async def onvif_interfaces():
+    async def onvif_interfaces(request: Request):
         try:
-            return await asyncio.to_thread(list_interfaces)
+            result = await asyncio.to_thread(list_interfaces)
+            require_access(request, ("network",))
+            return result
         except OSError:
             raise HTTPException(503, "Unable to read the server network interfaces.") from None
 
@@ -585,11 +893,14 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
             raise HTTPException(409, "A search is already running. Wait for it to finish.")
         try:
             async with discovery_lock:
+                require_access(request, ("network",))
                 job = asyncio.create_task(asyncio.wait_for(operation(), timeout))
                 active_scan = job
                 active_scan_session = request.cookies.get("nvr_session")
                 try:
-                    return await job
+                    result = await job
+                    require_access(request, ("network",))
+                    return result
                 except asyncio.CancelledError:
                     if asyncio.current_task().cancelling():
                         raise
@@ -634,26 +945,31 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         return await run_discovery(request, lambda: scan_network(data.cidr, data.ports), 60)
 
     @app.post("/api/onvif/profiles")
-    async def onvif(data: OnvifInput):
+    async def onvif(data: OnvifInput, request: Request):
         try:
             async with onvif_jobs:
-                return await asyncio.wait_for(get_profiles(data.endpoint, data.username, data.password), 90)
+                require_access(request, ("network",))
+                result = await asyncio.wait_for(get_profiles(data.endpoint, data.username, data.password), 90)
+                require_access(request, ("network",))
+                return result
         except asyncio.TimeoutError:
             raise HTTPException(504, "The camera did not finish returning its profiles. Try again or check its ONVIF services.") from None
         except (ValueError, RuntimeError, OSError):
             raise HTTPException(422, "ONVIF unavailable. Check the endpoint, credentials and camera clock.") from None
 
     @app.get("/api/settings/general")
-    def get_general_preferences():
-        return general.read()
+    def get_general_preferences(request: Request):
+        require_access(request, ("settings",))
+        result = general.read()
+        require_access(request, ("settings",))
+        return result
 
     @app.put("/api/settings/general")
     async def save_general_preferences(data: GeneralPreferencesInput, request: Request):
         async def apply():
             async with mutation_lock:
                 # Authorization can expire while another setting is being saved.
-                if not auth.valid(request.cookies.get("nvr_session")):
-                    raise HTTPException(401, "Authentication required")
+                require_access(request, ("settings",))
                 return await asyncio.to_thread(general.save, data.model_dump())
 
         # Finish an admitted save even if its browser disconnects; shutdown
@@ -668,7 +984,8 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         return await asyncio.shield(operation)
 
     @app.get("/api/settings/recording")
-    def get_recording_preferences():
+    def get_recording_preferences(request: Request):
+        require_access(request, ("settings",))
         return recording_preferences(settings)
 
     @app.put("/api/settings/recording")
@@ -679,8 +996,7 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         async def apply():
             async with mutation_lock:
                 # A save queued behind another mutation must not outlive logout.
-                if not auth.valid(request.cookies.get("nvr_session")):
-                    raise HTTPException(401, "Authentication required")
+                require_access(request, ("settings",))
                 previous = settings.segment_seconds
                 saved = store.meta_get(SEGMENT_PREFERENCE_KEY)
                 seconds = data.segment_minutes * 60
@@ -711,15 +1027,19 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
         return await asyncio.shield(operation)
 
     @app.get("/api/settings/system")
-    async def maintenance_status():
-        return await maintenance.status()
+    async def maintenance_status(request: Request):
+        result = await maintenance.status()
+        require_access(request, ("maintenance",))
+        return result
 
     @app.get("/api/settings/archive")
-    def archive_status():
+    def archive_status(request: Request):
+        require_access(request, ("archive_delete",), all_cameras=True)
         try:
             result = media.archive_status()
         except (MediaError, OSError, sqlite3.Error, ValueError):
             raise HTTPException(503, "Archive details are unavailable. Check the connection and try again.") from None
+        require_access(request, ("archive_delete",), all_cameras=True)
         return result | {"clearing": result["clearing"] or bool(
             archive_clear_task is not None and not archive_clear_task.done())}
 
@@ -731,13 +1051,11 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
 
         async def apply():
             async with mutation_lock:
-                if not auth.valid(request.cookies.get("nvr_session")):
-                    raise HTTPException(401, "Authentication required")
+                require_access(request, ("archive_delete",), all_cameras=True)
                 status = await maintenance.status()
                 if status.get("pending_action"):
                     raise HTTPException(409, "A maintenance action is already scheduled. Please wait before trying again.")
-                if not auth.valid(request.cookies.get("nvr_session")):
-                    raise HTTPException(401, "Authentication required")
+                require_access(request, ("archive_delete",), all_cameras=True)
                 try:
                     return await media.clear_archive()
                 except MediaError as error:
@@ -764,31 +1082,36 @@ def create_app(settings: Settings | None = None, media_factory=MediaManager, liv
     @app.post("/api/settings/system/action")
     async def maintenance_action(data: MaintenanceActionInput, request: Request):
         async with mutation_lock:
-            if not auth.valid(request.cookies.get("nvr_session")):
-                raise HTTPException(401, "Authentication required")
+            require_access(request, ("maintenance",))
             try:
                 return await maintenance.schedule(data.action, data.confirmation)
             except MaintenanceError as error:
                 raise HTTPException(error.status_code, str(error)) from None
 
     @app.get("/api/system/telemetry")
-    def system_telemetry():
+    def system_telemetry(request: Request):
         # The synchronous route runs in FastAPI's thread pool. Sampling never
         # sleeps or blocks the recording/live event loop to calculate CPU use.
+        require_access(request, ("system",))
         result = telemetry.snapshot()
         result["version"] = __version__
         result["storage"] = storage_overview(result.get("disk", {}))
         result["recording"] = capacity.snapshot(result.get("disk", {}))
+        require_access(request, ("system",))
         return result
 
     @app.get("/api/system/history")
-    def system_history(hours: int = Query(6, ge=1, le=168)):
+    def system_history(request: Request, hours: int = Query(6, ge=1, le=168)):
         if hours not in {1, 6, 24, 168}:
             raise HTTPException(422, "Choose a supported history period.")
-        return history.read(hours=hours)
+        require_access(request, ("system",))
+        result = history.read(hours=hours)
+        require_access(request, ("system",))
+        return result
 
     @app.get("/api/system")
-    def system():
+    def system(request: Request):
+        require_access(request, ("system",))
         disk = shutil.disk_usage(settings.recordings_dir)
         storage = archive_storage_status(disk)
         return {"version": __version__, "disk": {"total": disk.total, "used": disk.used, "free": disk.free},

@@ -13,20 +13,22 @@
   let capability = null, loading = false, submitting = false, externalBusy = false;
   let controller = null, selectedAction = null, opener = null, waiting = null, connectionChecked = false;
   let errorSource = null, noticeSource = null;
-  let settingsBusy = false, archiveBusy = false, generalBusy = false, announcedBusy = false;
+  let settingsBusy = false, archiveBusy = false, generalBusy = false, usersBusy = false, announcedBusy = false;
+  const allowed = () => window.NvrAccess ? window.NvrAccess.can("maintenance") : true;
 
   function source(error, fallback) { return {key: error?.message || fallback, params: error?.i18nParams}; }
   function valid(ticket, request) { return authenticated && ticket === authEpoch && request === requestEpoch; }
   function isVisible() { return !byId("settings-view").hidden && !panel.hidden; }
   function targetLabel() { return capability ? t(capability.target === "container" ? "NVR container" : capability.target === "machine" ? "Local recorder machine" : "Unavailable") : "—"; }
   function canAction(action) {
-    return !!actions[action] && authenticated && !loading && !submitting && !externalBusy && !waiting && !!capability && capability.target !== "unavailable" && capability[actions[action].capability] === true && !capability.pending_action;
+    return !!actions[action] && authenticated && allowed() && !loading && !submitting && !externalBusy && !waiting && !!capability && capability.target !== "unavailable" && capability[actions[action].capability] === true && !capability.pending_action;
   }
   function banner(id, value) {
     byId(id).hidden = !value;
     byId(id).textContent = value ? t(value.key, value.params) : "";
   }
   function render() {
+    if (byId("maintenance-settings")) byId("maintenance-settings").hidden = !allowed();
     const ownBusy = !!(submitting || waiting);
     if (ownBusy !== announcedBusy) {
       announcedBusy = ownBusy;
@@ -63,7 +65,7 @@
   }
   function abortRequest() { controller?.abort(); controller = null; requestEpoch += 1; }
   async function load(reconnect = false) {
-    if (!authenticated || submitting || !isVisible() || reconnect && !waiting) return;
+    if (!authenticated || !allowed() || submitting || !isVisible() || reconnect && !waiting) return;
     abortRequest();
     const ticket = authEpoch, request = requestEpoch, current = new AbortController();
     controller = current; loading = true; capability = null; connectionChecked = false; errorSource = null; render();
@@ -134,13 +136,15 @@
     if (event.detail.tab === "system") load();
     else if (!submitting) { abortRequest(); loading = false; closeDialog(); render(); }
   });
-  window.addEventListener("nvr-settings-busychange", (event) => { settingsBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy; render(); });
-  window.addEventListener("nvr-archive-busychange", (event) => { archiveBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy; render(); });
-  window.addEventListener("nvr-general-busychange", (event) => { generalBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy; render(); });
+  window.addEventListener("nvr-settings-busychange", (event) => { settingsBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy || usersBusy; render(); });
+  window.addEventListener("nvr-archive-busychange", (event) => { archiveBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy || usersBusy; render(); });
+  window.addEventListener("nvr-general-busychange", (event) => { generalBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy || usersBusy; render(); });
+  window.addEventListener("nvr-users-busychange", (event) => { usersBusy = !!event.detail.busy; externalBusy = settingsBusy || archiveBusy || generalBusy || usersBusy; render(); });
+  window.addEventListener("nvr-accesschange", render);
   window.addEventListener("nvr-languagechange", render);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated; authEpoch += 1; abortRequest();
-    loading = submitting = externalBusy = settingsBusy = archiveBusy = generalBusy = false; capability = waiting = null; connectionChecked = false; errorSource = noticeSource = null;
+    loading = submitting = externalBusy = settingsBusy = archiveBusy = generalBusy = usersBusy = false; capability = waiting = null; connectionChecked = false; errorSource = noticeSource = null;
     closeDialog(); render();
   });
   window.NvrSystemSettings = Object.freeze({open: () => load(), relabel: render});

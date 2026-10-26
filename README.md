@@ -1,6 +1,6 @@
 # NVR-SR81
 
-NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.17.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
+NVR locale per Linux: registra continuamente flussi RTSP H.264/H.265 e permette di consultarli dal browser. Nessun account cloud, invio di telemetria, CDN, riconoscimento facciale o motore AI. **Versione sperimentale 0.18.0:** da collaudare con le proprie telecamere prima di affidarle registrazioni importanti.
 
 ## Scelte tecniche
 
@@ -13,7 +13,7 @@ Il flusso originale viene copiato in file **Matroska/MKV con durata da 1 a 120 m
 
 ## Funzioni presenti
 
-- Login amministratore locale; password salvata con scrypt e sessione HttpOnly.
+- Utenti locali con permessi per funzioni e telecamere, sessioni HttpOnly e password con scrypt. **Settings → Users** gestisce le utenze e il cambio della propria password amministratore. Il login iniziale usa `admin` e conserva la password esistente. [Utenti e permessi](docs/users.md).
 - Interfaccia inglese predefinita e italiano incluso, selezionabili anche prima del login. Barra laterale con icone sopra ai nomi, ispirata al layout M777.
 - **Settings / Impostazioni** con sezioni General, Recording e Languages: layout del monitor per browser, durata globale dei file e gestione di **pacchetti lingua JSON installabili**. Recording offre 1, 2, 3, 4, 5 minuti e poi intervalli di 5 minuti fino a 120. Salvando, i file correnti vengono chiusi e la nuova durata entra in uso senza riavviare il servizio; i file precedenti restano invariati. La scelta è conservata nel database e vale per tutte le telecamere e i browser. Scelta della lingua, installazione, download dei modelli e rimozione dei file sono tutti nella pagina Languages. [Guida impostazioni e pacchetti lingua](docs/settings.md).
 - Configurazione telecamera con protocollo, IP/hostname, porta, utente e password separati, oppure URL completo. Fino a tre flussi Main/Sub/Third: Main registra, il Live usa il flusso scelto per la telecamera. Credenziali e percorsi salvati rimangono protetti e si conservano lasciando vuoti i rispettivi campi. [Guida telecamere e flussi](docs/cameras.md).
@@ -80,7 +80,7 @@ L'installer crea l'utente `nvr-sr81` (UID 10001), una virtualenv, il servizio sy
 
 ## Aggiungere una telecamera
 
-1. Aprire l'interfaccia, accedere con la password locale e scegliere **Aggiungi telecamera**.
+1. Aprire l'interfaccia, accedere come `admin` con la password locale e scegliere **Aggiungi telecamera**.
 2. Inserire il flusso, per esempio `rtsp://utente:password@192.168.1.20:554/percorso` (il percorso dipende dal produttore). Codificare i caratteri riservati di username/password nell'URL.
 3. Se disponibile, inserire un sottostream H.264 per l'anteprima. Il flusso principale H.265 resta quello registrato.
 4. In alternativa, aprire **Telecamere in rete**, cercare dispositivi ONVIF e leggere i loro profili. Si può anche indicare un endpoint manuale, spesso `http://IP:PORTA/onvif/device_service`. Serve che ONVIF sia abilitato sulla camera e che gli orologi siano sincronizzati.
@@ -118,7 +118,7 @@ La pulizia riguarda soltanto originali NVR completati e idonei nell'archivio. Fi
 | `NVR_CACHE_DIR` | `NVR_DATA_DIR/cache` se omesso | Copie e dati di consultazione; installer e Compose nuovi scelgono la `.cache` dell'archivio |
 | `NVR_SEGMENT_SECONDS` | `1800` | Durata iniziale in secondi, da 60 a 7200; sostituita dalla scelta salvata in Settings → Recording |
 | `NVR_MIN_FREE_GB` | `5` (legacy) | Accettata ma ignorata; archivio e cache sullo stesso filesystem rispettano la riserva del 5% |
-| `NVR_ADMIN_PASSWORD` | richiesta al primo avvio | Imposta/aggiorna la password all'avvio |
+| `NVR_ADMIN_PASSWORD` | richiesta al primo avvio | Inizializza `admin` solo se non esistono account o hash precedenti; i cambi da Users sopravvivono ai riavvii |
 | `NVR_SECURE_COOKIE` | `0` | Usare `1` con HTTPS locale |
 | `NVR_LIVE_MAX_STREAMS` | `16` | Massimo processi live condivisi, da 1 a 32 |
 | `NVR_LIVE_MAX_TRANSCODES` | `2` | Conversioni live H.264 contemporanee, da 0 a 4 |

@@ -95,7 +95,7 @@ class BrowserUTCDate extends Date {
 }
 
 function environment({cameras = [camera("a"), camera("b")], recordings = [], saved = snapshot(), legacySize = null, handler,
-                      preferences = true, general = generalSettings(), browserUTC = false} = {}) {
+                      preferences = true, general = generalSettings(), browserUTC = false, user} = {}) {
   const nodes = new Map(), windowEvents = new Map(), documentEvents = new Map(), calls = [], players = [], layouts = [], timers = new Map();
   const storage = new Map(legacySize === null ? [] : [["nvr.monitor.layout", String(legacySize)]]);
   const ready = deferred(); let timer = 0, language = "en", settingsOpens = 0;
@@ -135,11 +135,11 @@ function environment({cameras = [camera("a"), camera("b")], recordings = [], sav
     }
     save(value) { this.saved = clone(value); this.options.onSave(this.getSaved()); }
   }
-  const defaults = (path) => path === "/api/session" ? {authenticated: true}
+  const defaults = (path) => path === "/api/session" ? {authenticated: true, ...(user ? {user} : {})}
     : path === "/api/cameras" ? cameras
     : path === "/api/system" ? {version: "test", recordings_bytes: 0, segment_seconds: 1800, ffmpeg_available: true, disk: {total: 100000, free: 90000, used: 10000}}
     : path === "/api/live/status" ? {active_streams: 0, max_streams: 16, active_transcodes: 0, max_transcodes: 2, streams: []}
-    : path === "/api/settings/general" ? general
+    : path === "/api/settings/general" || path === "/api/preferences" ? general
     : path === "/api/logout" ? {authenticated: false}
     : path.startsWith("/api/recordings?") ? recordings
     : path.endsWith("/waveform") ? {duration: recordings.find((item) => item.id === path.split("/")[3])?.duration || 90, sample_seconds: .5, peaks: [.1, .9, .2]}
@@ -161,6 +161,7 @@ function environment({cameras = [camera("a"), camera("b")], recordings = [], sav
     t: (key, params = {}) => (language === "en" ? String(key) : "IT: " + key).replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (token, name) => Object.hasOwn(params, name) ? String(params[name]) : token)};
   context.addEventListener = (type, listener) => { if (!windowEvents.has(type)) windowEvents.set(type, []); windowEvents.get(type).push(listener); };
   context.dispatchEvent = (event) => { for (const listener of windowEvents.get(event.type) || []) listener(event); return true; };
+  if (user) vm.runInContext(readFileSync(join(__dirname, "../nvr/static/access.js"), "utf8"), context, {filename: "access.js"});
   if (preferences) vm.runInContext(preferencesSource, context, {filename: "recorder-preferences.js"});
   vm.runInContext(recordPlayerSource, context, {filename: "record-player.js"});
   vm.runInContext(motionSource, context, {filename: "motion-track.js"});
@@ -408,4 +409,17 @@ test("a stale General GET cannot undo the newer saved preferences event", async 
   assert.equal(env.evaluate("recorderClock.timezone"), "Europe/Rome");
   assert.equal(env.evaluate("recorderClock.hourFormat"), "12");
   assert.equal(env.document.title, "Updated name · SR81 NVR");
+});
+
+test("an archive viewer can play an assigned recording while both download actions remain unavailable", async () => {
+  const user = {id: "archive-viewer", username: "archive", display_name: "Archive viewer", enabled: true, role: "user",
+    permissions: ["recordings"], camera_scope: "selected", camera_ids: ["a"], builtin: false};
+  const env = environment({user, cameras: [camera("a")], recordings: [recording("read-only")]});
+  await env.boot(); await search(env);
+  await env.node("recordings-list").children[0].fire("click"); await metadata(env, 90);
+  assert.match(env.node("player").src, /\/read-only\/playback\?/);
+  for (const id of ["download", "download-compatible"]) { assert.equal(env.node(id).hidden, true); assert.equal(env.node(id).href, ""); }
+  assert.equal(env.node("nav-monitor").hidden, true);
+  assert.equal(env.node("nav-settings").hidden, true);
+  assert.equal(env.calls.some(({path}) => path.includes("/download") || path.startsWith("/api/live/")), false);
 });

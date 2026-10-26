@@ -29,11 +29,11 @@ function dateFormat(options) {
   }};
 }
 function savedMonitorLayout() {
-  try { const value = Number(localStorage.getItem("nvr.monitor.layout")); return [1, 4, 9, 16].includes(value) ? value : 4; }
+  try { const value = Number(localStorage.getItem(window.NvrAccess?.storageKey("nvr.monitor.layout") || "nvr.monitor.layout")); return [1, 4, 9, 16].includes(value) ? value : 4; }
   catch (_) { return 4; }
 }
 const state = {
-  authenticated: false, cameras: [], system: null, selectedId: null,
+  authenticated: false, user: null, cameras: [], system: null, selectedId: null,
   recordings: [], recording: null, range: null, waveform: null,
   live: false, editingId: null, poll: null, archiveRequest: 0,
   waveformRequest: 0, toastTimer: null, refreshPromise: null, authEpoch: 0,
@@ -44,6 +44,25 @@ const state = {
   archiveController: null, waveformController: null, archiveFiltersDirty: false,
   timelineWindow: null,
 };
+const can = (permission) => state.authenticated && (state.user?.role === "admin" || state.user?.permissions?.includes(permission));
+function settingsAvailable() { return ["settings", "system", "maintenance", "archive_delete"].some(can) || state.user?.role === "admin"; }
+function defaultView() {
+  return can("live") ? "monitor" : can("recordings") ? "recorder" : can("cameras") ? "cameras" : can("network") ? "network" : settingsAvailable() ? "settings" : "no-access";
+}
+function viewAllowed(view) {
+  return ({monitor: can("live"), layout: can("live"), recorder: can("recordings"), cameras: can("cameras"), network: can("network"), settings: settingsAvailable(), "no-access": true})[view] === true;
+}
+function applyAccess() {
+  const visibility = {"nav-monitor": can("live"), "nav-recorder": can("recordings"), "nav-cameras": can("cameras"), "nav-network": can("network"),
+    "nav-settings": settingsAvailable(), "header-metrics": can("system"), "system-dashboard": can("system"), "archive-settings": can("archive_delete"),
+    "monitor-setup-empty": can("cameras") || can("network"), "monitor-assignment-empty": !can("cameras") && !can("network"),
+    "toggle-live": can("live"), "edit-camera": can("cameras"), "monitor-find-cameras": can("network"),
+    "network-add-recorder": can("cameras") && state.user?.camera_scope === "all",
+    "add-camera": can("cameras") && state.user?.camera_scope === "all", "add-camera-small": can("cameras") && state.user?.camera_scope === "all",
+    "add-first-camera": can("cameras") && state.user?.camera_scope === "all", "cameras-add": can("cameras") && state.user?.camera_scope === "all"};
+  for (const [id, visible] of Object.entries(visibility)) if ($(id)) $(id).hidden = !visible;
+  if (!can("download")) for (const id of ["download", "download-compatible"]) { if ($(id)) { $(id).hidden = true; $(id).removeAttribute("href"); } }
+}
 const formatDate = dateFormat({day: "2-digit", month: "short"});
 const formatTime = dateFormat({hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"});
 const formatShortTime = dateFormat({hour: "2-digit", minute: "2-digit", hourCycle: "h23"});
@@ -83,7 +102,7 @@ function cameraEditorController() {
 const systemTelemetry = {display: null, dashboard: null, history: null, data: null, timer: null, controller: null, timeout: null, epoch: 0};
 
 function telemetryCanUpdate() {
-  return state.authenticated && !document.hidden;
+  return can("system") && !document.hidden;
 }
 
 function telemetryDisplay() {
@@ -117,7 +136,7 @@ function dashboardSnapshot() {
 }
 
 function historyCanUpdate() {
-  return state.authenticated && !document.hidden && network.view === "settings" && $("settings-system-panel")?.hidden === false;
+  return can("system") && !document.hidden && network.view === "settings" && $("settings-system-panel")?.hidden === false;
 }
 
 function stopSystemTelemetry() {
@@ -194,7 +213,7 @@ function ensureLiveLayout() {
       onSave(saved) {
         monitor.layout = saved.size;
         monitor.page = 0;
-        try { localStorage.setItem("nvr.monitor.layout", String(saved.size)); } catch (_) { /* The complete layout is already saved. */ }
+        try { localStorage.setItem(window.NvrAccess?.storageKey("nvr.monitor.layout") || "nvr.monitor.layout", String(saved.size)); } catch (_) { /* The complete layout is already saved. */ }
         if ($("settings-monitor-layout")) $("settings-monitor-layout").value = String(saved.size);
         if (network.view === "monitor") renderMonitor();
         toast(t("Layout saved."));
@@ -419,6 +438,8 @@ function cameraStatus(camera) {
 function showLogin() {
   state.authEpoch += 1;
   state.authenticated = false;
+  state.user = null;
+  window.NvrAccess?.clear();
   state.general = null; state.generalSettingsRevision += 1;
   cameraRotation?.configure(0);
   document.title = "SR81 NVR System";
@@ -452,18 +473,23 @@ function showLogin() {
   document.body.classList.remove("loading");
 }
 
-async function enterApp() {
+async function enterApp(session) {
+  const user = session?.user || (!window.NvrAccess ? {id: "builtin-admin", username: "admin", display_name: "Administrator", role: "admin", permissions: [], camera_scope: "all", camera_ids: [], enabled: true, builtin: true} : null);
+  if (!user || window.NvrAccess && !window.NvrAccess.setUser(user)) { showLogin(); return; }
   state.authEpoch += 1;
   const authEpoch = state.authEpoch;
   state.authenticated = true;
-  window.dispatchEvent(new CustomEvent("nvr-authchange", {detail: {authenticated: true}}));
+  state.user = user;
+  monitor.layout = savedMonitorLayout();
+  window.dispatchEvent(new CustomEvent("nvr-authchange", {detail: {authenticated: true, user}}));
   $("login-screen").hidden = true;
   $("app").hidden = false;
   $("password").value = "";
+  applyAccess();
   document.body.classList.remove("loading");
   await refresh(true, true);
   if (!state.authenticated || authEpoch !== state.authEpoch) return;
-  showView("monitor");
+  showView(defaultView());
   clearInterval(state.poll);
   state.poll = setInterval(() => {
     if (state.authenticated && !document.hidden) refresh(false);
@@ -483,14 +509,15 @@ async function refreshData(showErrors) {
   const authEpoch = state.authEpoch;
   const durationRevision = state.recordingSettingsRevision;
   const generalRevision = state.generalSettingsRevision;
-  const results = await Promise.allSettled([api("/api/cameras"), api("/api/system"), api("/api/settings/general")]);
+  const cameraAccess = ["live", "recordings", "cameras"].some(can);
+  const results = await Promise.allSettled([cameraAccess ? api("/api/cameras") : Promise.resolve([]), can("system") ? api("/api/system") : Promise.resolve(null), api(window.NvrAccess ? "/api/preferences" : "/api/settings/general")]);
   if (!state.authenticated || authEpoch !== state.authEpoch) return;
   if (results[2].status === "fulfilled" && generalRevision === state.generalSettingsRevision) applyGeneralPreferences(results[2].value);
   const errors = [];
   if (results[0].status === "fulfilled") {
     const previousId = state.selectedId;
     state.cameras = Array.isArray(results[0].value) ? results[0].value : [];
-    ensureLiveLayout()?.setCameras(state.cameras);
+    if (can("live")) ensureLiveLayout()?.setCameras(state.cameras);
     if (!state.cameras.some((camera) => camera.id === state.selectedId)) state.selectedId = state.cameras[0]?.id || null;
     renderCameras();
     renderSelected();
@@ -500,18 +527,19 @@ async function refreshData(showErrors) {
       clearPlayer();
       state.recordings = [];
       renderRecordings();
-      if (state.selectedId) await loadRecordings();
+      if (state.selectedId && can("recordings")) await loadRecordings();
     }
   } else errors.push(errorText(results[0].reason));
   if (results[1].status === "fulfilled") {
     state.system = results[1].value;
-    if (durationRevision !== state.recordingSettingsRevision) state.system.segment_seconds = state.recordingDuration;
+    if (state.system && durationRevision !== state.recordingSettingsRevision) state.system.segment_seconds = state.recordingDuration;
     renderSystem();
   }
   else errors.push(errorText(results[1].reason));
   renderStats();
   if (network.view === "cameras") renderConfiguredCameras();
   if (network.view === "monitor") { renderMonitor(); loadMonitorStatus(); }
+  applyAccess();
   if (showErrors) globalError(errors.join(" "));
 }
 
@@ -585,6 +613,7 @@ function renderSystem() {
 }
 
 async function selectCamera(id) {
+  if (!can("recordings")) return;
   if (!state.cameras.some((camera) => camera.id === id)) return;
   if ($("archive-camera")) $("archive-camera").value = id;
   showView("recorder");
@@ -625,6 +654,7 @@ function toggleLive() {
 }
 
 async function loadRecordings() {
+  if (!can("recordings")) return;
   const request = ++state.archiveRequest, authEpoch = state.authEpoch;
   state.archiveController?.abort(); state.archiveController = null;
   const searchButton = $("search-form").querySelector("button[type=submit]");
@@ -774,11 +804,13 @@ function selectRecording(recording, offset = 0, autoplay = true) {
     }
   };
   renderPlayingLabels();
-  $("download").href = `/api/recordings/${encodeURIComponent(recording.id)}/download`;
-  $("download").hidden = false;
+  if (can("download")) $("download").href = `/api/recordings/${encodeURIComponent(recording.id)}/download`;
+  else $("download").removeAttribute("href");
+  $("download").hidden = !can("download");
   if ($("download-compatible")) {
-    $("download-compatible").href = `/api/recordings/${encodeURIComponent(recording.id)}/download.mp4`;
-    $("download-compatible").hidden = false;
+    if (can("download")) $("download-compatible").href = `/api/recordings/${encodeURIComponent(recording.id)}/download.mp4`;
+    else $("download-compatible").removeAttribute("href");
+    $("download-compatible").hidden = !can("download");
   }
   renderRecordings();
 }
@@ -964,6 +996,7 @@ function timelineSeek(event) {
 }
 
 function openCameraDialog(camera = null) {
+  if (!can("cameras") || !camera && state.user?.camera_scope !== "all") return;
   cameraDialogEpoch += 1;
   cancelCameraProbe();
   state.editingId = camera?.id || null;
@@ -1106,6 +1139,7 @@ function renderConfiguredCameras() {
     const actions = el("div", "configured-camera-actions");
     const live = el("button", "button secondary", t("Open live"));
     live.type = "button";
+    live.hidden = !can("live");
     live.addEventListener("click", () => {
       const layout = ensureLiveLayout();
       const saved = layout?.getSaved();
@@ -1115,6 +1149,7 @@ function renderConfiguredCameras() {
     });
     const recordings = el("button", "button quiet", t("Open recordings"));
     recordings.type = "button";
+    recordings.hidden = !can("recordings");
     recordings.addEventListener("click", () => selectCamera(camera.id));
     const configure = el("button", "button quiet", t("Configure"));
     configure.type = "button";
@@ -1126,7 +1161,7 @@ function renderConfiguredCameras() {
 }
 
 function showView(view) {
-  if (!["recorder", "monitor", "layout", "cameras", "network", "settings"].includes(view)) view = "monitor";
+  if (!["recorder", "monitor", "layout", "cameras", "network", "settings", "no-access"].includes(view) || !viewAllowed(view)) view = defaultView();
   network.view = view;
   const isNetwork = view === "network";
   const isLive = view === "monitor" || view === "layout";
@@ -1136,7 +1171,8 @@ function showView(view) {
   if ($("live-layout-view")) $("live-layout-view").hidden = view !== "layout";
   if ($("cameras-view")) $("cameras-view").hidden = view !== "cameras";
   if ($("settings-view")) $("settings-view").hidden = view !== "settings";
-  setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings"})[view]));
+  if ($("no-access-view")) $("no-access-view").hidden = view !== "no-access";
+  setText("current-view-label", t(({recorder: "Record", monitor: "Monitor", layout: "Layout", cameras: "Cameras", network: "Network", settings: "Settings", "no-access": "No access assigned"})[view]));
   if ($("current-view-label")) $("current-view-label").hidden = isLive || view === "recorder" || view === "settings";
   if ($("live-subnav")) $("live-subnav").hidden = !isLive;
   if ($("record-subnav")) $("record-subnav").hidden = view !== "recorder";
@@ -1173,7 +1209,7 @@ function showView(view) {
   if (view === "settings") {
     window.NvrSettings?.open();
     if (systemTelemetry.data) window.NvrSettings?.setSystemSnapshot?.(systemTelemetry.data);
-  }
+  } else window.NvrUsersSettings?.close();
   if (state.authenticated) startSystemTelemetry();
 }
 
@@ -1361,6 +1397,7 @@ function renderMonitor() {
     tile.name = camera.name; tile.title.textContent = camera.name;
     tile.video.setAttribute("aria-label", t("Live video from {camera}", {camera: camera.name}));
     tile.archiveButton.title = t("Open recordings");
+    tile.archiveButton.hidden = !can("recordings");
     tile.archiveButton.setAttribute("aria-label", t("Open recordings from {camera}", {camera: camera.name}));
     tile.archiveLabel.textContent = t("Open recordings");
     tile.fullscreenLabel.textContent = t("Fullscreen");
@@ -1404,7 +1441,7 @@ function renderMonitor() {
 }
 
 async function loadMonitorStatus() {
-  if (network.view !== "monitor" || !state.authenticated || document.hidden) return;
+  if (network.view !== "monitor" || !can("live") || document.hidden) return;
   const epoch = ++monitor.statusEpoch, authEpoch = state.authEpoch;
   try {
     const data = await api("/api/live/status");
@@ -1822,6 +1859,7 @@ function copyAllProfiles(mode) {
 }
 
 function addNetworkCamera() {
+  if (!can("cameras") || state.user?.camera_scope !== "all") return;
   const main = network.profiles[Number($("network-main-profile").value)];
   const previewValue = $("network-preview-profile").value;
   const preview = previewValue === "" ? null : network.profiles[Number(previewValue)];
@@ -1856,7 +1894,7 @@ $("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = $("login-form").querySelector("button");
   button.disabled = true; setText("login-error", "");
-  try { await api("/api/login", {method: "POST", body: {password: $("password").value}}); await enterApp(); }
+  try { const session = await api("/api/login", {method: "POST", body: {username: $("username")?.value || "admin", password: $("password").value}}); await enterApp(session); }
   catch (error) { setText("login-error", errorText(error)); }
   finally { button.disabled = false; }
 });
@@ -2084,6 +2122,8 @@ window.addEventListener("pageshow", (event) => {
 resetArchiveTimes();
 
 window.addEventListener("nvr-settings-tabchange", renderSystemDashboard);
+window.addEventListener("nvr-password-changed", () => { showLogin(); setText("login-error", t("Password changed. Sign in again.")); });
+window.addEventListener("nvr-user-sessionchanged", () => { showLogin(); setText("login-error", t("Account updated. Sign in again.")); });
 
 window.addEventListener("nvr-archive-beforeclear", () => {
   if (state.authenticated) clearPlayer();
@@ -2174,4 +2214,4 @@ window.addEventListener("nvr-languagechange", () => {
   network.scanProgress?.();
 });
 document.body.classList.add("loading");
-window.NvrI18n.ready.then(() => api("/api/session")).then((session) => session?.authenticated ? enterApp() : showLogin()).catch((error) => { showLogin(); setText("login-error", errorText(error)); });
+window.NvrI18n.ready.then(() => api("/api/session")).then((session) => session?.authenticated ? enterApp(session) : showLogin()).catch((error) => { showLogin(); setText("login-error", errorText(error)); });

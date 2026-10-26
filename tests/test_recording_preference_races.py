@@ -69,15 +69,15 @@ async def test_queued_recording_save_rechecks_session_after_logout(tmp_path, mon
                 # Observe the second request's successful middleware check while
                 # the first save still holds the mutation lock inside rollover.
                 second_authenticated = asyncio.Event()
-                valid = app.state.auth.valid
+                principal = app.state.auth.principal
 
-                def observed_valid(token):
-                    accepted = valid(token)
-                    if accepted:
+                def observed_principal(token):
+                    accepted = principal(token)
+                    if accepted is not None:
                         second_authenticated.set()
                     return accepted
 
-                monkeypatch.setattr(app.state.auth, "valid", observed_valid)
+                monkeypatch.setattr(app.state.auth, "principal", observed_principal)
                 second = asyncio.create_task(client.put(ENDPOINT, json={"segment_minutes": 120}, headers=HEADERS))
                 await asyncio.wait_for(second_authenticated.wait(), 5)
                 assert not first.done() and not second.done()

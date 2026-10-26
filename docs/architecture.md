@@ -52,7 +52,7 @@ L'accesso apre **Live → Monitor**. La pagina **Live → Layout** prepara una d
 
 ## Ricerca temporale e forma d'onda
 
-Il catalogo conserva i tempi in **UTC** e il browser mostra data e ora nel fuso locale, rendendo più chiari anche i cambi fra ora solare e legale. L'indice usa i tempi dei segmenti rilevati dal server: orologi sincronizzati nella LAN sono necessari per correlare più telecamere, e questa base non promette una sincronizzazione forense al fotogramma.
+Il catalogo conserva i tempi in **UTC** e il browser mostra data e ora nel fuso scelto per il recorder, rendendo più chiari anche i cambi fra ora solare e legale. L'indice usa i tempi dei segmenti rilevati dal server: orologi sincronizzati nella LAN sono necessari per correlare più telecamere, e questa base non promette una sincronizzazione forense al fotogramma.
 
 La forma d'onda sotto il lettore si calcola decodificando solo l'audio e riassumendo i **picchi di ampiezza** in finestre temporali. I dati compatti vengono disegnati e cliccati per spostare il punto di riproduzione. Non serve un modello di intelligenza artificiale. Un picco è un indizio da ascoltare, non il riconoscimento di uno sparo, di una voce o di uno specifico evento. Se non esiste una traccia audio, l'interfaccia lo segnala.
 
@@ -82,3 +82,7 @@ Dopo avere installato pacchetti e dipendenze, il servizio e gli elementi dell'in
 Il collaudo deve includere riconnessione dopo caduta della rete, riavvio del servizio, esaurimento spazio, conservazione, audio e consultazione simultanea alla registrazione. I test automatici delle API e delle risposte ONVIF simulate non sostituiscono una prova continuativa con hardware reale.
 
 La consultazione include una traccia di movimento senza AI, calcolata per il video archiviato selezionato mediante differenze fra immagini e conservata nella cache locale. Gli sviluppi successivi sono separabili: ulteriori ottimizzazioni live/WebRTC e accelerazione hardware, maschere ed eventi di movimento in diretta; infine un motore AI opzionale in un processo dedicato. Un futuro adattatore YOLO o altro modello dovrebbe consumare il sottoflusso a frequenza ridotta e scrivere metadati nell'indice, lasciando la registrazione continua indipendente dal suo stato. Modello, licenza e hardware si sceglieranno quando ci sarà un requisito concreto.
+
+## Utenze locali
+
+L'account iniziale `admin` conserva la password precedente. Utenti, hash e assegnazioni sono nel database locale. Le API verificano permessi e ambito delle telecamere anche per richieste dirette e WebSocket; modifica o disabilitazione di un'utenza ne invalida le sessioni. Le dirette aperte ricontrollano l'autorizzazione ogni 15 secondi. Le preferenze Live nel browser sono separate per account. [Gestione utenti e password](users.md).

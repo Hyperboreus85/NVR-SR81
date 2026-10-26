@@ -199,12 +199,12 @@ async def test_clear_queued_behind_settings_rechecks_session_after_logout(tmp_pa
             try:
                 await asyncio.wait_for(media.entered.wait(), 5)
                 checked = asyncio.Event()
-                valid = app.state.auth.valid
-                def observed_valid(token):
-                    accepted = valid(token)
-                    if accepted: checked.set()
+                principal = app.state.auth.principal
+                def observed_principal(token):
+                    accepted = principal(token)
+                    if accepted is not None: checked.set()
                     return accepted
-                monkeypatch.setattr(app.state.auth, "valid", observed_valid)
+                monkeypatch.setattr(app.state.auth, "principal", observed_principal)
                 clear = asyncio.create_task(client.post(ENDPOINT, json={"confirmation": "DELETE"}, headers=HEADERS))
                 await asyncio.wait_for(checked.wait(), 5)
                 await client.post("/api/logout", headers=HEADERS)

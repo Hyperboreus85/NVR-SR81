@@ -13,8 +13,10 @@
   let recordingEpoch = 0, recordingLoadFailed = false;
   let languageActions = [], packActions = [];
   let resources = null, resourcesKnown = false;
-  let archiveBusy = false, maintenanceBusy = false, generalBusy = false;
-  function blocked() { return busy || archiveBusy || maintenanceBusy || generalBusy; }
+  let archiveBusy = false, maintenanceBusy = false, generalBusy = false, usersBusy = false;
+  const can = (permission) => window.NvrAccess?.can(permission) === true;
+  const allowedTab = (name) => name === "users" ? window.NvrAccess?.isAdmin() === true : name === "system" ? ["system", "maintenance", "archive_delete"].some(can) : ["general", "languages", "recording"].includes(name) && can("settings");
+  function blocked() { return busy || archiveBusy || maintenanceBusy || generalBusy || usersBusy; }
 
   function node(tag, className, text) {
     const element = document.createElement(tag);
@@ -31,11 +33,13 @@
 
   function errorMessage(error) { message("settings-error", error.message || "An error occurred.", error.i18nParams); }
   function validAuth(ticket) { return authenticated && ticket === authEpoch; }
-  function validOperation(ticket, operation) { return validAuth(ticket) && operation === operationEpoch; }
+  function validOperation(ticket, operation) { return validAuth(ticket) && can("settings") && operation === operationEpoch; }
 
   function selectTab(value) {
     const tabs = [...document.querySelectorAll("[data-settings-tab]")];
-    if (!tabs.some((button) => button.dataset.settingsTab === value)) return;
+    tabs.forEach((button) => { button.hidden = !allowedTab(button.dataset.settingsTab); });
+    const visible = tabs.filter((button) => !button.hidden);
+    if (!visible.some((button) => button.dataset.settingsTab === value)) value = visible[0]?.dataset.settingsTab || null;
     tab = value;
     tabs.forEach((button) => {
       const active = button.dataset.settingsTab === tab;
@@ -49,18 +53,20 @@
 
   function updateActions() {
     const locked = blocked();
-    byId("settings-pack-file").disabled = !authenticated || locked;
-    byId("settings-pack-install").disabled = !authenticated || locked || reading || !selection;
-    byId("settings-pack-template").disabled = !authenticated || locked;
+    const writable = authenticated && can("settings");
+    byId("settings-pack-file").disabled = !writable || locked;
+    byId("settings-pack-install").disabled = !writable || locked || reading || !selection;
+    byId("settings-pack-template").disabled = !writable || locked;
+    if (byId("settings-pack-management")) byId("settings-pack-management").hidden = !can("settings");
     byId("settings-pack-install").textContent = t(busy ? "Please wait…" : "Install language pack");
-    for (const button of [...languageActions, ...packActions]) button.disabled = locked || !authenticated || button.dataset.active === "true";
+    for (const button of [...languageActions, ...packActions]) { button.disabled = locked || !writable || button.dataset.active === "true"; button.hidden = !can("settings"); }
     byId("settings-language").disabled = locked;
     byId("login-language").disabled = locked;
     byId("settings-pack-preview").setAttribute("aria-busy", String(reading || busy));
-    byId("settings-recording-minutes").disabled = !authenticated || locked || recordingLoading || !recording;
-    byId("settings-recording-save").disabled = !authenticated || locked || recordingLoading || !validRecordingChoice();
+    byId("settings-recording-minutes").disabled = !writable || locked || recordingLoading || !recording;
+    byId("settings-recording-save").disabled = !writable || locked || recordingLoading || !validRecordingChoice();
     byId("settings-recording-save").textContent = t(recordingSaving ? "Saving…" : "Save recording settings");
-    byId("settings-recording-retry").disabled = !authenticated || locked || recordingLoading;
+    byId("settings-recording-retry").disabled = !writable || locked || recordingLoading;
     byId("settings-recording-form").setAttribute("aria-busy", String(recordingLoading || recordingSaving));
     window.dispatchEvent(new CustomEvent("nvr-settings-busychange", {detail: {busy}}));
   }
@@ -96,7 +102,7 @@
   }
 
   async function loadRecording() {
-    if (!authenticated || busy) return;
+    if (!authenticated || !can("settings") || busy) return;
     const ticket = authEpoch, request = ++recordingEpoch;
     recordingLoading = true; recordingLoadFailed = false; message("settings-recording-error"); renderRecording();
     try {
@@ -117,7 +123,7 @@
   }
 
   async function saveRecording() {
-    if (!authenticated || blocked() || recordingLoading || !recording) return;
+    if (!authenticated || !can("settings") || blocked() || recordingLoading || !recording) return;
     if (!validRecordingChoice()) { message("settings-recording-error", "Choose one of the available recording durations."); return; }
     const ticket = authEpoch, operation = ++operationEpoch, minutes = Number(recordingDraft);
     recordingEpoch += 1; openEpoch += 1; busy = recordingSaving = true;
@@ -225,7 +231,7 @@
     selectTab(tab); relabel();
     if (!authenticated || busy) return;
     const ticket = authEpoch, request = ++openEpoch;
-    const results = await Promise.allSettled([i18n.refreshLanguages(), api("/api/system"), api("/api/live/status"), loadRecording()]);
+    const results = await Promise.allSettled([i18n.refreshLanguages(), can("system") ? api("/api/system") : Promise.resolve(null), can("live") || can("system") ? api("/api/live/status") : Promise.resolve(null), can("settings") ? loadRecording() : Promise.resolve()]);
     if (!validAuth(ticket) || request !== openEpoch) return;
     if (results[1].status === "fulfilled") system = results[1].value;
     if (results[2].status === "fulfilled") live = results[2].value;
@@ -262,7 +268,7 @@
   }
 
   async function chooseFile(event) {
-    if (!authenticated || blocked()) return;
+    if (!authenticated || !can("settings") || blocked()) return;
     const file = event.target.files?.[0]; event.target.value = "";
     const ticket = authEpoch, request = ++fileEpoch;
     selection = null; reading = !!file; message("settings-error"); message("settings-notice"); renderSelection();
@@ -283,7 +289,7 @@
   }
 
   async function installPack() {
-    if (!authenticated || blocked() || reading || !selection) return;
+    if (!authenticated || !can("settings") || blocked() || reading || !selection) return;
     const ticket = authEpoch, operation = ++operationEpoch, chosen = selection;
     openEpoch += 1; busy = true; message("settings-error"); message("settings-notice"); updateActions();
     try {
@@ -309,7 +315,7 @@
   }
 
   async function downloadPack(locale = null) {
-    if (!authenticated || blocked()) return;
+    if (!authenticated || !can("settings") || blocked()) return;
     const ticket = authEpoch, operation = ++operationEpoch;
     busy = true; updateActions(); message("settings-error");
     let objectUrl;
@@ -329,7 +335,7 @@
   }
 
   async function removePack(language) {
-    if (!authenticated || blocked() || language.source !== "installed" || language.locale === "en") return;
+    if (!authenticated || !can("settings") || blocked() || language.source !== "installed" || language.locale === "en") return;
     if (!window.confirm(t(language.locale === "it" ? "Restore the included Italian language pack?" : "Remove the installed language pack {name}?", {name: language.native_name}))) return;
     const ticket = authEpoch, operation = ++operationEpoch;
     openEpoch += 1; busy = true; updateActions(); message("settings-error"); message("settings-notice");
@@ -346,7 +352,7 @@
   document.querySelectorAll("[data-settings-tab]").forEach((button) => {
     button.addEventListener("click", () => selectTab(button.dataset.settingsTab));
     button.addEventListener("keydown", (event) => {
-      const tabs = [...document.querySelectorAll("[data-settings-tab]")];
+      const tabs = [...document.querySelectorAll("[data-settings-tab]")].filter((item) => !item.hidden);
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
       const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (tabs.indexOf(button) + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
@@ -366,22 +372,31 @@
   byId("settings-monitor-layout").addEventListener("change", (event) => {
     const layout = Number(event.target.value);
     if (![1, 4, 9, 16].includes(layout)) return;
-    try { localStorage.setItem("nvr.monitor.layout", String(layout)); } catch (_) { /* Session preference still works. */ }
+    try { localStorage.setItem(window.NvrAccess?.storageKey("nvr.monitor.layout") || "nvr.monitor.layout", String(layout)); } catch (_) { /* Session preference still works. */ }
     window.dispatchEvent(new CustomEvent("nvr-monitor-layoutchange", {detail: {layout}}));
     message("settings-notice", "Default monitor layout saved for this browser.");
   });
-  byId("settings-monitor-layout").value = "4";
-  try { const value = localStorage.getItem("nvr.monitor.layout"); if (["1", "4", "9", "16"].includes(value)) byId("settings-monitor-layout").value = value; } catch (_) { /* Four-camera default. */ }
+  function loadMonitorPreference() {
+    byId("settings-monitor-layout").value = "4";
+    try { const value = localStorage.getItem(window.NvrAccess?.storageKey("nvr.monitor.layout") || "nvr.monitor.layout"); if (["1", "4", "9", "16"].includes(value)) byId("settings-monitor-layout").value = value; } catch (_) { /* Four-camera default. */ }
+  }
+  loadMonitorPreference();
   window.addEventListener("nvr-languagechange", relabel);
   window.addEventListener("nvr-archive-busychange", (event) => { archiveBusy = !!event.detail.busy; updateActions(); });
   window.addEventListener("nvr-system-busychange", (event) => { maintenanceBusy = !!event.detail.busy; updateActions(); });
   window.addEventListener("nvr-general-busychange", (event) => { generalBusy = !!event.detail.busy; updateActions(); });
+  window.addEventListener("nvr-users-busychange", (event) => { usersBusy = !!event.detail.busy; updateActions(); });
+  window.addEventListener("nvr-accesschange", () => {
+    if (!can("settings")) { fileEpoch += 1; operationEpoch += 1; selection = null; reading = busy = false; }
+    selectTab(tab); relabel();
+  });
   window.addEventListener("nvr-languageschange", renderLanguages);
   window.addEventListener("nvr-authchange", (event) => {
     authenticated = !!event.detail.authenticated;
     authEpoch += 1; fileEpoch += 1; operationEpoch += 1; openEpoch += 1; languageEpoch += 1; recordingEpoch += 1;
     selection = null; reading = busy = false; system = live = null;
-    archiveBusy = maintenanceBusy = generalBusy = false;
+    archiveBusy = maintenanceBusy = generalBusy = usersBusy = false;
+    loadMonitorPreference();
     resources = null; resourcesKnown = false;
     recording = null; recordingDraft = ""; recordingLoading = recordingSaving = recordingLoadFailed = false;
     message("settings-error"); message("settings-notice"); message("settings-recording-error"); relabel();

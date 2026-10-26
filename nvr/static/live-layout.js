@@ -31,15 +31,17 @@
     constructor(cameras = [], storage = null) {
       this.cameras = cameraList(cameras);
       this.storage = storage;
+      this.storageKey = typeof window !== "undefined" && window.NvrAccess ? window.NvrAccess.storageKey(STORAGE_KEY) : STORAGE_KEY;
+      this.legacyKey = typeof window !== "undefined" && window.NvrAccess ? window.NvrAccess.storageKey("nvr.monitor.layout") : "nvr.monitor.layout";
       this.readWarning = false;
       let saved = null, legacy = null;
       try {
-        const text = storage?.getItem(STORAGE_KEY);
+        const text = storage?.getItem(this.storageKey);
         if (text) {
           saved = normalizeLayout(JSON.parse(text), this.cameras);
           if (!saved) this.readWarning = true;
         }
-        legacy = Number(storage?.getItem("nvr.monitor.layout"));
+        legacy = Number(storage?.getItem(this.legacyKey));
       } catch (_) { this.readWarning = true; }
       this.saved = saved || defaultLayout(this.cameras, legacy);
       this.draft = clone(this.saved);
@@ -76,7 +78,7 @@
       if (!validated) throw Error("Choose a valid live layout.");
       try {
         if (!this.storage) throw Error("Storage unavailable");
-        this.storage.setItem(STORAGE_KEY, JSON.stringify(validated));
+        this.storage.setItem(this.storageKey, JSON.stringify(validated));
       } catch (_) { throw Error("The layout could not be saved in this browser. Check browser storage permissions and try again."); }
       this.saved = validated;
       this.readWarning = false;

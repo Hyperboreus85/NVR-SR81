@@ -150,13 +150,13 @@ async def test_queued_maintenance_rechecks_session_after_logout(tmp_path, monkey
             try:
                 await asyncio.wait_for(helper.entered.wait(), 5)
                 checked = asyncio.Event()
-                valid = app.state.auth.valid
+                principal = app.state.auth.principal
                 def observed(token):
-                    accepted = valid(token)
-                    if accepted:
+                    accepted = principal(token)
+                    if accepted is not None:
                         checked.set()
                     return accepted
-                monkeypatch.setattr(app.state.auth, "valid", observed)
+                monkeypatch.setattr(app.state.auth, "principal", observed)
                 second = asyncio.create_task(client.post(ACTION, json={"action": "reboot-system", "confirmation": "REBOOT"}, headers=HEADERS))
                 await asyncio.wait_for(checked.wait(), 5)
                 assert not second.done()
