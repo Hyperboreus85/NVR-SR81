@@ -1,0 +1,15 @@
+[Unit]
+Description=NVR-SR81 restricted local maintenance socket
+
+[Socket]
+ListenStream=/run/nvr-sr81-maintenance.sock
+SocketUser=root
+SocketGroup=nvr-sr81
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+MaxConnectionsPerSource=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
