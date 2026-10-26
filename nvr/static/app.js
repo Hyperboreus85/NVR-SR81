@@ -5,7 +5,7 @@ const locale = () => window.NvrI18n.locale();
 const translatedMessages = new Map();
 const messageBindings = new Map();
 const warningLists = new Map();
-const rawTextIds = new Set(["selected-name", "live-camera-name", "playing-label", "network-device-name", "network-device-address", "network-device-description"]);
+const rawTextIds = new Set(["selected-name", "live-camera-name", "playing-label", "network-device-name", "network-device-address", "network-device-description", "delete-camera-name"]);
 const t = (key, params) => {
   const prior = translatedMessages.get(key);
   const source = prior && prior.key !== key && !params ? prior : {key, params};
@@ -92,6 +92,7 @@ const cameraRotation = window.NvrCameraRotation ? new window.NvrCameraRotation({
 let liveLayout = null;
 let networkSearch = null;
 let cameraEditor = null, cameraDialogEpoch = 0, cameraProbeEpoch = 0, cameraProbeController = null;
+const cameraRemoval = {target: null, busy: false, epoch: 0, controller: null};
 
 function ensureNetworkSearch() {
   if (!networkSearch && window.NvrNetworkSearch) networkSearch = new window.NvrNetworkSearch({api, t, isAuthenticated: () => can("network")});
@@ -456,6 +457,8 @@ function showLogin() {
   cancelCameraProbe();
   cameraEditor?.setCamera(null);
   state.editingId = null;
+  resetCameraRemoval();
+  if ($("cameras-filter")) $("cameras-filter").value = "";
   clearTimeout(state.toastTimer);
   $("toast").hidden = true;
   window.dispatchEvent(new CustomEvent("nvr-authchange", {detail: {authenticated: false}}));
@@ -486,6 +489,7 @@ async function enterApp(session) {
   const user = session?.user || (!window.NvrAccess ? {id: "builtin-admin", username: "admin", display_name: "Administrator", role: "admin", permissions: [], camera_scope: "all", camera_ids: [], enabled: true, builtin: true} : null);
   if (!user || window.NvrAccess && !window.NvrAccess.setUser(user)) { showLogin(); return; }
   state.authEpoch += 1;
+  resetCameraRemoval();
   const authEpoch = state.authEpoch;
   state.authenticated = true;
   state.user = user;
@@ -1005,7 +1009,9 @@ function timelineSeek(event) {
 }
 
 function openCameraDialog(camera = null) {
-  if (!can("cameras") || !camera && state.user?.camera_scope !== "all") return;
+  if (!can("cameras") || cameraRemoval.busy || !camera && state.user?.camera_scope !== "all") return;
+  if (camera && !state.cameras.some((item) => item.id === camera.id)) return;
+  resetCameraRemoval();
   cameraDialogEpoch += 1;
   cancelCameraProbe();
   state.editingId = camera?.id || null;
@@ -1040,7 +1046,7 @@ function openCameraDialog(camera = null) {
 async function saveCamera(event) {
   event.preventDefault();
   const editingId = state.editingId;
-  const ticket = state.authEpoch, dialogEpoch = cameraDialogEpoch;
+  const ticket = state.authEpoch, dialogEpoch = cameraDialogEpoch, originView = network.view;
   const url = $("camera-url").value.trim();
   const preview = $("camera-preview-url").value.trim();
   const payload = {
@@ -1065,12 +1071,12 @@ async function saveCamera(event) {
     const saved = await api(editingId ? `/api/cameras/${encodeURIComponent(editingId)}` : "/api/cameras", {method: editingId ? "PUT" : "POST", body: payload});
     if (!state.authenticated || ticket !== state.authEpoch || dialogEpoch !== cameraDialogEpoch) return;
     $("camera-dialog").close();
-    showView("recorder");
+    if (originView !== "cameras") showView("recorder");
     if (!editingId && saved?.id) {
       stopLive(); clearPlayer(); state.selectedId = saved.id;
     }
     await refresh(true, true);
-    if (!editingId && state.selectedId) await loadRecordings();
+    if (!editingId && state.selectedId && network.view === "recorder" && can("recordings")) await loadRecordings();
     toast(editingId ? t("Configuration updated.") : t("Camera added. The recorder will try to connect to the stream."));
   } catch (error) { if (ticket === state.authEpoch && dialogEpoch === cameraDialogEpoch) setText("camera-form-error", errorText(error)); }
   finally { if (ticket === state.authEpoch && dialogEpoch === cameraDialogEpoch) $("save-camera").disabled = false; }
@@ -1135,38 +1141,62 @@ async function findOnvifProfiles(event) {
   }
 }
 
+function cameraAddress(camera) {
+  let protocol = camera.connection?.protocol || "", host = camera.connection?.host || "", port = camera.connection?.port;
+  if (!host) {
+    try { const source = new URL(camera.source); protocol = source.protocol.slice(0, -1); host = source.hostname; port = source.port; }
+    catch (_) { return t("Address unavailable"); }
+  }
+  const address = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return [protocol.toUpperCase(), address + (port ? `:${port}` : "")].filter(Boolean).join(" · ");
+}
+
 function renderConfiguredCameras() {
   const list = $("configured-camera-list");
   if (!list) return;
+  const query = ($("cameras-filter")?.value || "").trim().toLocaleLowerCase();
+  const cameras = state.cameras.filter((camera) => `${camera.name} ${cameraAddress(camera)}`.toLocaleLowerCase().includes(query));
+  setText("cameras-count", query ? t("{visible} / {total} cameras", {visible: number(cameras.length), total: number(state.cameras.length)}) : t("{count} cameras", {count: number(state.cameras.length)}));
+  const scrollTop = list.scrollTop;
   list.replaceChildren();
-  if (!state.cameras.length) list.append(el("p", "muted", t("No cameras configured. Add a camera or search your network.")));
-  state.cameras.forEach((camera) => {
-    const card = el("article", "configured-camera-card");
-    const copy = el("div", "configured-camera-copy");
-    const status = cameraStatus(camera);
-    copy.append(el("h3", "", camera.name), el("span", "muted small", status.label));
+  if (!cameras.length) list.append(el("p", "configured-camera-empty", t(state.cameras.length ? "No cameras match this search." : "No cameras configured.")));
+  cameras.forEach((camera) => {
+    const card = el("article", "configured-camera-card"); card.dataset.cameraId = camera.id;
+    const identity = el("div", "configured-camera-identity"), copy = el("div");
+    const name = el("h3", "", camera.name), address = el("small", "", cameraAddress(camera));
+    name.title = camera.name; address.title = address.textContent; copy.append(name, address);
+    identity.append(icon("camera"), copy);
+    const streams = el("div", "configured-camera-streams");
+    const configured = [camera.streams?.main?.configured ?? true, camera.streams?.sub?.configured ?? !!camera.preview_source, camera.streams?.third?.configured ?? !!camera.third_source];
+    const live = camera.live_stream === 3 && configured[2] ? 3 : (camera.live_stream || 2) === 2 && configured[1] ? 2 : 1;
+    ["Main stream", "Substream", "Third stream"].forEach((label, index) => {
+      const chip = el("span", "configured-stream-chip", t(label));
+      chip.dataset.configured = String(!!configured[index]); chip.dataset.live = String(index + 1 === live);
+      chip.title = t(configured[index] ? "Stream configured" : "Stream not configured") + (index + 1 === live ? ` · ${t("Live stream")}` : "");
+      streams.append(chip);
+    });
+    const status = cameraStatus(camera), statusNode = el("div", "configured-camera-state");
+    statusNode.append(el("span", `badge ${status.badge}`, status.label));
+    statusNode.title = status.message;
     const actions = el("div", "configured-camera-actions");
-    const live = el("button", "button secondary", t("Open live"));
-    live.type = "button";
-    live.hidden = !can("live");
-    live.addEventListener("click", () => {
-      const layout = ensureLiveLayout();
-      const saved = layout?.getSaved();
+    const addAction = (label, className, handler, allowed = true) => {
+      if (!allowed) return;
+      const button = el("button", `button ${className}`, t(label)); button.type = "button";
+      button.addEventListener("click", handler); actions.append(button);
+    };
+    addAction("Open live", "secondary", () => {
+      if (!can("live")) return;
+      const layout = ensureLiveLayout(), saved = layout?.getSaved();
       const slot = saved?.slots.indexOf(camera.id) ?? -1;
       if (slot >= 0 && slot < saved.size) showView("monitor");
       else { showView("layout"); toast(t("Choose a tile for this camera, then save the layout.")); }
-    });
-    const recordings = el("button", "button quiet", t("Open recordings"));
-    recordings.type = "button";
-    recordings.hidden = !can("recordings");
-    recordings.addEventListener("click", () => selectCamera(camera.id));
-    const configure = el("button", "button quiet", t("Configure"));
-    configure.type = "button";
-    configure.addEventListener("click", () => openCameraDialog(camera));
-    actions.append(live, recordings, configure);
-    card.append(icon("camera"), copy, actions);
-    list.append(card);
+    }, can("live"));
+    addAction("Open recordings", "quiet", () => { if (can("recordings")) selectCamera(camera.id); }, can("recordings"));
+    addAction("Configure", "quiet", () => { const current = state.cameras.find((item) => item.id === camera.id); if (current) openCameraDialog(current); }, can("cameras"));
+    addAction("Remove camera", "quiet configured-camera-remove", () => requestCameraRemoval(camera), can("cameras"));
+    card.append(identity, streams, statusNode, actions); list.append(card);
   });
+  list.scrollTop = scrollTop;
 }
 
 function showView(view) {
@@ -2002,17 +2032,49 @@ function addNetworkCamera() {
     third_url: third ? third.url || third.clean_url || "" : ""});
 }
 
+function resetCameraRemoval() {
+  cameraRemoval.epoch += 1; cameraRemoval.controller?.abort();
+  cameraRemoval.controller = null; cameraRemoval.target = null; cameraRemoval.busy = false;
+  $("confirm-delete").disabled = false;
+  $("delete-dialog").querySelectorAll("button[data-close]").forEach((button) => { button.disabled = false; });
+  setText("delete-camera-name", ""); setText("delete-error", "");
+  if ($("delete-dialog").open) $("delete-dialog").close();
+}
+
+function requestCameraRemoval(camera) {
+  if (!can("cameras") || cameraRemoval.busy || !camera?.id) return;
+  const current = state.cameras.find((item) => item.id === camera.id);
+  if (!current) return;
+  resetCameraRemoval();
+  cameraRemoval.target = {id: current.id, name: current.name};
+  setText("delete-camera-name", current.name);
+  $("delete-dialog").showModal();
+}
+
 async function deleteCamera() {
-  if (!state.editingId) return;
+  if (!can("cameras") || cameraRemoval.busy || !cameraRemoval.target || !$("delete-dialog").open) return;
+  const target = {...cameraRemoval.target}, ticket = state.authEpoch, request = ++cameraRemoval.epoch;
+  const editingEpoch = cameraDialogEpoch, controller = new AbortController();
+  cameraRemoval.controller = controller; cameraRemoval.busy = true;
   $("confirm-delete").disabled = true;
+  $("delete-dialog").querySelectorAll("button[data-close]").forEach((button) => { button.disabled = true; });
   setText("delete-error", "");
+  const current = () => state.authenticated && ticket === state.authEpoch && request === cameraRemoval.epoch && can("cameras");
   try {
-    await api(`/api/cameras/${encodeURIComponent(state.editingId)}`, {method: "DELETE"});
-    $("delete-dialog").close(); $("camera-dialog").close();
+    await api(`/api/cameras/${encodeURIComponent(target.id)}`, {method: "DELETE", signal: controller.signal});
+    if (!current()) return;
+    $("delete-dialog").close();
+    if (state.editingId === target.id && cameraDialogEpoch === editingEpoch) $("camera-dialog").close();
     await refresh(true, true);
-    toast(t("Camera removed. Existing recordings remain on disk."));
-  } catch (error) { setText("delete-error", errorText(error)); }
-  finally { $("confirm-delete").disabled = false; }
+    if (current()) toast(t("Camera removed. Existing recordings remain on disk."));
+  } catch (error) {
+    if (current() && error.name !== "AbortError") setText("delete-error", errorText(error));
+  } finally {
+    if (current()) { cameraRemoval.busy = false; cameraRemoval.controller = null; $("confirm-delete").disabled = false;
+      $("delete-dialog").querySelectorAll("button[data-close]").forEach((button) => { button.disabled = false; });
+      if (!$("delete-dialog").open) resetCameraRemoval();
+    }
+  }
 }
 
 $("login-form").addEventListener("submit", async (event) => {
@@ -2200,14 +2262,19 @@ $("onvif-copy-all").addEventListener("click", () => copyAllProfiles("modal"));
 $("network-add-recorder").addEventListener("click", addNetworkCamera);
 $("copy-dialog").addEventListener("close", () => { $("copy-value").value = ""; });
 $("camera-dialog").addEventListener("close", () => {
+  if ($("camera-dialog").open) return;
   cameraDialogEpoch += 1;
+  state.editingId = null;
   cancelCameraProbe();
   cameraEditor?.setCamera(null);
   $("camera-url").value = ""; $("camera-preview-url").value = "";
   if ($("camera-third-url")) $("camera-third-url").value = "";
 });
-$("delete-camera").addEventListener("click", () => { setText("delete-error", ""); $("delete-dialog").showModal(); });
+$("delete-camera").addEventListener("click", () => requestCameraRemoval(state.cameras.find((camera) => camera.id === state.editingId)));
 $("confirm-delete").addEventListener("click", deleteCamera);
+$("cameras-filter")?.addEventListener("input", renderConfiguredCameras);
+$("delete-dialog").addEventListener("cancel", (event) => { if (cameraRemoval.busy) event.preventDefault(); });
+$("delete-dialog").addEventListener("close", () => { if (!$("delete-dialog").open && !cameraRemoval.busy && cameraRemoval.target) resetCameraRemoval(); });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
 $("clear-preview").addEventListener("change", () => { $("camera-preview-url").disabled = $("clear-preview").checked; });
 $("compatible").addEventListener("change", () => {
@@ -2262,7 +2329,7 @@ document.addEventListener("visibilitychange", () => {
   if (network.view === "monitor") { syncMonitorPlayers(); if (!document.hidden) loadMonitorStatus(); }
   if (network.view === "layout") { if (document.hidden) liveLayout?.close(); else if (state.authenticated) liveLayout?.open(); }
 });
-window.addEventListener("pagehide", () => { cancelNetworkScan(false); cancelDirectProbe(); networkSearch?.close(); stopSystemTelemetry(); stopLive(); player.pause(); releaseMonitor(); liveLayout?.close(); });
+window.addEventListener("pagehide", () => { resetCameraRemoval(); cancelNetworkScan(false); cancelDirectProbe(); networkSearch?.close(); stopSystemTelemetry(); stopLive(); player.pause(); releaseMonitor(); liveLayout?.close(); });
 window.addEventListener("pageshow", (event) => {
   if (!event.persisted || !state.authenticated) return;
   startSystemTelemetry();

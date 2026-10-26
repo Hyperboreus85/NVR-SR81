@@ -4,6 +4,14 @@ Aprire **Cameras / Telecamere** e scegliere **Add camera / Aggiungi telecamera**
 
 NVR-SR81 accetta indirizzi **RTSP, RTSPS, HTTP e HTTPS**. L'indirizzo deve portare al contenuto video: la pagina di accesso o il pannello web della telecamera non sono un flusso. Il percorso corretto dipende dal produttore e dal profilo configurato sul dispositivo.
 
+## Elenco e rimozione
+
+La pagina Cameras mostra righe compatte con nome, protocollo e indirizzo del dispositivo, flussi configurati e stato della registrazione. La ricerca filtra per nome o indirizzo; non consulta credenziali, percorsi o token. Le azioni Live e Record compaiono solo per chi ha i rispettivi permessi. Aggiungere una nuova telecamera richiede il permesso Cameras con accesso a tutte le telecamere; i gestori limitati possono modificare o rimuovere solo quelle assegnate.
+
+**Remove camera / Rimuovi telecamera** apre una conferma con il nome del dispositivo. La conferma interrompe la registrazione e rimuove la configurazione; i video già registrati restano sul disco e nell'indice. La conservazione per giorni e la pulizia automatica per spazio continuano ad applicarsi. **Cancel / Annulla** non modifica nulla. Non occorre digitare una parola di conferma.
+
+Dopo il salvataggio o la rimozione dalla pagina Cameras si rimane nell'elenco, conservando il filtro. Il target della conferma è separato dalla selezione del recorder, così aggiornamenti e cambi di selezione non spostano l'operazione su un'altra telecamera.
+
 ## Compilare la connessione
 
 La connessione condivisa raccoglie **protocollo, indirizzo del dispositivo, porta, nome utente e password**. I tre flussi hanno ciascuno il proprio percorso, comprensivo dell'eventuale query: per esempio `/stream?channel=1`. Il protocollo si sceglie tra RTSP, RTSPS, HTTP e HTTPS; HLS e MJPEG usano HTTP o HTTPS.

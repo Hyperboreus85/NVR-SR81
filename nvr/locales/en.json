@@ -1264,6 +1264,13 @@
     "Not found": "Not found",
     "Only the first 128 devices are shown. Refine the search targets.": "Only the first 128 devices are shown. Refine the search targets.",
     "Manual": "Manual",
-    "Invalid telemetry response": "Invalid telemetry response"
+    "Invalid telemetry response": "Invalid telemetry response",
+    "Search cameras": "Search cameras",
+    "Search by name or address": "Search by name or address",
+    "Address unavailable": "Address unavailable",
+    "{visible} / {total} cameras": "{visible} / {total} cameras",
+    "No cameras match this search.": "No cameras match this search.",
+    "Stream configured": "Stream configured",
+    "Stream not configured": "Stream not configured"
   }
 }

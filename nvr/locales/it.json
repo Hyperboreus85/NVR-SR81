@@ -1264,6 +1264,13 @@
     "Not found": "Non trovato",
     "Only the first 128 devices are shown. Refine the search targets.": "Sono mostrati solo i primi 128 dispositivi. Restringi le destinazioni di ricerca.",
     "Manual": "Manuale",
-    "Invalid telemetry response": "Dati di sistema non validi"
+    "Invalid telemetry response": "Dati di sistema non validi",
+    "Search cameras": "Cerca telecamere",
+    "Search by name or address": "Cerca per nome o indirizzo",
+    "Address unavailable": "Indirizzo non disponibile",
+    "{visible} / {total} cameras": "{visible} / {total} telecamere",
+    "No cameras match this search.": "Nessuna telecamera corrisponde alla ricerca.",
+    "Stream configured": "Flusso configurato",
+    "Stream not configured": "Flusso non configurato"
   }
 }

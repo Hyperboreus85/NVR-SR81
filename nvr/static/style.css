@@ -1304,3 +1304,45 @@ circle.system-chart-series{fill:currentColor;stroke-width:0}
 
 #network-view #network-profiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:9px;max-height:min(490px,60dvh);overflow-y:auto;scrollbar-gutter:stable;padding-right:3px;margin-top:10px}
 #network-view #network-recording-pair{margin:10px 0 0;padding:10px}
+
+/* Camera management uses one compact row per camera, with endpoint and stream roles together. */
+#cameras-view{min-width:0}
+.cameras-toolbar{display:flex;align-items:center;gap:10px;min-width:0;margin-bottom:10px}
+.cameras-filter-field{position:relative;display:flex;align-items:center;flex:1;max-width:390px;min-width:0}
+.cameras-filter-field>svg{position:absolute;left:10px;width:14px;height:14px;color:#9db2b2;pointer-events:none}
+.cameras-filter-field>input{width:100%;min-width:0;min-height:32px;padding:6px 10px 6px 31px;border:1px solid #4c5454;border-radius:5px;background:#242424;color:#d7e3e3;font-size:11px;line-height:1.5}
+.cameras-filter-field>input::placeholder{color:#9aabab;font-size:10px}
+.cameras-count{margin-left:auto;color:#a5b8b8;font-size:10px;line-height:1.5;white-space:nowrap;font-variant-numeric:tabular-nums}
+.cameras-toolbar>.button{min-height:32px;padding:5px 10px;font-size:10px;border-radius:5px;flex:none;white-space:nowrap}
+.cameras-toolbar>.button>svg{width:14px;height:14px}
+#cameras-view .configured-camera-list{display:grid;gap:6px;min-width:0}
+#cameras-view .configured-camera-card{display:grid;grid-template-columns:minmax(180px,1.3fr) minmax(135px,.9fr) minmax(110px,.8fr) max-content;grid-template-areas:"identity streams state actions";align-items:center;gap:12px;min-width:0;min-height:66px;padding:10px 12px;border:1px solid #424a4a;border-radius:6px;background:#282828}
+#cameras-view .configured-camera-identity{grid-area:identity;display:flex;align-items:center;gap:9px;min-width:0}
+#cameras-view .configured-camera-identity>svg{width:21px;height:21px;flex:none;color:#9cc7c7}
+#cameras-view .configured-camera-identity>div{min-width:0;flex:1}
+#cameras-view .configured-camera-identity h3,#cameras-view .configured-camera-identity strong{display:block;font-size:12px;font-weight:550;line-height:1.5;color:#e2eded;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cameras-view .configured-camera-identity small,#cameras-view .configured-camera-identity p,#cameras-view .configured-camera-identity span{display:block;font-size:10px;line-height:1.5;color:#a1b2b2;margin:3px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cameras-view .configured-camera-streams{grid-area:streams;display:flex;align-items:center;flex-wrap:wrap;gap:5px;min-width:0}
+#cameras-view .configured-camera-streams>.badge,#cameras-view .configured-stream-chip{display:inline-flex;align-items:center;gap:4px;min-height:23px;padding:3px 6px;border:1px solid #516060;border-radius:4px;background:#303535;color:#c2d1d1;font-size:9px;line-height:1.5;letter-spacing:0;white-space:nowrap}
+#cameras-view .configured-stream-chip[data-configured=false]{background:#292929;border-style:dashed;border-color:#484e4e;color:#8b9c9c}
+#cameras-view .configured-stream-chip[data-live=true]{background:#2b3b3b;border-color:#4b9797;color:var(--accent)}
+#cameras-view .configured-stream-chip>svg{width:11px;height:11px;flex:none}
+#cameras-view .configured-camera-state{grid-area:state;display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0}
+#cameras-view .configured-camera-state>.badge{font-size:8px;line-height:1.5;letter-spacing:.04em;padding:3px 6px;border-radius:4px;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+#cameras-view .configured-camera-state>small,#cameras-view .configured-camera-state>span:not(.badge),#cameras-view .configured-camera-state>p{font-size:9px;line-height:1.5;margin:0;color:#a0b5b5;max-width:100%;overflow-wrap:anywhere}
+#cameras-view .configured-camera-actions{grid-area:actions;display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap;min-width:0}
+#cameras-view .configured-camera-actions>.button{min-height:30px;padding:5px 8px;border-radius:5px;font-size:10px;line-height:1.5;white-space:nowrap}
+#cameras-view .configured-camera-actions>.button>svg{width:13px;height:13px;flex:none}
+#cameras-view .configured-camera-actions>.danger-button,#cameras-view .configured-camera-actions>.configured-camera-remove{color:#ddb26f;background:#343027;border-color:#6e5c3f}
+#cameras-view .configured-camera-actions>.danger-button:hover,#cameras-view .configured-camera-actions>.configured-camera-remove:hover{color:#f4ca89;background:#40372a;border-color:#a47f46}
+#cameras-view .configured-camera-list>.field-help,#cameras-view .configured-camera-list>.form-error{font-size:11px;line-height:1.7;margin:0;padding:14px 12px;border:1px solid #414a4a;border-radius:6px;background:#282828;overflow-wrap:anywhere}
+.camera-delete-modal .delete-camera-name{font-size:14px;font-weight:550;line-height:1.6;color:#e3eeee;overflow-wrap:anywhere;margin-bottom:10px}
+.camera-delete-modal .delete-camera-name:empty{display:none}
+.camera-delete-modal #delete-camera-explanation{font-size:12px;line-height:1.8;color:#b8caca}
+.camera-delete-modal .modal-footer{gap:8px;justify-content:flex-end}
+@media(max-width:1050px){#cameras-view .configured-camera-card{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"identity actions" "streams state";gap:8px 14px}#cameras-view .configured-camera-state{align-items:flex-end;flex-direction:row;justify-content:flex-end;align-self:center;flex-wrap:wrap;gap:6px}#cameras-view .configured-camera-state>small{max-width:180px;text-align:right}}
+@media(max-width:600px){.cameras-toolbar{gap:8px;flex-wrap:wrap;margin-bottom:9px}.cameras-filter-field{max-width:none;flex-basis:100%}.cameras-filter-field>input{min-height:40px;font-size:12px;padding-left:33px}.cameras-filter-field>input::placeholder{font-size:11px}.cameras-filter-field>svg{width:15px;height:15px}.cameras-count{margin-left:0;font-size:10px}.cameras-toolbar>.button{margin-left:auto;min-height:40px;font-size:11px;padding:7px 10px}#cameras-view .configured-camera-card{padding:10px;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"identity state" "streams streams" "actions actions";gap:9px}#cameras-view .configured-camera-identity{gap:7px}#cameras-view .configured-camera-identity>svg{width:19px;height:19px}#cameras-view .configured-camera-identity h3,#cameras-view .configured-camera-identity strong{font-size:12px}#cameras-view .configured-camera-state{flex-direction:column;align-items:flex-end;gap:3px;max-width:108px}#cameras-view .configured-camera-state>small{max-width:108px;font-size:8px}#cameras-view .configured-camera-actions{gap:7px;justify-content:flex-end}#cameras-view .configured-camera-actions>.button{min-height:40px;font-size:10px;padding:7px 9px}#cameras-view .configured-camera-actions>.button>svg{width:14px;height:14px}#cameras-view .configured-stream-chip,#cameras-view .configured-camera-streams>.badge{font-size:10px;min-height:25px;padding:3px 7px}.camera-delete-modal .modal-footer>.button{min-height:40px}}
+
+#cameras-view .configured-camera-empty{margin:0;padding:14px 12px;border:1px solid #424a4a;border-radius:6px;background:#282828;color:#a5b8b8;font-size:11px;line-height:1.7}
+.camera-delete-modal,.camera-delete-modal .modal-body{background:#282828}
+.camera-delete-modal .modal-heading,.camera-delete-modal .modal-footer{background:#242424;border-color:#444}
